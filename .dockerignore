@@ -1,0 +1,18 @@
+# فایل‌های موقت و حجیم که داخل ایمیج لازم نیستند
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+2.0/
+temps/
+storage/pycache/
+storage/logs/
+storage/backups/
+*.log
+*.zip
+.git/
+.gitignore
+*.md
+نقشه*.txt
+eitaa_debug.html

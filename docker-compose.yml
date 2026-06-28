@@ -1,0 +1,24 @@
+# ======================================================================
+#  docker-compose — اجرای ساده روی سرور
+#  راه‌اندازی:   docker compose up -d --build
+#  لاگ زنده:     docker compose logs -f
+#  توقف:         docker compose down
+# ======================================================================
+services:
+  monitor:
+    build: .
+    container_name: srooyesh-monitor
+    restart: unless-stopped          # اگر کرش کرد یا سرور ری‌استارت شد، خودکار بالا می‌آید
+    env_file: .env
+    volumes:
+      # همهٔ نشست‌ها/دیتابیس/گزارش‌ها/مدیا بیرون از کانتینر می‌مانند (با ری‌بیلد پاک نمی‌شوند)
+      - ./storage:/app/storage
+      - ./data:/app/data
+      - ./.env:/app/.env:ro
+    # برای واتساپ در ایران ممکن است به پراکسی/VPN نیاز باشد:
+    # environment:
+    #   - HTTPS_PROXY=http://host.docker.internal:PORT
+    shm_size: "1gb"                  # مرورگر chromium به حافظهٔ اشتراکی بیشتری نیاز دارد
+
+# ⚠️ ورود اولِ هر پیام‌رسان (کد پیامک/QR) باید یک‌بار خارج از داکر با `python login.py`
+#    انجام شود و سپس پوشهٔ storage/sessions روی سرور کپی شود. جزئیات در DEPLOY.md
