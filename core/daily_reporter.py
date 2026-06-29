@@ -47,7 +47,7 @@ def platform_label(platform: str) -> str:
 def platform_rank(platform: str) -> int:
     """رتبهٔ پلتفرم در ترتیب ثابت (برای مرتب‌سازی)؛ ناشناخته‌ها ته صف."""
     p = (platform or "").lower()
-    return PLATFORM_ORDER.index(p) if p in PLATFORM_ORDER else len(PLATFORM_ORDER)
+    return PLATFORM_ORDER.index(p) if p in PLATFORM_ORDER else len(PLATFORM_ORDER) + 1
 
 
 def group_by_platform(rows):
@@ -64,6 +64,25 @@ def group_by_platform(rows):
             p = ""
         buckets.setdefault(p, []).append(r)
     return [(p, buckets[p]) for p in sorted(buckets, key=platform_rank)]
+
+
+def dedup_rows(rows):
+    """حذفِ سرنخ‌های تقریباً یکسان (همان گروه + همان متن) — مثلاً فوروارد/بازنشر.
+    اولین رخداد نگه داشته می‌شود (که چون مرتب بر امتیاز است، باکیفیت‌ترین می‌ماند)."""
+    seen = set()
+    out = []
+    for r in rows:
+        try:
+            chat = (r["chat_name"] or "")
+            txt = (r["text"] or "")[:200].strip()
+        except (TypeError, KeyError, IndexError):
+            chat, txt = "", ""
+        key = (chat, txt)
+        if txt and key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out
 
 
 def platform_summary_line(rows) -> str:
@@ -419,11 +438,11 @@ class DailyReporter:
         async with aiosqlite.connect(self.db_path) as conn:
             conn.row_factory = aiosqlite.Row
             cursor = await conn.execute("""
-                SELECT id, platform, chat_name, user_id, text, keywords, 
-                       media_type, opportunity_score, timestamp
-                FROM messages 
+                SELECT id, platform, chat_name, user_id, text, keywords,
+                       media_type, opportunity_score, opportunity_type, timestamp
+                FROM messages
                 WHERE date(timestamp) = ? AND keywords != ''
-                ORDER BY timestamp DESC
+                ORDER BY opportunity_score DESC, timestamp DESC
             """, (date,))
             messages = await cursor.fetchall()
 
@@ -494,10 +513,12 @@ class DailyReporter:
                             + "، ".join(f"{k} ({c})" for k, c in top_kw) + "\n")
                 f.write("-"*70 + "\n")
 
-                for i, msg in enumerate(rows, 1):
+                for i, msg in enumerate(dedup_rows(rows), 1):
                     f.write(f"[{i}] گروه: {msg['chat_name']}  |  🔑 {msg['keywords']}")
-                    if msg['opportunity_score']:
-                        f.write(f"  |  امتیاز: {msg['opportunity_score']}")
+                    score = msg['opportunity_score'] if 'opportunity_score' in msg.keys() else 0
+                    lvl = msg['opportunity_type'] if 'opportunity_type' in msg.keys() else None
+                    if score:
+                        f.write(f"  |  🎯 {lvl or ''} (امتیاز {score})")
                     f.write(f"\n    🕒 {msg['timestamp']}\n")
                     f.write(f"    💬 {msg['text'][:300] if msg['text'] else ''}\n")
         return filename

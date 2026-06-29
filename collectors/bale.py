@@ -4,8 +4,16 @@ import os
 import aiohttp
 from datetime import datetime
 from typing import List, Dict, Any, Optional
-from core.base_collector import BaseCollector
+from core.base_collector import BaseCollector, ConnectionStatus
 from core.logger import log_info, log_success, log_error, log_warning
+
+# ایمپورتِ کتابخانه در سطح ماژول با محافظ: اگر نصب نبود برنامه نمی‌شکند (None می‌ماند)
+# و اگر بود، در connect استفاده می‌شود (و در تست‌ها قابل patch است).
+try:
+    from aiobale import Client, Dispatcher
+    from aiobale.types import Message
+except ImportError:
+    Client = Dispatcher = Message = None
 
 class BaleCollector(BaseCollector):
     def __init__(self, token: str = None, bot_id: str = None,
@@ -275,7 +283,8 @@ class BaleCollector(BaseCollector):
                     type_str = str(ptype).lower()
                     if chat_id is None or not any(k in type_str for k in ('group', 'channel')):
                         continue
-                    history = await self._client.load_history(chat_id=chat_id, chat_type=ptype, limit=50)
+                    _hl = int(os.getenv("BALE_HISTORY_LIMIT", "200"))
+                    history = await self._client.load_history(chat_id=chat_id, chat_type=ptype, limit=_hl)
                     for m in history:
                         # فیلتر زمانی (فقط بعد از since)
                         mdate = getattr(m, 'date', None)
@@ -306,11 +315,8 @@ class BaleCollector(BaseCollector):
                     return False
 
                 log_info("🔄 اتصال به بله در حالت کاربر عادی...")
-                
-                try:
-                    from aiobale import Client, Dispatcher
-                    from aiobale.types import Message
-                except ImportError:
+
+                if Client is None or Dispatcher is None:
                     log_error("کتابخانه aiobale نصب نیست. لطفاً فایل whl را نصب کنید.")
                     return False
 
@@ -338,6 +344,7 @@ class BaleCollector(BaseCollector):
 
                 await asyncio.sleep(5)
                 self._connected = True
+                self._set_status(ConnectionStatus.CONNECTED)
                 log_success("✅ اتصال به بله با موفقیت انجام شد")
                 return True
             else:
@@ -389,6 +396,7 @@ class BaleCollector(BaseCollector):
             except:
                 pass
         self._connected = False
+        self._set_status(ConnectionStatus.DISCONNECTED)
         log_info("🔌 قطع ارتباط از بله")
 
     async def check_health(self) -> bool:

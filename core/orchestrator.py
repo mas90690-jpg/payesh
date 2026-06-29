@@ -43,13 +43,69 @@ class Orchestrator:
             pass
 
     async def _poll_messages(self, collector: BaseCollector, interval: float):
-        """دریافت دوره‌ای پیام‌ها از هر کلکتور (عمومی برای همه)"""
+        """دریافت دوره‌ای پیام‌ها از هر کلکتور، با نظارت و اتصالِ‌مجددِ خودکار.
+
+        اگر اتصالی افتاد (قطعی شبکه، بسته‌شدن مرورگر، انقضای نشست)، خودکار با backoff
+        دوباره وصل می‌شود و پیام‌های ازدست‌رفتهٔ همان بازه را هم می‌خواند (catch-up).
+        """
+        fails = 0
         while self.running:
             try:
+                if not collector.is_connected:
+                    await self._supervise_reconnect(collector)
+                    if not collector.is_connected:
+                        # هنوز وصل نشد؛ کمی صبر کن و دوباره امتحان (نه هر interval کوتاه)
+                        await asyncio.sleep(min(300, max(interval, 30)))
+                        continue
                 await self._process_messages(collector)
+                fails = 0
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
-                log_error(f"خطا در پولینگ {collector.platform_name}: {e}")
+                fails += 1
+                log_error(f"خطا در پولینگ {collector.platform_name} (#{fails}): {e}")
+                if fails >= 3:
+                    log_warning(f"♻️ {collector.platform_name}: تلاش برای اتصال مجدد...")
+                    await self._supervise_reconnect(collector)
+                    fails = 0
             await asyncio.sleep(interval)
+
+    async def _supervise_reconnect(self, collector: BaseCollector):
+        """قطع و اتصالِ مجددِ یک کلکتور با backoff نمایی + catch-up پیام‌های ازدست‌رفته."""
+        platform = collector.platform_name
+        delay = 5
+        for attempt in range(1, 4):
+            if not self.running:
+                return
+            try:
+                try:
+                    await collector.disconnect()
+                except Exception:
+                    pass
+                if await collector.connect():
+                    log_success(f"✅ اتصال مجددِ {platform} برقرار شد")
+                    await self._catch_up(collector)
+                    return
+            except Exception as e:
+                log_error(f"اتصال مجددِ {platform} ناموفق (تلاش {attempt}): {e}")
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 120)
+        log_error(f"❌ {platform} بعد از چند تلاش وصل نشد؛ در دورِ بعد دوباره امتحان می‌شود")
+
+    async def _catch_up(self, collector: BaseCollector):
+        """بعد از وصلِ مجدد، پیام‌های ازدست‌رفته از آخرین last_poll را می‌خواند."""
+        platform = collector.platform_name
+        try:
+            last_poll = await self.db.get_last_poll(platform) or (datetime.now() - timedelta(hours=24))
+            history = await collector.fetch_history(last_poll)
+            if history:
+                log_success(f"📚 catch-up: {len(history)} پیام ازدست‌رفتهٔ {platform}")
+                for msg in history:
+                    msg["platform"] = platform
+                    await self.event_bus.emit("message.received", msg)
+            await self.db.update_last_poll(platform, datetime.now())
+        except Exception as e:
+            log_warning(f"catch-up {platform} ناقص بود: {e}")
 
     async def _initial_fetch(self, collector: BaseCollector):
         platform = collector.platform_name

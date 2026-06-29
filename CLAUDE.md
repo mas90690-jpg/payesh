@@ -5,8 +5,10 @@
 
 ## ادامهٔ کار — شروع سریع
 - مسیر: `C:\Users\saei\Desktop\srooyesh\2` — ربات رصد سرنخِ چندپیام‌رسانی (Python).
-- اجرا: `venv\Scripts\activate` سپس `python main.py`. تستِ آفلاین بدون لاگین ممکن است.
-- وضعیت کنونی: **فاز ۱ تمام و تست‌شده. کار بعدی = فاز ۲ (گزارش‌دهی + لینکدین).**
+- اجرا: **دابل‌کلیک روی `panel.bat`** → پنلِ کنترلِ انگلیسی (`panel.py`). گزینه‌ها: 1 Start، 2 Restart، 3 Stop، 4 Status، 5 Login، 6 Backup، 7 Reports، 8 CRM، 9 Tests، 10 Cleanup، **11 Push to GitHub**. یا مستقیم `python main.py`.
+- **قانونِ پروژه: هر قابلیتِ جدیدی که اضافه شد، حتماً یک گزینهٔ متناظر در `panel.py` (لیست `MENU`) هم برایش بگذار.** پنل تنها سطحِ کنترل است.
+- ریموت گیت‌هاب: `origin` → `github.com/mas90690-jpg/srooyesh_r2` (شاخهٔ `main`). دکمهٔ ۱۱ امن است: اگر `.env` ترک‌شده باشد push را رد می‌کند.
+- وضعیت کنونی: **فاز ۱ و ۲ در کد تمام شد. کار بعدی = لاگین واقعی هر پلتفرم (`python login.py`) + تستِ زنده، سپس استقرار روی سرور.**
 
 ## خواسته‌های کاربر (کامل)
 1. فقط پیام‌های **کلیدواژه‌دار** ذخیره شوند — عکس/پیام بی‌ربط نه. ✅
@@ -23,6 +25,18 @@
 - `handlers/storage_handler.py` ذخیره · `core/` (orchestrator, database, daily_reporter, monitor, cleanup...).
 - DB: `storage/database/messages.db` (جداول `messages` و `leads`).
 
+## نقشهٔ فایل‌ها (کجا چه منطقی است)
+- `main.py` نقطهٔ شروع · `config.py` همهٔ تنظیمات از `.env` · `login.py` ورود یک‌بارهٔ هر پلتفرم.
+- `core/orchestrator.py` حلقهٔ اصلی + زمان‌بندی هر کلکتور · `core/plugin_loader.py` کشف خودکار کلکتور/هندلر.
+- `core/database.py` SQLite + Postgres (ساخت جدول، save_message/save_lead، migrationها).
+- `core/daily_reporter.py` گزارش‌ها (روزانه/هفتگی/مدیریتی/تخصصی، گروه‌بندی پلتفرم).
+- `core/{monitor,cleanup_service,backup_service,health_check,event_bus,logger}.py` پایش/پاک‌سازی/بکاپ/سلامت/رویداد/لاگ.
+- `core/base_collector.py` کلاس پایهٔ کلکتورها · `core/web_media.py` دانلود عکس از مرورگر · `core/translator.py` ترجمهٔ فارسی + واژه‌نامه.
+- `collectors/{bale,rubika,telegram}.py` پروتکلی (لحظه‌ای) · `{eitaa,whatsapp,linkedin}.py` مرورگری(Playwright) · `web.py` سایت/صفحه.
+- `handlers/storage_handler.py` تحلیل کلیدواژه + ذخیره در DB.
+- `analyzers/keyword_finder.py` تطبیق کلیدواژه (`get_keyword_finder().has_match`).
+- `data/` ورودی‌های تو: `products.py`(کلیدواژه‌ها) · `linkedin_searches.txt` · `web_sources.txt` · `glossary.txt`(ترجمه).
+
 ## چک‌لیست
 ### فاز ۱ — انجام و تست‌شده (۲۰۲۶-۰۶-۲۸)
 - [x] کلیدواژه‌ها از `data/products.py`(+`products_en`+`*.json`) بار می‌شوند؛ بود **۰** → شد **۲۹۲**. کش بر اساس mtime (نه به‌ازای هر پیام).
@@ -32,14 +46,53 @@
 - [x] `orchestrator` عمومی شد: هر کلکتور `poll_interval_seconds` خودش را دارد (بدون `if platform`).
 - فایل‌های عوض‌شده: `analyzers/keyword_finder.py`, `handlers/storage_handler.py`, `config.py`, `core/base_collector.py`, `core/orchestrator.py`, `collectors/{eitaa,telegram,rubika,bale,web}.py`.
 
+### فاز ۳ — کیفیت، تست، hot-reload، catch-up (۲۰۲۶-۰۶-۲۹)
+- [x] **تطبیق برند/پیشوند**: keyword_finder حالا نامِ برندها (یارا/رونزا/Yara) و پیشوندِ محصولات (یاراترا/Yaratera) را هم می‌گیرد، نه فقط نام کامل.
+- [x] **Hot-reload**: افزودن/حذف/ویرایشِ کلیدواژه در `data/` بدونِ ری‌استارت اعمال می‌شود (mtime، هر `KEYWORDS_RELOAD_SECONDS` ثانیه). تستِ زنده تأیید شد. (ویرایشِ کدِ analyzer نیاز به ری‌استارت دارد — محدودیتِ پایتون.)
+- [x] **Catch-up بعد از خاموشی**: `last_poll` در DB ماندگار است؛ سقفِ تاریخچه قابل‌تنظیم و بالا: `TELEGRAM_HISTORY_LIMIT`(۳۰۰۰، ۰=نامحدود)، `BALE_HISTORY_LIMIT`(۲۰۰)، `RUBIKA_HISTORY_LIMIT`(۲۰۰). **محدودیت صادقانه:** اسکرپرهای مرورگری (ایتا/واتساپ/لینکدین) نمی‌توانند چند روز عقب را backfill کنند (DOM فقط پیام‌های اخیر را نشان می‌دهد)؛ فقط تکراری نمی‌خوانند.
+- [x] **مرورگر قابل‌حمل**: مسیر هاردکدِ ویندوزیِ Chrome حذف شد → `CHROME_PATH` در `.env` (خالی = خودکار). روی سرور لینوکس هم کار می‌کند.
+- [x] **بله**: `is_connected` درست شد (status تنظیم می‌شود).
+- [x] **ایتا/واتساپ**: فقط پیام‌های کلیدواژه‌دار صف می‌شوند (کارِ بیهوده حذف شد).
+- [x] **ایمپورتِ کتابخانه‌ها سطح‌ماژول با محافظ** (telethon/aiobale/rubpy/playwright) → graceful اگر نصب نبود + قابل تست.
+- [x] **تست‌ها: ۴۱/۴۱ سبز** (`pytest -q`). منبع: `tests/`. (هشدارهای Deprecation بی‌ضرر.)
+- [x] **CRM export**: `python -m core.crm_export [days]` → CSV+JSON آمادهٔ واردکردن در CRM (مرتب به ترتیب پلتفرم).
+- [x] **تمیزکاری**: فایل/پوشه‌های آشغال (`2.0`, `python/`, `reports/`) حذف شدند.
+- [x] **همهٔ تنظیمات در `.env`**: کلیدهای جدید در `.env.example` (بخش ۸).
+
+### فاز ۴ — درجه‌۱‌سازی (۲۰۲۶-۰۶-۲۹)
+- [x] **مقاوم‌سازی:** orchestrator حالا حلقهٔ نظارت‌شده دارد؛ اگر اتصالی بیفتد خودکار **reconnect با backoff** + **catch-up** می‌کند (`_supervise_reconnect`/`_catch_up`).
+- [x] **catch-up دقیقِ تلگرام (بومی):** جدول `chat_offsets` (آخرین شناسهٔ پیامِ هر چت)؛ تلگرام با `min_id` فقط پیام‌های بعد از «آخرین خوانده» را می‌گیرد (زنده + تاریخچه). بله/روبیکا = تاریخ+limit (محدودیت کتابخانه). مرورگری = scroll-back نسبی.
+- [x] **امتیازدهی سرنخ:** `analyzers/lead_scorer.py` — سیگنالِ قصدِ خرید (خرید/قیمت/نمایندگی/حجم/فوریت/تماس) وزن‌دار → امتیاز ۰..۱۰۰ + سطح (داغ/گرم/سرد). در `messages` و `leads` ذخیره می‌شود (`opportunity_score/type`). منطق در کد است، نه data.
+- [x] **گزارش/CRM حرفه‌ای:** سرنخِ داغ اول، نمایشِ امتیاز/سطح، **حذفِ تکراری** (`dedup_rows`)، و خروجی **اکسل** (`crm_export` → CSV+JSON+XLSX؛ `python -m core.crm_export [days]`).
+- [x] **مرورگرها:** هنگام پیدانشدنِ المان، خودکار `dump_dom` برای عیب‌یابیِ فوریِ selector.
+- [x] **تست‌ها: ۴۸/۴۸ سبز** + `.github/workflows/ci.yml` (CI). `requirements.txt` پاک شد (خط آشغالِ `playwright install` حذف، `openpyxl` اضافه).
+- صادقانه: اسکرپرهای مرورگری (ایتا/واتساپ/لینکدین) هنوز **زنده تست نشده‌اند**؛ selectorها ممکن است یک‌بار تنظیم بخواهند (حالا با dump_dom سریع است). نمرهٔ واقعی ~۸۰→ با اجرای زندهٔ کوتاه ~۹۵.
+
 ### فاز ۲
 - [x] گزارش‌دهی جهانی منسجم، **گروه‌بندی به ترتیب ثابتِ پلتفرم** در `core/daily_reporter.py` (txt/html/csv/json + هفتگی/مدیریتی/تخصصی). ترتیب در `PLATFORM_ORDER`؛ توابع `group_by_platform`/`platform_label`. تست‌شده با DB واقعی.
 - [x] کلکتور `collectors/linkedin.py` با Playwright (نشست ماندگار، مثل ایتا). جستجوی محتوا برای عبارت‌های `data/linkedin_searches.txt`؛ فقط پست‌هایی که نام محصول یا عبارتِ سرچ را دارند ذخیره می‌شوند؛ عکس فقط برای پست مرتبط؛ ضدتکراری ماندگار؛ poll پیش‌فرض ۶۰۰ث؛ مکث تصادفیِ انسان‌گونه (کاهش ریسک بن). `linkedin-api`/Voyager **رد شد** (خطر بن). تست آفلاین سبز.
   **فعال‌سازی لینکدین:** ۱) عبارت‌ها را در `data/linkedin_searches.txt` بنویس. ۲) `python login.py` → گزینهٔ ۶ (لاگین دستی یک‌بار). ۳) در `.env` بزن `LINKEDIN_ENABLED=true`.
 
+### ممیزیِ آمادگیِ سرور (۲۰۲۶-۰۶-۲۸) — همهٔ کلکتورها بازبینی شد
+- [x] **واتساپ** هم مثل ایتا اصلاح شد: گیت عکس با کلیدواژه، poll کند (`WHATSAPP_POLL_SECONDS`=۱۸۰)، شناسهٔ md5 پایدار، ضدتکراری ماندگار `storage/offset/whatsapp_seen.json`. (قبلاً عکسِ هر پیام را دانلود می‌کرد و poll=۲ث بود.)
+- [x] تستِ مسیر کاملِ ذخیره برای **هر ۷ پلتفرم**: پیام بی‌ربط drop، کلیدواژه‌دار با همهٔ فیلدها (لینک/رسانه/کلیدواژه) ذخیره. ذخیره‌سازی منظم و یکدست.
+- ترتیب «دیدهٔ‌قبلی → بعد دانلود» در همهٔ اسکرپرها درست است (کارِ سنگینِ تکراری انجام نمی‌شود).
+
 ## نسخهٔ بعدی / ایده‌ها (اختیاری)
-- [ ] whatsapp هم اسکرپر مرورگری است ولی هنوز poll=۲ث دارد؛ اگر فعالش کردی مثل ایتا `poll_interval_seconds` کند بده.
+- [ ] تنها «تحلیل» فعلی = تطبیق کلیدواژه. امتیازدهی/سنتیمنت (`scoringhandler`) خاموش است؛ ستون‌های `opportunity_score/type` خالی می‌مانند. اگر امتیازدهی سرنخ خواستی، یک analyzer جدید در `analyzers/` اضافه کن.
 - [ ] تست‌های pytest، Docker، CI (نگاه کن به roadmap قبلی پروژه).
+- [ ] اسکرپرهای مرورگری (ایتا/واتساپ/لینکدین) برای اولین اجرا ممکن است یک‌بار تنظیمِ selector لازم داشته باشند (با `dump_dom`).
+
+## استقرار و دیتابیس
+- آمادهٔ سرور (داخل ایران): `Dockerfile`+`docker-compose.yml` · `deploy/srooyesh.service` (systemd) · `run_server.bat` (ویندوز) · راهنمای کامل: `DEPLOY.md`.
+- ورود هر پلتفرم **یک‌بار** با `python login.py`، بعد پوشهٔ `storage/sessions/` را به سرور کپی کن (سرور headless است).
+- سرور باید **ایران** باشد وگرنه بله/روبیکا/ایتا بلاک‌اند؛ واتساپ VPN می‌خواهد.
+- **Postgres کاملاً پیاده شد** (`core/database.py`)؛ سوییچ فقط با `DATABASE_TYPE=postgres` در `.env` (پیش‌فرض sqlite). همهٔ تنظیمات `.env` واقعاً خوانده می‌شوند.
+
+## وضعیت صادقانهٔ اتصال‌ها (هنوز end-to-end کامل تأیید نشده)
+- بله + روبیکا: زنده وصل شدند و پیام گرفتند ✅
+- ایتا: مرورگری کار می‌کند ولی selectorها شاید یک‌بار تنظیم بخواهند (فایل `storage/sessions/eitaa_web/eitaa_dom_dump.html`).
+- تلگرام/واتساپ/لینکدین: کد آماده، نیاز به `login.py` و تست با اکانت کاربر.
 
 ## نکات مهم (بدان / دست نزن)
 - **داده‌های قدیمیِ DB را کاربر خودش پاک می‌کند — تو به DB دست نزن.** تا پاک‌نشدن، گزارش‌های قدیمی پیام‌های بی‌ربط را نشان می‌دهند.

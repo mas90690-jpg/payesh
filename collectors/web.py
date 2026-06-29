@@ -43,6 +43,10 @@ class WebCollector(BaseCollector):
         self._sources: List[Tuple[str, str, dict]] = []
         self._connected = False
         self._seen_hashes: Set[str] = set()
+        # مرورگرِ تنبل (فقط وقتی درخواست ساده شکست بخورد ساخته می‌شود): برای سایت‌های
+        # JS-محور، بلاک‌کنندهٔ ربات (۴۰۳) یا گواهیِ منقضی.
+        self._bpw = None
+        self._bctx = None
 
     def _get_translator(self):
         if self._translator is None:
@@ -120,29 +124,39 @@ class WebCollector(BaseCollector):
             return []
 
         timeout = aiohttp.ClientTimeout(total=self.timeout)
-        headers = {"User-Agent": DEFAULT_UA}
-        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-            for mode, url, params in self._sources:
-                try:
-                    if mode == "site":
-                        depth = int(params.get("depth", 1))
-                        pages = await self._crawl_site(session, url, depth)
-                    else:
-                        pages = await self._read_single(session, url)
-                    for (page_url, title, text) in pages:
-                        msg = self._make_message(page_url, title, text)
-                        if msg:
-                            results.append(msg)
-                except Exception as e:
-                    log_warning(f"وب: خطا در خواندن {url}: {e}")
-                    continue
+        headers = {
+            "User-Agent": DEFAULT_UA,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9,fa;q=0.8",
+        }
+        try:
+            async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+                for mode, url, params in self._sources:
+                    try:
+                        if mode == "site":
+                            depth = int(params.get("depth", 1))
+                            pages = await self._crawl_site(session, url, depth)
+                        elif mode == "news":
+                            limit = int(params.get("limit", min(self.max_pages, 25)))
+                            pages = await self._crawl_news(session, url, limit)
+                        else:
+                            pages = await self._read_single(session, url)
+                        for (page_url, title, text) in pages:
+                            msg = self._make_message(page_url, title, text)
+                            if msg:
+                                results.append(msg)
+                    except Exception as e:
+                        log_warning(f"وب: خطا در خواندن {url}: {e}")
+                        continue
+        finally:
+            await self._close_browser()   # اگر مرورگرِ رندر باز شده بود، ببند
 
         if results:
             log_success(f"📥 وب: {len(results)} مطلب جدید")
         return results
 
     async def _read_single(self, session, url) -> List[Tuple[str, str, str]]:
-        html = await self._fetch(session, url)
+        html = await self._get_html(session, url)
         if not html:
             return []
         title, text = self._extract(html)
@@ -176,6 +190,64 @@ class WebCollector(BaseCollector):
             await asyncio.sleep(0.3)  # مودب بودن با سرور
         return out
 
+    async def _crawl_news(self, session, index_url, limit) -> List[Tuple[str, str, str]]:
+        """صفحهٔ فهرستِ اخبار را باز می‌کند، لینکِ خبرها را پیدا و **وارد خودِ خبرها** می‌شود
+        و متنِ کاملِ هر خبر را می‌خواند (نه فقط تیتر). فقط لینک‌های زیرشاخهٔ همان بخشِ خبری."""
+        index_html = await self._get_html(session, index_url)
+        if not index_html:
+            return []
+
+        base = urlparse(index_url)
+        host = base.netloc
+        index_path = base.path.rstrip("/")           # مثلاً /en/news
+
+        def collect(links):
+            out = []
+            for link in links:
+                link = (link or "").split("#")[0].rstrip("/")
+                p = urlparse(link)
+                if p.netloc != host:
+                    continue
+                path = p.path.rstrip("/")
+                # صفحهٔ یک خبر = زیرِ همان بخشِ خبری و عمیق‌تر از خودِ فهرست
+                if path.startswith(index_path + "/") and path != index_path:
+                    out.append(link)
+            return out
+
+        # اول لینک‌های HTML ساکن
+        article_links = list(dict.fromkeys(collect(self._extract_links(index_html, index_url))))
+
+        # اگر چیزی پیدا نشد (سایت JS-محور)، از DOMِ زندهٔ مرورگر بعد از اسکرول بگیر
+        if not article_links:
+            article_links = list(dict.fromkeys(collect(await self._rendered_links(index_url))))
+
+        article_links = article_links[:limit]
+
+        if not article_links:
+            # اگر ساختار خبرها زیرشاخه نبود، دستِ‌کم خودِ صفحهٔ فهرست را بده
+            t, x = self._extract(index_html)
+            return [(index_url, t, x)] if x else []
+
+        out: List[Tuple[str, str, str]] = []
+        for art_url in article_links:
+            html = await self._get_html(session, art_url)
+            if not html:
+                continue
+            title, text = self._extract(html)
+            if text:
+                out.append((art_url, title, text))
+            await asyncio.sleep(0.3)   # مودب بودن با سرور
+        log_info(f"وب(news): {len(out)} خبر از {host} خوانده شد")
+        return out
+
+    async def _get_html(self, session, url) -> Optional[str]:
+        """HTML را می‌گیرد؛ اول سریع (aiohttp)، اگر شکست خورد (۴۰۳/SSL/JS) با مرورگرِ
+        واقعی رندر می‌کند تا «مثل یک کاربر» صفحه را ببیند."""
+        html = await self._fetch(session, url)
+        if html:
+            return html
+        return await self._fetch_rendered(url)
+
     async def _fetch(self, session, url) -> Optional[str]:
         try:
             async with session.get(url, allow_redirects=True) as resp:
@@ -185,6 +257,123 @@ class WebCollector(BaseCollector):
                 return await resp.text(errors="ignore")
         except Exception:
             return None
+
+    async def _ensure_browser(self):
+        """مرورگرِ headless را یک‌بار می‌سازد (با چشم‌پوشی از خطای گواهی)."""
+        if self._bctx is not None:
+            return self._bctx
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            log_warning("playwright نصب نیست؛ سایت‌های JS-محور/بلاک‌شده خوانده نمی‌شوند")
+            return None
+        from config import CHROME_PATH
+        try:
+            self._bpw = await async_playwright().start()
+        except Exception as e:
+            log_warning(f"وب: شروع playwright ناموفق: {e}")
+            return None
+
+        base = {"headless": True, "args": ["--no-sandbox", "--disable-dev-shm-usage"]}
+        # مثل بقیهٔ کلکتورها: اول مرورگرِ نصب‌شدهٔ سیستم (Chrome/Edge)، بعد chromiumِ دانلودی
+        attempts = []
+        if CHROME_PATH:
+            attempts.append({**base, "executable_path": CHROME_PATH})
+        for ch in ("chrome", "msedge", None):
+            attempts.append({**base, **({"channel": ch} if ch else {})})
+
+        for opt in attempts:
+            try:
+                browser = await self._bpw.chromium.launch(**opt)
+                self._bctx = await browser.new_context(
+                    ignore_https_errors=True,   # گواهیِ منقضی را رد کن
+                    user_agent=DEFAULT_UA,
+                    viewport={"width": 1366, "height": 900},
+                )
+                log_info(f"وب: مرورگرِ رندر آماده شد ({opt.get('channel') or opt.get('executable_path') or 'chromium'})")
+                return self._bctx
+            except Exception:
+                continue
+        log_warning("وب: هیچ مرورگری برای رندر باز نشد (Chrome/Edge/Chromium نصب نیست)")
+        try:
+            await self._bpw.stop()
+        except Exception:
+            pass
+        self._bpw = None
+        return None
+
+    async def _fetch_rendered(self, url) -> Optional[str]:
+        ctx = await self._ensure_browser()
+        if ctx is None:
+            return None
+        page = None
+        try:
+            page = await ctx.new_page()
+            # سایت‌های کند/ریدایرکتی (مثل گواهیِ منقضی) به مهلتِ بیشتری نیاز دارند
+            await page.goto(url, wait_until="domcontentloaded", timeout=max(self.timeout, 45) * 1000)
+            try:
+                await page.wait_for_load_state("networkidle", timeout=8000)
+            except Exception:
+                pass
+            await asyncio.sleep(2.0)   # فرصت به JS برای لود محتوا
+            # گاهی صفحه در حال ناوبری است؛ content() را با چند تلاش بگیر
+            for _ in range(3):
+                try:
+                    return await page.content()
+                except Exception:
+                    await asyncio.sleep(1.5)
+            return None
+        except Exception as e:
+            log_warning(f"وب: رندرِ {url} ناموفق: {e}")
+            return None
+        finally:
+            if page:
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+
+    async def _rendered_links(self, url) -> List[str]:
+        """صفحه را رندر می‌کند، چند بار اسکرول می‌کند و همهٔ لینک‌های هم‌دامنه را از DOMِ
+        زنده برمی‌گرداند (برای سایت‌های خبریِ JS-محور که لینک‌ها بعد از اسکرول لود می‌شوند)."""
+        ctx = await self._ensure_browser()
+        if ctx is None:
+            return []
+        page = None
+        try:
+            page = await ctx.new_page()
+            await page.goto(url, wait_until="domcontentloaded", timeout=max(self.timeout, 45) * 1000)
+            await asyncio.sleep(2.0)
+            for _ in range(5):
+                try:
+                    await page.mouse.wheel(0, 2000)
+                except Exception:
+                    pass
+                await asyncio.sleep(1.0)
+            hrefs = await page.eval_on_selector_all(
+                "a[href]", "els => els.map(e => e.href)"
+            )
+            return [h for h in hrefs if h]
+        except Exception as e:
+            log_warning(f"وب: استخراج لینکِ رندرشدهٔ {url} ناموفق: {e}")
+            return []
+        finally:
+            if page:
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+
+    async def _close_browser(self):
+        try:
+            if self._bctx:
+                await self._bctx.browser.close()
+            if self._bpw:
+                await self._bpw.stop()
+        except Exception:
+            pass
+        self._bctx = None
+        self._bpw = None
 
     # ==================================================
     # استخراج محتوا و لینک‌ها

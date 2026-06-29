@@ -150,6 +150,12 @@ async def login_browser(platform_label: str, collector_cls, url: str):
     )
     collector._page = page
     if await collector._is_logged_in():
+        # اگر کلکتور ذخیرهٔ نشست (کوکی) دارد، همین‌جا ذخیره کن (پایداریِ بیشتر — مثل لینکدین)
+        if hasattr(collector, "_export_state"):
+            try:
+                await collector._export_state()
+            except Exception:
+                pass
         print(f"✅ ورود {platform_label} موفق بود. نشست ذخیره شد.")
     else:
         print(f"⚠️ هنوز ورود تشخیص داده نشد؛ اگر وارد شدی، نشست ذخیره شده است.")

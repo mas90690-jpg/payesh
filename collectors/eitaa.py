@@ -22,6 +22,12 @@ from core.base_collector import BaseCollector, ConnectionStatus
 from core.logger import log_info, log_success, log_error, log_warning
 from analyzers.keyword_finder import get_keyword_finder
 
+# ایمپورتِ playwright در سطح ماژول با محافظ (قابل patch در تست، graceful اگر نصب نبود)
+try:
+    from playwright.async_api import async_playwright
+except ImportError:
+    async_playwright = None
+
 # سقف حافظهٔ مجموعهٔ پیام‌های دیده‌شده (تا رم بیهوده پر نشود)
 _MAX_SEEN = 8000
 
@@ -36,7 +42,7 @@ class EitaaCollector(BaseCollector):
     def __init__(self, phone: str = None, password: str = None,
                  headless: bool = True, poll_seconds: int = 180,
                  max_chats: int = 15, chat_open_delay: float = 1.5,
-                 messages_per_chat: int = 30, **kwargs):
+                 messages_per_chat: int = 30, backfill_scrolls: int = 6, **kwargs):
         super().__init__()
         self.phone = phone
         self.password = password
@@ -45,6 +51,8 @@ class EitaaCollector(BaseCollector):
         self._max_chats = int(max_chats)
         self._chat_open_delay = float(chat_open_delay)
         self._messages_per_chat = int(messages_per_chat)
+        self._backfill_scrolls = int(backfill_scrolls)
+        self._needs_backfill = True   # اولین اسکرپ بعد از اتصال = catch-up (اسکرول به بالا)
         self._pw = None
         self._context = None
         self._page = None
@@ -111,9 +119,7 @@ class EitaaCollector(BaseCollector):
     # ==================================================
     async def connect(self, headless: Optional[bool] = None) -> bool:
         try:
-            try:
-                from playwright.async_api import async_playwright
-            except ImportError:
+            if async_playwright is None:
                 log_error("playwright نصب نیست: pip install playwright && playwright install chromium")
                 return False
 
@@ -130,6 +136,7 @@ class EitaaCollector(BaseCollector):
                 await asyncio.sleep(2)
                 if await self._is_logged_in():
                     self._connected = True
+                    self._needs_backfill = True   # بعد از هر اتصال، یک‌بار catch-up
                     self._set_status(ConnectionStatus.CONNECTED)
                     log_success("✅ اتصال ایتا‌وب برقرار شد (نشست موجود)")
                     return True
@@ -216,9 +223,25 @@ class EitaaCollector(BaseCollector):
         self._messages_queue.clear()
         # ضدتکراری را ماندگار کن تا بعد از ری‌استارت، پیام‌های قدیمی دوباره خوانده نشوند
         self._save_seen()
+        self._needs_backfill = False   # backfill فقط یک‌بار بعد از اتصال
         if new_msgs:
             log_success(f"📥 {len(new_msgs)} پیام جدید از ایتا")
         return new_msgs
+
+    async def _backfill_scroll(self):
+        """در اولین اسکرپ بعد از اتصال، چت را به بالا اسکرول می‌کند تا پیام‌های
+        قدیمی‌ترِ مدتِ خاموشی هم لود و خوانده شوند (catch-up، best-effort)."""
+        if not (self._needs_backfill and self._backfill_scrolls > 0):
+            return
+        for _ in range(self._backfill_scrolls):
+            try:
+                await self._page.evaluate(
+                    "() => { const c = document.querySelector('.bubbles, .scrollable-y, "
+                    "#column-center .scrollable'); if (c) c.scrollTop = Math.max(0, c.scrollTop - 2500); }"
+                )
+            except Exception:
+                break
+            await asyncio.sleep(0.8)
 
     # ==================================================
     # اسکرپ همه چت‌ها (بر اساس DOM واقعی ایتا)
@@ -243,6 +266,11 @@ class EitaaCollector(BaseCollector):
         
         if not chat_items:
             log_warning("هیچ چتی در لیست پیدا نشد")
+            # خوددیتکشن: DOM را ذخیره کن تا اگر انتخابگرها قدیمی شدند، فوری قابل اصلاح باشد
+            try:
+                await self.dump_dom()
+            except Exception:
+                pass
             await self._scrape_current_chat()
             return
 
@@ -296,6 +324,9 @@ class EitaaCollector(BaseCollector):
 
         log_info(f"📖 اسکرپ چت: {chat_name}")
 
+        # catch-up: در اولین اسکرپ بعد از اتصال به بالا اسکرول کن تا پیام‌های قدیمی‌تر لود شوند
+        await self._backfill_scroll()
+
         # ⚠️ پیام‌های «چتِ باز» را بخوان، نه پیش‌نمایشِ لیست کناری.
         # .user-last-message متعلق به لیست کناری است و باعث می‌شد همهٔ چت‌ها یکسان خوانده شوند.
         msg_selectors = [
@@ -330,8 +361,10 @@ class EitaaCollector(BaseCollector):
                 pass
             return
 
+        # هنگام catch-up پیام‌های بیشتری (که با اسکرول لود شده‌اند) را بخوان
+        limit = max(self._messages_per_chat, 200) if self._needs_backfill else self._messages_per_chat
         msg_count = 0
-        for msg in messages[-self._messages_per_chat:]:
+        for msg in messages[-limit:]:
             try:
                 mid = await msg.get_attribute("data-mid") or await msg.get_attribute("data-msgid")
                 text = (await msg.inner_text() or "").strip()
@@ -351,17 +384,20 @@ class EitaaCollector(BaseCollector):
                     
                 self._seen_ids.add(uniq)
 
-                # دانلود عکس پیام — فقط اگر متن پیام کلیدواژه داشته باشد.
-                # (ریشهٔ مشکل قبلی: عکسِ هر پیام، حتی بی‌ربط، دانلود می‌شد → ۴۴۰ عکس الکی.)
+                # فقط پیام‌های کلیدواژه‌دار را صف کن (نه کارِ بیهوده برای پیام‌های بی‌ربط).
+                # پیامِ دیده‌شده در _seen_ids ثبت شد، پس دور بعد دوباره بررسی نمی‌شود.
+                if not self._kw.has_match(text):
+                    continue
+
+                # دانلود عکس پیام (این پیام کلیدواژه دارد)
                 media_type, local_file_path = "text", None
-                if self._kw.has_match(text):
-                    try:
-                        from core.web_media import download_dom_image
-                        mt, lp = await download_dom_image(self._page, msg, self._media_dir, "eitaa")
-                        if mt:
-                            media_type, local_file_path = mt, lp
-                    except Exception:
-                        pass
+                try:
+                    from core.web_media import download_dom_image
+                    mt, lp = await download_dom_image(self._page, msg, self._media_dir, "eitaa")
+                    if mt:
+                        media_type, local_file_path = mt, lp
+                except Exception:
+                    pass
 
                 self._messages_queue.append({
                     "id": str(mid),

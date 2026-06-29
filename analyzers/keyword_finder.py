@@ -26,8 +26,9 @@ from typing import List, Optional
 from core.base_analyzer import BaseAnalyzer
 from core.models import AnalyzedMessage
 
-# هر چند ثانیه یک‌بار حداکثر بررسی شود که آیا فایل‌ها عوض شده‌اند
-_RELOAD_CHECK_SECONDS = 5.0
+# هر چند ثانیه یک‌بار حداکثر بررسی شود که آیا فایل‌های data عوض شده‌اند
+# (افزودن/حذف/ویرایش کلیدواژه بدون ری‌استارت اعمال می‌شود). قابل‌تنظیم در .env
+_RELOAD_CHECK_SECONDS = float(os.getenv("KEYWORDS_RELOAD_SECONDS", "5"))
 
 
 class KeywordFinder(BaseAnalyzer):
@@ -73,6 +74,9 @@ class KeywordFinder(BaseAnalyzer):
         # ۲) محصولات انگلیسی (دیکشنری برند → لیست)
         words += self._import_dict_values("data.products_en", "PRODUCTS_EN")
         words += self._import_dict_values("data.products", "PRODUCTS_BY_BRAND")
+        # ۲.۵) نامِ خودِ برندها (کلیدهای دیکشنری) — تا «یارا/رونزا/Yara» هم سرنخ شمرده شوند
+        words += self._import_dict_keys("data.products", "PRODUCTS_BY_BRAND")
+        words += self._import_dict_keys("data.products_en", "PRODUCTS_EN")
 
         # ۳) فایل‌های JSON (لیست یا دیکشنریِ لیست‌ها)
         if os.path.isdir(self.data_dir):
@@ -123,11 +127,33 @@ class KeywordFinder(BaseAnalyzer):
             pass
         return out
 
+    @staticmethod
+    def _import_dict_keys(module_path: str, attr: str) -> List[str]:
+        try:
+            mod = importlib.import_module(module_path)
+            importlib.reload(mod)
+            val = getattr(mod, attr, None)
+            if isinstance(val, dict):
+                return [str(k) for k in val.keys()]
+        except Exception:
+            pass
+        return []
+
     def _load(self):
         raw = self._collect_keywords()
-        # فقط کلیدواژه‌های غیرخالی؛ یکتا و مرتب بر اساس طول (بلندترین اول)
-        # تا در alternation، تطبیقِ دقیق‌ترِ بلندتر مقدم باشد.
         cleaned = {str(k).strip() for k in raw if str(k).strip()}
+
+        # افزودن «واژهٔ برند» = اولین کلمهٔ هر نام، تا برند/پیشوند هم تطبیق بخورد
+        # (مثلاً «یاراترا» از «یاراترا رکسلین دی» یا «Yaratera» از «Yaratera Rexolin D»).
+        # حداقل ۳ کاراکتر تا واژه‌های خیلی کوتاه نویز نسازند.
+        tokens = set()
+        for name in cleaned:
+            parts = name.split()
+            if parts and len(parts[0]) >= 3:
+                tokens.add(parts[0])
+        cleaned |= tokens
+
+        # یکتا و مرتب بر اساس طول (بلندترین اول) تا در alternation تطبیقِ بلندتر مقدم باشد.
         self.keywords = sorted(cleaned, key=lambda s: (-len(s), s))
         if self.keywords:
             self.pattern = re.compile(

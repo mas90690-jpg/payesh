@@ -73,6 +73,15 @@ class StorageHandler(BaseHandler):
         # اضافه کردن کلمات کلیدی و اطلاعات رسانه به raw
         raw['keywords'] = ','.join(analyzed.keywords) if analyzed.keywords else ''
 
+        # امتیازدهیِ سرنخ بر اساسِ قصدِ خرید (داغ/گرم/سرد) — برای اولویت‌بندیِ فروش
+        try:
+            from analyzers.lead_scorer import get_lead_scorer
+            score, level, _signals = get_lead_scorer().score(analyzed.text, has_keyword=True)
+            raw['opportunity_score'] = score
+            raw['opportunity_type'] = level
+        except Exception:
+            raw['opportunity_score'], raw['opportunity_type'] = 0, None
+
         # شناسه‌ی یکتا بین پلتفرم‌ها (جلوگیری از تداخل id دو پیام‌رسان مختلف)
         platform = raw.get('platform') or 'unknown'
         if raw.get('id') and not str(raw['id']).startswith(f"{platform}_"):
@@ -95,6 +104,7 @@ class StorageHandler(BaseHandler):
         if analyzed.keywords:
             lead = {
                 "id": raw.get('id'),
+                "message_id": raw.get('id'),   # پیوند به رکوردِ پیام (FK + ردگیری در CRM)
                 "platform": raw.get('platform'),
                 "text": raw.get('text') or raw.get('caption', ''),
                 "chat_id": raw.get('chat_id'),
@@ -104,8 +114,8 @@ class StorageHandler(BaseHandler):
                 "keywords": ','.join(analyzed.keywords),
                 "media_type": raw.get('media_type', 'text'),
                 "file_id": raw.get('file_id'),
-                "opportunity_score": None,   # در آینده می‌توان امتیاز محاسبه کرد
-                "opportunity_type": None
+                "opportunity_score": raw.get('opportunity_score', 0),
+                "opportunity_type": raw.get('opportunity_type'),
             }
             try:
                 await self.db.save_lead(lead)

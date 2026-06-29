@@ -11,15 +11,24 @@ from typing import List, Dict, Any, Optional
 from core.base_collector import BaseCollector, ConnectionStatus
 from core.logger import log_info, log_success, log_error, log_warning
 
+# ایمپورتِ telethon در سطح ماژول با محافظ (قابل patch در تست، graceful اگر نصب نبود)
+try:
+    from telethon import TelegramClient, events
+except ImportError:
+    TelegramClient = None
+    events = None
+
 
 class TelegramCollector(BaseCollector):
     """کلکتور پیام‌رسان تلگرام"""
 
-    def __init__(self, api_id: str = None, api_hash: str = None, phone: str = None, **kwargs):
+    def __init__(self, api_id: str = None, api_hash: str = None, phone: str = None,
+                 db=None, **kwargs):
         super().__init__()
         self.api_id = int(api_id) if api_id else None
         self.api_hash = api_hash
         self.phone = phone
+        self.db = db          # تزریق‌شده توسط plugin_loader؛ برای checkpointِ per-chat
         self._client = None
         self._messages_queue = []
         self._listen_task = None
@@ -53,9 +62,7 @@ class TelegramCollector(BaseCollector):
 
             log_info("🔄 اتصال به تلگرام در حالت کاربر عادی...")
 
-            try:
-                from telethon import TelegramClient, events
-            except ImportError:
+            if TelegramClient is None:
                 log_error("کتابخانه telethon نصب نیست. لطفاً با 'pip install telethon' نصب کنید.")
                 return False
 
@@ -70,6 +77,8 @@ class TelegramCollector(BaseCollector):
                 try:
                     msg = await self._process_message(event.message)
                     self._messages_queue.append(msg)
+                    # نشانگرِ per-chat را به‌روز کن تا بعد از قطعی، دقیقاً از همین‌جا ادامه دهد
+                    await self._remember_offset(msg.get('chat_id'), event.message.id)
                     chat_name = msg.get('chat_name', 'Unknown')
                     log_success(f"📩 پیام جدید از تلگرام: {chat_name}")
                 except Exception as e:
@@ -211,23 +220,55 @@ class TelegramCollector(BaseCollector):
 
         return new_msgs
 
+    async def _remember_offset(self, chat_id, message_id):
+        """آخرین شناسهٔ پیامِ دیده‌شده در یک چت را ذخیره می‌کند (resume دقیقِ per-chat)."""
+        if not self.db or chat_id is None or message_id is None:
+            return
+        try:
+            prev = await self.db.get_chat_offset("telegram", chat_id)
+            if prev is None or int(message_id) > int(prev):
+                await self.db.set_chat_offset("telegram", chat_id, message_id)
+        except Exception:
+            pass
+
     async def fetch_history(self, since: datetime) -> List[Dict[str, Any]]:
-        """پیام‌های عقب‌افتادهٔ همهٔ گروه‌ها/کانال‌ها را از زمان since می‌خواند."""
+        """پیام‌های عقب‌افتادهٔ همهٔ گروه‌ها/کانال‌ها را می‌خواند — **دقیق و بومی**:
+        برای هر چت اگر نشانگرِ آخرین پیامِ دیده‌شده را داریم، با `min_id` فقط پیام‌های
+        بعد از آن گرفته می‌شود (مثل «۵۰ پیام جدید از همان‌جا که خواندی»). اگر نداریم
+        (اولین اجرا)، با `offset_date=since` از زمانِ آخرین اتصال خوانده می‌شود.
+        """
         if not self._connected or not self._client:
             return []
         results = []
+        _lim = int(os.getenv("TELEGRAM_HISTORY_LIMIT", "3000"))
+        hist_limit = _lim if _lim > 0 else None
         try:
             from telethon import errors
             async for dialog in self._client.iter_dialogs():
                 if not (getattr(dialog, 'is_group', False) or getattr(dialog, 'is_channel', False)):
                     continue
+                chat_id = str(getattr(dialog, 'id', '') or getattr(getattr(dialog, 'entity', None), 'id', ''))
+                offset_id = None
+                if self.db:
+                    try:
+                        offset_id = await self.db.get_chat_offset("telegram", chat_id)
+                    except Exception:
+                        offset_id = None
+                kwargs = dict(reverse=True, limit=hist_limit)
+                if offset_id:
+                    kwargs["min_id"] = int(offset_id)   # فقط پیام‌های بعد از آخرین دیده‌شده
+                else:
+                    kwargs["offset_date"] = since        # اولین بار: از زمانِ آخرین اتصال
                 try:
-                    async for message in self._client.iter_messages(
-                        dialog.entity, offset_date=since, reverse=True, limit=1000
-                    ):
+                    max_id = int(offset_id) if offset_id else 0
+                    async for message in self._client.iter_messages(dialog.entity, **kwargs):
                         msg = await self._process_message(message)
                         if msg.get('text') or msg.get('media_type') != 'text':
                             results.append(msg)
+                        if getattr(message, 'id', 0) and message.id > max_id:
+                            max_id = message.id
+                    if max_id and self.db:
+                        await self.db.set_chat_offset("telegram", chat_id, max_id)
                     await asyncio.sleep(0.3)  # احترام به محدودیت نرخ
                 except errors.FloodWaitError as e:
                     log_warning(f"⏳ FloodWait تلگرام: {e.seconds} ثانیه صبر...")

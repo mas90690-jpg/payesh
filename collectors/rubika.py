@@ -10,6 +10,12 @@ from typing import List, Dict, Any, Optional
 from core.base_collector import BaseCollector, ConnectionStatus
 from core.logger import log_info, log_success, log_error, log_warning
 
+# ایمپورتِ rubpy در سطح ماژول با محافظ (قابل patch در تست، graceful اگر نصب نبود)
+try:
+    from rubpy import Client
+except ImportError:
+    Client = None
+
 
 class RubikaCollector(BaseCollector):
     def __init__(self, phone: str = None, password: str = None, **kwargs):
@@ -52,9 +58,7 @@ class RubikaCollector(BaseCollector):
                 log_error("RUBIKA_PHONE در .env تنظیم نشده است")
                 return False
 
-            try:
-                from rubpy import Client
-            except ImportError:
+            if Client is None:
                 log_error("کتابخانه rubpy نصب نیست. نصب: pip install rubpy")
                 return False
 
@@ -255,7 +259,8 @@ class RubikaCollector(BaseCollector):
                 if not guid or not any(k in ctype for k in ("group", "channel")):
                     continue
                 try:
-                    msgs_resp = await self._client.get_messages(guid, max_id=None, limit="30")
+                    _hl = os.getenv("RUBIKA_HISTORY_LIMIT", "200")
+                    msgs_resp = await self._client.get_messages(guid, max_id=None, limit=_hl)
                     for m in self._extract_list(msgs_resp, "messages"):
                         mtime = self._dig(m, "time")
                         try:

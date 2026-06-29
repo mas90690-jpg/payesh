@@ -201,6 +201,20 @@ class SQLiteDatabase(BaseDatabase):
                 )
             """)
             
+            # ========== جدول chat_offsets ==========
+            # نشانگرِ «آخرین پیامِ دیده‌شده» به‌ازای هر چت (مکانیزم بومیِ resume).
+            # برخلاف last_poll که سراسری و زمان‌محور است، این per-(platform, chat) و
+            # شناسه‌محور است → تلگرام دقیقاً «از همان‌جا که خواندی» ادامه می‌دهد.
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS chat_offsets (
+                    platform TEXT,
+                    chat_id TEXT,
+                    last_message_id TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (platform, chat_id)
+                )
+            """)
+
             # ========== جدول daily_stats ==========
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS daily_stats (
@@ -300,8 +314,8 @@ class SQLiteDatabase(BaseDatabase):
                     id, platform, platform_message_id, text, text_translated, chat_id, chat_name,
                     chat_username, chat_link, chat_type,
                     user_id, sender_name, timestamp, keywords, media_type,
-                    file_id, local_file_path, caption, reply_to, opportunity_score, raw_data
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    file_id, local_file_path, caption, reply_to, opportunity_score, opportunity_type, raw_data
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 message.get('id'), message.get('platform'), message.get('platform_message_id'),
                 message.get('text', '')[:5000], message.get('text_translated'),
@@ -311,7 +325,7 @@ class SQLiteDatabase(BaseDatabase):
                 message.get('keywords', ''), message.get('media_type', 'text'),
                 message.get('file_id'), message.get('local_file_path'),
                 message.get('caption'), message.get('reply_to'),
-                message.get('opportunity_score', 0),
+                message.get('opportunity_score', 0), message.get('opportunity_type'),
                 json.dumps(message.get('raw_data', {}), ensure_ascii=False)[:10000]
             ))
             await conn.commit()
@@ -350,9 +364,26 @@ class SQLiteDatabase(BaseDatabase):
     async def update_last_poll(self, platform: str, timestamp: datetime):
         async with self._get_conn() as conn:
             await conn.execute("""
-                INSERT OR REPLACE INTO last_poll (platform, last_poll, updated_at) 
+                INSERT OR REPLACE INTO last_poll (platform, last_poll, updated_at)
                 VALUES (?, ?, CURRENT_TIMESTAMP)
             """, (platform, timestamp.isoformat()))
+            await conn.commit()
+
+    async def get_chat_offset(self, platform: str, chat_id: str) -> Optional[str]:
+        """آخرین شناسهٔ پیامِ دیده‌شده در یک چت (برای resume دقیقِ per-chat)."""
+        async with self._get_conn() as conn:
+            cur = await conn.execute(
+                "SELECT last_message_id FROM chat_offsets WHERE platform=? AND chat_id=?",
+                (platform, str(chat_id)))
+            row = await cur.fetchone()
+            return row[0] if row and row[0] else None
+
+    async def set_chat_offset(self, platform: str, chat_id: str, last_message_id):
+        async with self._get_conn() as conn:
+            await conn.execute("""
+                INSERT OR REPLACE INTO chat_offsets (platform, chat_id, last_message_id, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            """, (platform, str(chat_id), str(last_message_id)))
             await conn.commit()
 
     async def get_high_score_leads(self, min_score: int = 0, limit: int = 50) -> List[Dict]:
@@ -556,15 +587,40 @@ class SQLiteDatabase(BaseDatabase):
             return False
 
     async def execute(self, query: str, params=()):
+        """اجرای کوئری دلخواه. چون اتصال بعد از این بسته می‌شود، نتایج را همین‌جا
+        می‌خوانیم و در یک رپرِ سبک برمی‌گردانیم تا fetchone/fetchall روی اتصالِ بسته
+        صدا زده نشود (باگ قبلی: «Connection closed»)."""
         async with self._get_conn() as conn:
             cursor = await conn.execute(query, params)
+            try:
+                rows = await cursor.fetchall()
+            except Exception:
+                rows = []
             await conn.commit()
-            return cursor
+        return _QueryResult(rows)
 
     async def close(self):
         if self._connection:
             await self._connection.close()
             self._connection = None
+
+
+class _QueryResult:
+    """رپرِ نتیجهٔ کوئری: fetchone/fetchall ناهمگام روی ردیف‌های ازپیش‌خوانده‌شده
+    (چون اتصالِ aiosqlite بعد از execute بسته می‌شود و نمی‌توان روی cursorِ بسته fetch کرد)."""
+    def __init__(self, rows):
+        self._rows = rows or []
+        self._i = 0
+
+    async def fetchone(self):
+        if self._i < len(self._rows):
+            row = self._rows[self._i]
+            self._i += 1
+            return row
+        return None
+
+    async def fetchall(self):
+        return self._rows
 
 
 # ==================================================
@@ -686,6 +742,15 @@ class PostgresDatabase(BaseDatabase):
                 )
             """)
             await conn.execute("""
+                CREATE TABLE IF NOT EXISTS chat_offsets (
+                    platform TEXT,
+                    chat_id TEXT,
+                    last_message_id TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (platform, chat_id)
+                )
+            """)
+            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS daily_stats (
                     id SERIAL PRIMARY KEY,
                     date DATE UNIQUE,
@@ -719,8 +784,8 @@ class PostgresDatabase(BaseDatabase):
                     id, platform, platform_message_id, text, text_translated, chat_id, chat_name,
                     chat_username, chat_link, chat_type,
                     user_id, sender_name, timestamp, keywords, media_type,
-                    file_id, local_file_path, caption, reply_to, opportunity_score, raw_data
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+                    file_id, local_file_path, caption, reply_to, opportunity_score, opportunity_type, raw_data
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
                 ON CONFLICT (id) DO NOTHING
             """,
                 message.get('id'), message.get('platform'), message.get('platform_message_id'),
@@ -731,7 +796,7 @@ class PostgresDatabase(BaseDatabase):
                 message.get('keywords', ''), message.get('media_type', 'text'),
                 message.get('file_id'), message.get('local_file_path'),
                 message.get('caption'), message.get('reply_to'),
-                int(message.get('opportunity_score', 0) or 0),
+                int(message.get('opportunity_score', 0) or 0), message.get('opportunity_type'),
                 json.dumps(message.get('raw_data', {}), ensure_ascii=False)[:10000],
             )
         return 1
@@ -766,6 +831,22 @@ class PostgresDatabase(BaseDatabase):
                 VALUES ($1, $2, NOW())
                 ON CONFLICT (platform) DO UPDATE SET last_poll=EXCLUDED.last_poll, updated_at=NOW()
             """, platform, self._ts(timestamp))
+
+    async def get_chat_offset(self, platform: str, chat_id: str) -> Optional[str]:
+        async with self._pool.acquire() as conn:
+            val = await conn.fetchval(
+                "SELECT last_message_id FROM chat_offsets WHERE platform=$1 AND chat_id=$2",
+                platform, str(chat_id))
+            return val or None
+
+    async def set_chat_offset(self, platform: str, chat_id: str, last_message_id):
+        async with self._pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO chat_offsets (platform, chat_id, last_message_id, updated_at)
+                VALUES ($1, $2, $3, NOW())
+                ON CONFLICT (platform, chat_id) DO UPDATE
+                  SET last_message_id=EXCLUDED.last_message_id, updated_at=NOW()
+            """, platform, str(chat_id), str(last_message_id))
 
     async def get_high_score_leads(self, min_score: int = 0, limit: int = 50) -> List[Dict]:
         async with self._pool.acquire() as conn:

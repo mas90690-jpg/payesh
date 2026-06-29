@@ -9,6 +9,11 @@ load_dotenv()
 # ==================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# مسیر اختیاریِ مرورگر برای اسکرپرهای Playwright (ایتا/واتساپ/لینکدین).
+# اگر خالی باشد، خودکار از Chrome/Edge/Chromium نصب‌شده استفاده می‌شود (قابل‌حمل بین ویندوز/سرور لینوکس).
+# اگر لازم شد مسیر دستی بده: CHROME_PATH=C:/Program Files/Google/Chrome/Application/chrome.exe
+CHROME_PATH = (os.getenv("CHROME_PATH", "") or "").strip() or None
+
 # همه چیز توی یک پوشه به اسم storage
 STORAGE_DIR = os.path.join(BASE_DIR, "storage")
 
@@ -132,6 +137,8 @@ PLUGINS_CONFIG = {
         "max_chats": int(os.getenv("EITAA_MAX_CHATS", 15)),          # حداکثر چت در هر دور
         "chat_open_delay": float(os.getenv("EITAA_CHAT_DELAY", 1.5)),# مکث بعد از باز کردن هر چت
         "messages_per_chat": int(os.getenv("EITAA_MSGS_PER_CHAT", 30)),
+        # اسکرول به بالا در اولین اسکرپ بعد از اتصال، برای خواندن پیام‌های قدیمی‌تر (catch-up)
+        "backfill_scrolls": int(os.getenv("EITAA_BACKFILL_SCROLLS", 6)),
     },
 
     # ========== پیام‌رسان تلگرام ==========
@@ -149,7 +156,14 @@ PLUGINS_CONFIG = {
         "phone": os.getenv("WHATSAPP_PHONE"),
         "session_path": os.path.join(SESSIONS_DIR, "whatsapp_session"),
         "media_dir": os.path.join(MEDIA_DIR, "whatsapp"),
-        "enabled": os.getenv("WHATSAPP_ENABLED", "false").lower() == "true"
+        "enabled": os.getenv("WHATSAPP_ENABLED", "false").lower() == "true",
+        # واتساپ هم اسکرپرِ مرورگری سنگین است (مثل ایتا) — کند اجرا شود
+        "poll_seconds": int(os.getenv("WHATSAPP_POLL_SECONDS", 180)),
+        "max_chats": int(os.getenv("WHATSAPP_MAX_CHATS", 15)),
+        "chat_open_delay": float(os.getenv("WHATSAPP_CHAT_DELAY", 1.5)),
+        "messages_per_chat": int(os.getenv("WHATSAPP_MSGS_PER_CHAT", 30)),
+        "backfill_scrolls": int(os.getenv("WHATSAPP_BACKFILL_SCROLLS", 6)),
+        "headless": os.getenv("BROWSER_HEADLESS", "true").lower() == "true",
     },
 
     # ========== لینکدین (مرورگری، به‌عنوان کاربر) ==========
@@ -161,7 +175,11 @@ PLUGINS_CONFIG = {
         "max_results": int(os.getenv("LINKEDIN_MAX_RESULTS", 15)),
         "search_delay": float(os.getenv("LINKEDIN_SEARCH_DELAY", 6)),   # مکث پایه بین جستجوها
         "scrolls": int(os.getenv("LINKEDIN_SCROLLS", 3)),
+        # پایشِ فیدِ خانه (پست‌های پیج‌ها/افرادی که فالو کرده‌ای) — علاوه بر سرچ
+        "monitor_feed": os.getenv("LINKEDIN_MONITOR_FEED", "true").lower() == "true",
+        "max_feed_posts": int(os.getenv("LINKEDIN_MAX_FEED_POSTS", 25)),
         "enabled": os.getenv("LINKEDIN_ENABLED", "false").lower() == "true",
+        "headless": os.getenv("BROWSER_HEADLESS", "true").lower() == "true",
     },
 
     # ========== منابع وب (سایت/صفحه) ==========
