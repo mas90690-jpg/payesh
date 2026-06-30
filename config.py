@@ -242,9 +242,10 @@ AI = {
     "timeout": int(os.getenv("AI_TIMEOUT", "60")),
 }
 
-# هشدارِ زندهٔ سرنخ: لحظه‌ای که سرنخی پیدا شد، به مدیر در بله پیام بده (برای رونمایی/رصدِ زنده)
+# هشدارِ زندهٔ سرنخ: لحظه‌ای که سرنخی پیدا شد، به مدیر در بله پیام بده.
+# فعلاً به‌خواستهٔ کاربر خاموش است (کد می‌ماند برای بعد). با LEAD_ALERTS_ENABLED=true روشن می‌شود.
 LEAD_ALERTS = {
-    "enabled": os.getenv("LEAD_ALERTS_ENABLED", "true").lower() == "true",
+    "enabled": os.getenv("LEAD_ALERTS_ENABLED", "false").lower() == "true",
     "min_score": int(os.getenv("LEAD_ALERT_MIN_SCORE", "0")),   # فقط سرنخِ بالاتر از این امتیاز
 }
 

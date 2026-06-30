@@ -11,6 +11,11 @@ class StorageHandler(BaseHandler):
         # فقط پیام‌های کلیدواژه‌دار ذخیره شوند (پیش‌فرض True؛ از config/.env)
         from config import PLUGINS_CONFIG
         self.keywords_only = PLUGINS_CONFIG.get("storagehandler", {}).get("keywords_only", True)
+        # تفکیکِ منطقِ مدیر از پایش: پیامِ خصوصیِ «مدیر» نباید به‌عنوان سرنخ ذخیره شود
+        # (آن دستور است، نه سرنخ). مدیر فقط با آیدیِ env شناخته می‌شود.
+        _adm = PLUGINS_CONFIG.get("adminhandler", {})
+        self._admin_ids = set(str(x) for x in _adm.get("admin_ids", []))
+        self._admin_platform = _adm.get("platform", "bale")
         self.stats = {"total": 0, "messages_with_keywords": 0,
                       "media_messages": 0, "dropped": 0}
 
@@ -39,7 +44,15 @@ class StorageHandler(BaseHandler):
                 "caption": getattr(raw, 'caption', None),
                 "reply_to": getattr(raw, 'reply_to', None)
             }
-        
+
+        # 🔒 تفکیکِ مدیر از پایش: اگر این پیامِ خصوصیِ یک «مدیر» روی پلتفرمِ مدیریت است،
+        # سرنخ نیست (دستور است) → ذخیره نکن. (شماره‌ی پایش‌گر هرگز مدیر نیست و برعکس.)
+        if (self._admin_ids
+                and raw.get('platform') == self._admin_platform
+                and str(raw.get('user_id') or '') in self._admin_ids
+                and (raw.get('chat_type') or '') in ('private', 'user', '')):
+            return
+
         # ساخت شیء AnalyzedMessage
         from core.models import AnalyzedMessage
         analyzed = AnalyzedMessage(

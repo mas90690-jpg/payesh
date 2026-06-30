@@ -30,6 +30,22 @@ async def test_handler_drops_non_keyword(temp_db):
 
 
 @pytest.mark.asyncio
+async def test_admin_dm_not_stored_as_lead(temp_db):
+    """تفکیکِ منطق: پیامِ خصوصیِ مدیر (با اینکه کلیدواژه دارد) نباید سرنخ شود."""
+    handler = StorageHandler(db=temp_db)
+    handler._admin_ids = {"42"}
+    handler._admin_platform = "bale"
+    event = Event(name="message.received", data={
+        "id": "adm_1", "platform": "bale", "chat_type": "private",
+        "user_id": "42", "text": "قیمت یاراترا را اضافه کن",
+        "chat_name": "PV", "timestamp": datetime.now(),
+    })
+    await handler.handle(event)
+    cursor = await temp_db.execute("SELECT * FROM messages WHERE id = ?", ("bale_adm_1",))
+    assert await cursor.fetchone() is None, "پیام مدیر نباید به‌عنوان سرنخ ذخیره می‌شد!"
+
+
+@pytest.mark.asyncio
 async def test_handler_saves_keyword_message(temp_db):
     """بررسی اینکه پیام کلیدواژه‌دار در messages ذخیره می‌شود"""
     handler = StorageHandler(db=temp_db)

@@ -32,6 +32,8 @@ CUSTOM_KW = os.path.join(ROOT, "data", "keywords_custom.json")
 PID_FILE = os.path.join(ROOT, "storage", "bot.pid")
 KNOWLEDGE = os.path.join(ROOT, "data", "bot_knowledge.md")
 REQUESTS = os.path.join(ROOT, "storage", "requests.jsonl")
+MEMORY = os.path.join(ROOT, "storage", "ai_memory.jsonl")   # حافظهٔ سبکِ گفتگو (capped)
+MEMORY_MAX = 200                                            # سقفِ خطوط (کم‌حجم می‌ماند)
 
 # Parameters the admin is allowed to read/change (safe whitelist; everything else refused)
 SAFE_PARAMS = {
@@ -130,11 +132,21 @@ class AdminHandler(BaseHandler):
             return "help", None
         if any(w in low for w in ["restart", "ری‌استارت", "ریستارت", "راه‌اندازی مجدد", "ری استارت"]):
             return "restart", None
+        if (("حذف" in low or "remove" in low or "پاک" in low or "delete" in low)
+                and ("کلیدواژه" in low or "keyword" in low or val)):
+            return "remove_keyword", val
         if ("اضافه" in low or "add" in low) and ("کلیدواژه" in low or "keyword" in low or val):
             return "add_keyword", val
         if (("دار" in low or "هست" in low or "has" in low or "exist" in low)
                 and ("کلیدواژه" in low or "keyword" in low)):
             return "has_keyword", val
+        # جزئیاتِ سرنخ (برای رونمایی): «اولین/آخرین سرنخ را با جزئیات بگو»
+        if ("سرنخ" in low or "پایش" in low or "lead" in low) and any(w in low for w in ["جزئیات", "اولین", "آخرین", "detail", "first", "last", "نشون", "بگو"]):
+            which = "first" if ("اولین" in low or "first" in low) else "last"
+            return "lead_details", which
+        # سلامتِ کاملِ ۰-۱۰۰
+        if any(w in low for w in ["سلامت", "health", "چک کامل", "تندرستی", "همه پلتفرم", "وضعیت کامل"]):
+            return "health", None
         # درخواستِ قابلیتِ جدید: فقط وقتی فعلِ «خواستن» + اشارهٔ «قابلیت/توانایی» باشد
         # (تا سؤالِ «چه قابلیت‌هایی داری؟» اشتباه گرفته نشود — آن سؤال است نه درخواست).
         _want = any(w in low for w in ["میخوام", "می‌خوام", "میخواهم", "می‌خواهم", "کاش", "اضافه کن", "اضاف کن"])
@@ -186,6 +198,12 @@ class AdminHandler(BaseHandler):
             return f"🔑 {len(ks)} کلیدواژه بارگذاری شده.\nنمونه: {sample}"
         if action == "add_keyword":
             return self._add_keyword(value or self._extract_value(raw_text))
+        if action == "remove_keyword":
+            return self._remove_keyword(value or self._extract_value(raw_text))
+        if action == "health":
+            return await self._health()
+        if action == "lead_details":
+            return await self._lead_details(value or "last")
         if action == "has_keyword":
             v = value or self._extract_value(raw_text)
             if not v:
@@ -209,15 +227,49 @@ class AdminHandler(BaseHandler):
         return await self._ask(raw_text)
 
     async def _ask(self, question: str) -> str:
-        """پاسخ به سؤالِ آزاد — با هویتِ خودِ ربات + سندِ دانش + «حافظهٔ زنده» از دیتابیس."""
+        """پاسخ به سؤالِ آزاد — هویتِ ربات + سندِ دانش + حافظهٔ زندهٔ دیتابیس + گفتگوی اخیر."""
         from core.ai_assistant import PERSONA
         system = (PERSONA + "\n\n# دانشِ ربات:\n" + self._knowledge
-                  + "\n\n# وضعیتِ زندهٔ همین الان (از دیتابیس):\n" + self._live_context())
+                  + "\n\n# وضعیتِ زندهٔ همین الان (از دیتابیس):\n" + self._live_context()
+                  + self._recent_memory())
         ans = await self.ai.chat(question, system=system)
-        if ans:
-            return ans
-        # اگر هوش در دسترس نبود: خلاصهٔ قابلیت‌ها (تا همیشه جواب بدهد)
-        return ("هوش الان در دسترس نیست. خلاصهٔ قابلیت‌ها:\n" + self._help())
+        if not ans:
+            return ("هوش الان در دسترس نیست. خلاصهٔ قابلیت‌ها:\n" + self._help())
+        self._remember(question, ans)   # حافظهٔ سبک (capped) — کم‌کم باهوش‌تر می‌شود
+        return ans
+
+    def _recent_memory(self, n: int = 6) -> str:
+        """چند گفتگوی اخیرِ مدیر (حافظهٔ سبک). کم‌حجم چون فقط N خطِ آخر خوانده می‌شود."""
+        if not os.path.exists(MEMORY):
+            return ""
+        try:
+            with open(MEMORY, "r", encoding="utf-8") as f:
+                lines = f.readlines()[-n:]
+            items = []
+            for ln in lines:
+                try:
+                    o = json.loads(ln)
+                    items.append(f"س: {o.get('q','')[:120]}\nج: {o.get('a','')[:160]}")
+                except Exception:
+                    pass
+            return ("\n\n# گفتگوی اخیر (حافظه):\n" + "\n".join(items)) if items else ""
+        except Exception:
+            return ""
+
+    def _remember(self, q: str, a: str):
+        try:
+            os.makedirs(os.path.dirname(MEMORY), exist_ok=True)
+            with open(MEMORY, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"ts": datetime.now().isoformat(), "q": q, "a": a},
+                                   ensure_ascii=False) + "\n")
+            # سقفِ حجم: فقط آخرین MEMORY_MAX خط نگه داشته شود
+            with open(MEMORY, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            if len(lines) > MEMORY_MAX:
+                with open(MEMORY, "w", encoding="utf-8") as f:
+                    f.writelines(lines[-MEMORY_MAX:])
+        except Exception:
+            pass
 
     def _live_context(self) -> str:
         """خلاصهٔ کوتاه و زندهٔ وضعیت از دیتابیس (حافظه = همان دیتابیس؛ سبک، هر بار تازه).
@@ -313,6 +365,79 @@ class AdminHandler(BaseHandler):
             return f"✅ «{value}» اضافه شد (تا چند ثانیهٔ دیگر خودکار فعال می‌شود، بدون ری‌استارت)."
         except Exception as e:
             return f"خطا در افزودن کلیدواژه: {e}"
+
+    def _remove_keyword(self, value) -> str:
+        if not value:
+            return "کدام کلیدواژه را حذف کنم؟ داخل « » بنویس."
+        try:
+            data = []
+            if os.path.exists(CUSTOM_KW):
+                with open(CUSTOM_KW, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            if not isinstance(data, list) or value not in data:
+                return (f"«{value}» در کلیدواژه‌های افزودنی نیست. "
+                        f"(فقط کلیدواژه‌هایی که از همین‌جا اضافه شده‌اند قابلِ حذف‌اند، نه محصولاتِ اصلی.)")
+            data = [k for k in data if k != value]
+            with open(CUSTOM_KW, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            return f"🗑️ «{value}» حذف شد (چند ثانیهٔ دیگر خودکار اعمال می‌شود)."
+        except Exception as e:
+            return f"خطا در حذفِ کلیدواژه: {e}"
+
+    async def _health(self) -> str:
+        """سلامتِ کاملِ ۰-۱۰۰: همهٔ پلتفرم‌ها + سیستم + شمارش."""
+        lines = ["🩺 سلامتِ کامل:"]
+        for p in ("eitaa", "bale", "rubika", "telegram", "whatsapp", "linkedin", "web"):
+            try:
+                last = await self.db.get_last_poll(p)
+            except Exception:
+                last = None
+            if not last:
+                lines.append(f"• {p}: — (فعالیتی ثبت نشده)")
+            else:
+                mins = (datetime.now() - last).total_seconds() / 60
+                mark = "✅" if mins < 30 else "⚠️"
+                lines.append(f"• {p}: {mark} آخرین فعالیت {int(mins)} دقیقه پیش")
+        try:
+            import psutil
+            lines.append(f"💻 CPU {psutil.cpu_percent(interval=0.3)}% | RAM {psutil.virtual_memory().percent}%")
+        except Exception:
+            pass
+        lines.append(self._status())
+        return "\n".join(lines)
+
+    async def _lead_details(self, which: str) -> str:
+        """جزئیاتِ اولین/آخرین سرنخ + توضیحِ نحوهٔ ثبت (برای رونمایی به مدیر)."""
+        order = "ASC" if which == "first" else "DESC"
+        try:
+            c = sqlite3.connect(self.db_path)
+            c.row_factory = sqlite3.Row
+            row = c.execute(
+                f"SELECT platform, chat_name, chat_link, keywords, opportunity_type, "
+                f"opportunity_score, text, timestamp FROM messages WHERE keywords!='' "
+                f"ORDER BY timestamp {order} LIMIT 1").fetchone()
+            c.close()
+        except Exception as e:
+            return f"خطا در خواندن سرنخ: {e}"
+        if not row:
+            return "هنوز هیچ سرنخی ثبت نشده."
+        label = "اولین" if which == "first" else "آخرین"
+        detail = (f"🔎 {label} سرنخ:\n"
+                  f"📱 پلتفرم: {row['platform']}\n"
+                  f"👥 گروه: {row['chat_name']}\n"
+                  f"🔑 کلیدواژه: {row['keywords']}\n"
+                  f"🎯 {row['opportunity_type'] or '-'} (امتیاز {row['opportunity_score'] or 0})\n"
+                  f"🕒 {row['timestamp']}\n"
+                  f"💬 {(row['text'] or '')[:300]}")
+        if row["chat_link"]:
+            detail += f"\n🔗 {row['chat_link']}"
+        # توضیحِ طبیعیِ نحوهٔ ثبت (با زبانِ خودِ ربات) اگر هوش در دسترس باشد
+        from core.ai_assistant import PERSONA
+        narration = await self.ai.chat(
+            "این سرنخ را برای مدیر در یک جلسه توضیح بده: چه دیدی، چطور تشخیص دادی کلیدواژه دارد، "
+            "و مراحلِ ثبتش چه بود (خواندن پیام → تطبیق کلیدواژه → امتیازدهی → ذخیره در دیتابیس). کوتاه و طبیعی.\n\n"
+            + detail, system=PERSONA)
+        return detail + (("\n\n🗣️ " + narration) if narration else "")
 
     async def _platform_status(self, platform) -> str:
         # اگر مدل نامِ پلتفرمِ معتبری نداد، به‌جای جوابِ بی‌معنی، وضعیتِ کلی را بده

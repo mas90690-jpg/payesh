@@ -17,8 +17,9 @@ from core.logger import get_logger
 
 # دستورهای مجاز (whitelist) — هوش فقط می‌تواند یکی از این‌ها را انتخاب کند، نه چیز دیگر
 ALLOWED_ACTIONS = [
-    "status", "report", "crm", "logs", "keywords", "add_keyword",
-    "has_keyword", "platform_status", "get_param", "set_param", "help", "restart",
+    "status", "report", "crm", "logs", "keywords", "add_keyword", "remove_keyword",
+    "has_keyword", "platform_status", "health", "lead_details",
+    "get_param", "set_param", "help", "restart",
     "explain_logs", "feature_request", "ask",
 ]
 
@@ -40,8 +41,11 @@ _SYSTEM = (
     "- logs: recent log lines\n"
     "- keywords: list/count keywords\n"
     "- add_keyword: add a keyword (args.value = the keyword)\n"
+    "- remove_keyword: remove a custom keyword (args.value = the keyword)\n"
     "- has_keyword: check if a keyword exists (args.value = the keyword)\n"
     "- platform_status: is a platform working (args.value = eitaa|bale|rubika|telegram|whatsapp|linkedin|web)\n"
+    "- health: full health of the bot and all platforms (0-100)\n"
+    "- lead_details: details of the first/last detected lead (args.value = first|last)\n"
     "- get_param: read a setting (args.value = the setting name)\n"
     "- set_param: change a setting (args.name, args.value)\n"
     "- restart: restart the bot\n"
