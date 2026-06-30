@@ -169,20 +169,24 @@ class Orchestrator:
         await self._process_messages(collector)
 
     async def _greet_admins(self):
-        """بعد از بالا آمدن، با زبانِ خودِ ربات به مدیر در بله سلام می‌کند (و send را تست می‌کند)."""
+        """فوراً به مدیر سلام می‌کند (بدون انتظار برای هوش)، و مدل را در پس‌زمینه گرم می‌کند
+        تا اولین جوابِ مدیر سریع باشد. مهم: startup را بلاک نمی‌کند."""
         from core import messenger_registry
-        line = ""
-        try:
-            from core.ai_assistant import get_ai_assistant, PERSONA
-            ai = get_ai_assistant()
-            if await ai.available():
-                line = await ai.chat("ربات تازه بالا آمد. به مدیر یک سلامِ کوتاه و خودمونی بده و بگو آماده‌ای.",
-                                     system=PERSONA)
-        except Exception as e:
-            log_warning(f"سلامِ هوش ناموفق: {e}")
-        text = "🤖 " + (line or "سلام مدیر! ربات بالا آمد و آماده‌ام. هر سؤالی داری همین‌جا بپرس (وضعیت، گزارش، سلامت، کلیدواژه...).")
+        text = ("🤖 سلام مدیر! ربات بالا آمد و آماده‌ام. هر سؤالی داری همین‌جا بپرس "
+                "(وضعیت، گزارش، سلامت، افزودن کلیدواژه، یا هر چیزِ دیگر).")
         ok = await messenger_registry.notify_admins(text)
         log_info(f"👋 سلامِ راه‌اندازی به مدیر {'ارسال شد' if ok else 'ارسال نشد (مدیر/فرستنده آماده نیست)'}")
+        asyncio.create_task(self._warm_ai())   # گرم‌کردنِ مدل در پس‌زمینه
+
+    async def _warm_ai(self):
+        try:
+            from core.ai_assistant import get_ai_assistant
+            ai = get_ai_assistant()
+            if await ai.available():
+                await ai.chat("سلام")   # مدل را لود می‌کند؛ با keep_alive بالا، لود می‌ماند
+                log_info("🔥 مدلِ هوش گرم شد (آمادهٔ جوابِ سریع)")
+        except Exception:
+            pass
 
     async def _generate_report(self):
         print("\n" + "="*60)

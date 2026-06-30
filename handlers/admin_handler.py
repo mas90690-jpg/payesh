@@ -108,15 +108,30 @@ class AdminHandler(BaseHandler):
 
         log_info(f"🛡️ admin command from {sender}: {text[:80]}")
         action, value = self._rule_parse(text)
-        if action is None:
-            intent = await self.ai.parse_intent(text)
-            action = intent.get("action", "unknown")
-            value = value or (intent.get("args", {}) or {}).get("value")
         try:
-            reply = await self._execute(action, value, text)
+            if action is None:
+                # دستورِ روشن نبود → گفتگوی آزاد با هوش (نه روتینگِ مدلِ کوچک که
+                # ممکن است اشتباهی گزارش/ری‌استارت بزند). همیشه پاسخِ طبیعی می‌دهد.
+                reply = await self._ask(text)
+            else:
+                reply = await self._execute(action, value, text)
         except Exception as e:
             reply = f"❌ خطا در اجرای دستور: {e}"
         await self._reply(raw, reply)
+
+    async def process_text(self, text: str) -> str:
+        """پردازشِ یک پیامِ متنی و برگرداندنِ جواب (برای چتِ محلیِ مرورگر — بدونِ نت/بله).
+        محلی = مطمئن، پس بدونِ گیتِ آی‌دی. همان منطقِ دستور/گفتگوی بله."""
+        text = (text or "").strip()
+        if not text:
+            return ""
+        action, value = self._rule_parse(text)
+        try:
+            if action is None:
+                return await self._ask(text)
+            return await self._execute(action, value, text)
+        except Exception as e:
+            return f"❌ خطا: {e}"
 
     # ==================================================
     # parsing

@@ -237,6 +237,19 @@ def ai_status():
         print("  Admins: NONE — DM the bot on Bale; it logs your id (pairing) → put it in ADMIN_IDS")
 
 
+def open_chat():
+    port = os.getenv("OBS_PORT", "8787")
+    url = f"http://localhost:{port}/chat"
+    print(f"[..] Local AI chat (works offline, no internet/Bale needed):")
+    print(f"     {url}")
+    print("     (ربات باید روشن باشد — گزینهٔ ۱)")
+    try:
+        import webbrowser
+        webbrowser.open(url)
+    except Exception:
+        pass
+
+
 def requests_and_errors():
     print("[..] Feature requests & recent errors")
     rq = os.path.join(ROOT, "storage", "requests.jsonl")
@@ -332,6 +345,7 @@ MENU = [
     ("12", "Health & metrics", health),
     ("13", "AI / Admin status", ai_status),
     ("14", "Feature requests & errors", requests_and_errors),
+    ("15", "Open local AI chat (offline)", open_chat),
 ]
 
 

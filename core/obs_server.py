@@ -16,6 +16,35 @@ from core.logger import log_success, log_error, log_warning
 
 _START = datetime.now()
 
+# صفحهٔ چتِ محلی (Persian/RTL) — کاملاً آفلاین؛ با هوشِ لوکال و دادهٔ ربات حرف می‌زنی
+_CHAT_HTML = """<!DOCTYPE html><html dir="rtl" lang="fa"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>چت با ربات</title><style>
+body{font-family:Tahoma,Arial;background:#0f172a;color:#e2e8f0;margin:0;display:flex;flex-direction:column;height:100vh}
+#h{background:#1e293b;padding:12px 16px;font-weight:bold;border-bottom:2px solid #27ae60}
+#m{flex:1;overflow-y:auto;padding:16px}
+.b{max-width:80%;padding:10px 14px;border-radius:12px;margin:8px 0;white-space:pre-wrap;line-height:1.7}
+.u{background:#2563eb;margin-right:auto}
+.a{background:#1e293b;margin-left:auto;border:1px solid #334155}
+#f{display:flex;padding:12px;background:#1e293b;gap:8px}
+#t{flex:1;padding:12px;border-radius:10px;border:none;font-size:15px;font-family:inherit}
+#s{padding:12px 20px;border:none;border-radius:10px;background:#27ae60;color:#fff;cursor:pointer;font-size:15px}
+</style></head><body>
+<div id="h">🤖 چت با ربات پایش سرنخ (لوکال — بدونِ نت)</div>
+<div id="m"></div>
+<form id="f"><input id="t" placeholder="بنویس... مثلاً: وضعیت، سلامت، آخرین سرنخ، یا هر سؤال" autocomplete="off">
+<button id="s">ارسال</button></form>
+<script>
+const m=document.getElementById('m'),t=document.getElementById('t'),f=document.getElementById('f');
+function add(txt,cls){const d=document.createElement('div');d.className='b '+cls;d.textContent=txt;m.appendChild(d);m.scrollTop=m.scrollHeight;return d;}
+add('سلام مدیر! آماده‌ام. هر چیزی بپرس.','a');
+f.onsubmit=async(e)=>{e.preventDefault();const q=t.value.trim();if(!q)return;add(q,'u');t.value='';
+const w=add('...','a');
+try{const r=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:q})});
+const j=await r.json();w.textContent=j.reply||'(بدون جواب)';}
+catch(err){w.textContent='❌ خطا در ارتباط';}};
+</script></body></html>"""
+
 
 # ==================================================
 # Pure helpers (testable without a server)
@@ -127,13 +156,35 @@ async def start_obs_server(db, health_checker=None, collectors=None):
         body = (f"Srooyesh Lead-Monitor — OK\n"
                 f"uptime: {int(s['uptime'])}s | cpu: {s['cpu']}% | ram: {s['ram']}%\n"
                 f"messages: {counts['messages']} | leads: {counts['leads']} | hot: {counts['hot']}\n"
-                f"endpoints: /health  /metrics\n")
+                f"endpoints: /health  /metrics  /chat (چت با هوشِ لوکال)\n")
         return web.Response(text=body, content_type="text/plain")
+
+    # چتِ محلیِ هوش (روی لپ‌تاپ، بدونِ نت/بله) — همیشه روی http://localhost:PORT/chat
+    _admin = {"h": None}
+
+    def _get_admin():
+        if _admin["h"] is None:
+            from handlers.admin_handler import AdminHandler
+            _admin["h"] = AdminHandler(db)
+        return _admin["h"]
+
+    async def chat_page(request):
+        return web.Response(text=_CHAT_HTML, content_type="text/html")
+
+    async def chat_api(request):
+        try:
+            data = await request.json()
+            reply = await _get_admin().process_text(data.get("message", ""))
+        except Exception as e:
+            reply = f"❌ خطا: {e}"
+        return web.json_response({"reply": reply})
 
     app = web.Application()
     app.router.add_get("/", index)
     app.router.add_get("/health", health)
     app.router.add_get("/metrics", metrics)
+    app.router.add_get("/chat", chat_page)
+    app.router.add_post("/chat", chat_api)
 
     runner = web.AppRunner(app)
     await runner.setup()

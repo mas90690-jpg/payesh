@@ -239,7 +239,7 @@ AI = {
     "url": os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/"),
     "model": os.getenv("OLLAMA_MODEL", "qwen2.5:3b"),
     "keep_alive": os.getenv("OLLAMA_KEEP_ALIVE", "30s"),
-    "timeout": int(os.getenv("AI_TIMEOUT", "60")),
+    "timeout": int(os.getenv("AI_TIMEOUT", "120")),   # بارِ اولِ سرد، لودِ مدل کند است
 }
 
 # هشدارِ زندهٔ سرنخ: لحظه‌ای که سرنخی پیدا شد، به مدیر در بله پیام بده.
