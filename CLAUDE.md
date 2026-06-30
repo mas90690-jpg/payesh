@@ -5,7 +5,7 @@
 
 ## ادامهٔ کار — شروع سریع
 - مسیر: `C:\Users\saei\Desktop\srooyesh\2` — ربات رصد سرنخِ چندپیام‌رسانی (Python).
-- اجرا: **دابل‌کلیک روی `panel.bat`** → پنلِ کنترلِ انگلیسی (`panel.py`). گزینه‌ها: 1 Start، 2 Restart، 3 Stop، 4 Status، 5 Login، 6 Backup، 7 Reports، 8 CRM، 9 Tests، 10 Cleanup، **11 Push to GitHub**. یا مستقیم `python main.py`.
+- اجرا: **دابل‌کلیک روی `panel.bat`** → پنلِ کنترلِ انگلیسی (`panel.py`). گزینه‌ها: 1 Start، 2 Restart، 3 Stop، 4 Status، 5 Login، 6 Backup، 7 Reports، 8 CRM، 9 Tests، 10 Cleanup، 11 Push to GitHub، **12 Health & metrics**. یا مستقیم `python main.py`.
 - **قانونِ پروژه: هر قابلیتِ جدیدی که اضافه شد، حتماً یک گزینهٔ متناظر در `panel.py` (لیست `MENU`) هم برایش بگذار.** پنل تنها سطحِ کنترل است.
 - ریموت گیت‌هاب: `origin` → `github.com/mas90690-jpg/srooyesh_r2` (شاخهٔ `main`). دکمهٔ ۱۱ امن است: اگر `.env` ترک‌شده باشد push را رد می‌کند.
 - وضعیت کنونی: **فاز ۱ و ۲ در کد تمام شد. کار بعدی = لاگین واقعی هر پلتفرم (`python login.py`) + تستِ زنده، سپس استقرار روی سرور.**
@@ -58,6 +58,11 @@
 - [x] **CRM export**: `python -m core.crm_export [days]` → CSV+JSON آمادهٔ واردکردن در CRM (مرتب به ترتیب پلتفرم).
 - [x] **تمیزکاری**: فایل/پوشه‌های آشغال (`2.0`, `python/`, `reports/`) حذف شدند.
 - [x] **همهٔ تنظیمات در `.env`**: کلیدهای جدید در `.env.example` (بخش ۸).
+
+### فاز ۵ — Observability جهانی (۲۰۲۶-۰۶-۳۰)
+- [x] **لاگِ ساختارمندِ JSON** روی `logging` استاندارد (`core/logger.py`): فایلِ `storage/logs/app.jsonl` (ISO-8601، level، context، exception)، چرخش با `RotatingFileHandler`، کنسولِ خوانا. API قبلی (`log_info/...`) حفظ شد. تنظیم با `.env`: `LOG_LEVEL/LOG_JSON/LOG_MAX_MB/LOG_BACKUPS/LOG_CONSOLE/LOG_TO_FILE`. خروجی انگلیسی.
+- [x] **سرورِ سلامت/متریک** `core/obs_server.py` (aiohttp، بدون وابستگیِ جدید): `GET /health` (JSON، 200/503)، `GET /metrics` (فرمتِ متنیِ Prometheus: app_messages/leads/hot، leads_by_platform، cpu/ram/uptime، collector_up)، `GET /`. در `main.py` بالا می‌آید. تنظیم: `OBS_ENABLED/OBS_HOST/OBS_PORT` (پیش‌فرض 8787). پنل گزینهٔ ۱۲.
+- تست‌شده: ۵۰/۵۰ سبز + اجرای زندهٔ سرور (۲۰۰ روی هر سه مسیر).
 
 ### فاز ۴ — درجه‌۱‌سازی (۲۰۲۶-۰۶-۲۹)
 - [x] **مقاوم‌سازی:** orchestrator حالا حلقهٔ نظارت‌شده دارد؛ اگر اتصالی بیفتد خودکار **reconnect با backoff** + **catch-up** می‌کند (`_supervise_reconnect`/`_catch_up`).

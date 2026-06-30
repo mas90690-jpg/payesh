@@ -201,6 +201,22 @@ def cleanup():
         print(f"[X] Cleanup error: {e}")
 
 
+def health():
+    print("[..] Health & metrics")
+    port = os.getenv("OBS_PORT", "8787")
+    print(f"  Endpoints (while bot is running):")
+    print(f"    http://localhost:{port}/health   (JSON health)")
+    print(f"    http://localhost:{port}/metrics  (Prometheus)")
+    try:
+        import psutil
+        print(f"  CPU: {psutil.cpu_percent(interval=0.3)}%  |  "
+              f"RAM: {psutil.virtual_memory().percent}%  |  "
+              f"Disk: {psutil.disk_usage('/').percent}%")
+    except Exception:
+        pass
+    status()
+
+
 def _git(args):
     """Run a git command in the project root; return (rc, stdout)."""
     try:
@@ -270,6 +286,7 @@ MENU = [
     ("9", "Run tests", tests),
     ("10", "Cleanup old files", cleanup),
     ("11", "Push to GitHub", github_push),
+    ("12", "Health & metrics", health),
 ]
 
 

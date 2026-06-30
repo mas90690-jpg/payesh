@@ -90,6 +90,12 @@ async def main():
         await shutdown_cleanup(db, system_monitor, None)
         return
 
+    # ثبت کلکتورها برای health-check + اجرای سرورِ observability (/health و /metrics)
+    for _c in collectors:
+        health_check.register_collector(_c)
+    from core.obs_server import start_obs_server
+    obs_runner = await start_obs_server(db, health_check, collectors)
+
     # ========== بارگذاری و ثبت خودکار هندلرها ==========
     handlers = plugin_loader.discover_handlers()
     # لیست رویدادهایی که سیستم پشتیبانی می‌کند
@@ -124,6 +130,11 @@ async def main():
         await orchestrator_task
     except asyncio.CancelledError:
         pass
+    if obs_runner:
+        try:
+            await obs_runner.cleanup()
+        except Exception:
+            pass
     await shutdown_cleanup(db, system_monitor, orchestrator)
 
     print("\n" + "="*70)
