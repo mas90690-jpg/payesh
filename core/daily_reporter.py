@@ -634,11 +634,30 @@ class DailyReporter:
             lambda: asyncio.create_task(self.generate_weekly_report()),
             'cron', day_of_week=dow, hour=weekly_hour, minute=weekly_minute, id='weekly_report'
         )
+        # گزارشِ ماهانه: اولِ هر ماه
+        self.scheduler.add_job(
+            lambda: asyncio.create_task(self.generate_monthly_report()),
+            'cron', day=1, hour=report_hour, minute=(report_minute + 5) % 60, id='monthly_report'
+        )
         self.scheduler.start()
         log_success(
-            f"📅 گزارش روزانه ساعت {report_hour}:{report_minute:02d} و "
-            f"هفتگی ({dow}) ساعت {weekly_hour}:{weekly_minute:02d} زمان‌بندی شد"
+            f"📅 گزارش روزانه ساعت {report_hour}:{report_minute:02d}، "
+            f"هفتگی ({dow}) ساعت {weekly_hour}:{weekly_minute:02d}، و ماهانه (اولِ ماه) زمان‌بندی شد"
         )
+
+    async def generate_monthly_report(self):
+        """گزارشِ ماهانه (۳۰ روزِ اخیر) — مدیریتی + تخصصی، به‌ترتیبِ پلتفرم."""
+        date_from = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+        date_to = datetime.now().strftime("%Y-%m-%d")
+        log_info(f"📊 گزارش ماهانه {date_from} تا {date_to}")
+        try:
+            path = self.generate_executive_report(date_from, date_to)
+            self.generate_detailed_report(date_from=date_from, date_to=date_to, limit=500)
+            log_success(f"✅ گزارش ماهانه ذخیره شد: {path}")
+            return path
+        except Exception as e:
+            log_error(f"خطا در گزارش ماهانه: {e}")
+            return None
 
 
 # ==================================================

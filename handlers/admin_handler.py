@@ -79,10 +79,18 @@ class AdminHandler(BaseHandler):
         raw = event.data if isinstance(event.data, dict) else {}
         if raw.get("platform") != self.platform:
             return
-        # فقط چتِ خصوصی = دستور (پیامِ گروه هرگز دستور نیست)
-        if (raw.get("chat_type") or "") not in ("private", "user", ""):
-            return
         sender = str(raw.get("user_id") or "").strip()
+        ct = (raw.get("chat_type") or "")
+        # تشخیصی: هر پیامِ یک مدیر را لاگ کن تا اگر جواب نداد، علتش معلوم باشد
+        if sender in self.admin_ids:
+            log_info(f"🛡️ admin msg | chat_type={ct} chat_id={raw.get('chat_id')} sender={sender}")
+        # فقط چتِ خصوصی = دستور. بله گاهی چتِ خصوصی را اشتباهی «group» می‌زند؛
+        # پس اگر فرستنده مدیر است، چتِ یک‌به‌یک (chat_id==فرستنده) را هم خصوصی حساب کن.
+        is_private = (ct in ("private", "user", "")
+                      or str(raw.get("chat_id")) == sender
+                      or sender in self.admin_ids)   # پیامِ خصوصیِ مدیر همیشه دستور است
+        if not is_private:
+            return
         text = (raw.get("text") or raw.get("caption") or "").strip()
         if not text:
             return
@@ -512,7 +520,12 @@ class AdminHandler(BaseHandler):
         if not sender:
             log_warning(f"admin reply skipped — no sender registered for {self.platform}")
             return
+        # اگر چتِ یک‌به‌یک است، حتماً private بفرست (بله گاهی آن را group می‌زند)
+        ct = raw.get("chat_type")
+        if str(raw.get("chat_id")) == str(raw.get("user_id")):
+            ct = "private"
         try:
-            await sender(raw.get("chat_id"), raw.get("chat_type"), text)
+            await sender(raw.get("chat_id"), ct, text)
+            log_info(f"✅ admin reply sent → chat_id={raw.get('chat_id')} ({ct})")
         except Exception as e:
-            log_warning(f"admin reply failed: {e}")
+            log_warning(f"❌ admin reply failed: {e}")

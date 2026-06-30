@@ -24,6 +24,7 @@ class Orchestrator:
         for collector in self.collectors:
             await self._initial_fetch(collector)
 
+        await self._greet_admins()   # بعد از هر اجرا/ری‌استارت، به مدیر سلام کن
         await self._generate_report()
 
         log_info("🔄 سیستم در حالت انتظار پیام‌های جدید است...")
@@ -157,14 +158,31 @@ class Orchestrator:
                 for msg in messages:
                     msg["platform"] = platform
                     await self.event_bus.emit("message.received", msg)
-                # به‌روزرسانی آخرین زمان پول (برای pull-basedها مفید است)
-                await self.db.update_last_poll(platform, datetime.now())
+            # ضربانِ زنده: هر دورِ موفق last_poll را به‌روز کن (حتی بدون پیام) تا
+            # پلتفرمِ ساکتِ ولی سالم، اشتباهی «گیرکرده» تشخیص داده نشود.
+            await self.db.update_last_poll(platform, datetime.now())
         except Exception as e:
             log_error(f"خطا در دریافت پیام‌های جدید {platform}: {e}")
 
     # برای سازگاری با کد قبلی
     async def _fetch_new_messages(self, collector: BaseCollector):
         await self._process_messages(collector)
+
+    async def _greet_admins(self):
+        """بعد از بالا آمدن، با زبانِ خودِ ربات به مدیر در بله سلام می‌کند (و send را تست می‌کند)."""
+        from core import messenger_registry
+        line = ""
+        try:
+            from core.ai_assistant import get_ai_assistant, PERSONA
+            ai = get_ai_assistant()
+            if await ai.available():
+                line = await ai.chat("ربات تازه بالا آمد. به مدیر یک سلامِ کوتاه و خودمونی بده و بگو آماده‌ای.",
+                                     system=PERSONA)
+        except Exception as e:
+            log_warning(f"سلامِ هوش ناموفق: {e}")
+        text = "🤖 " + (line or "سلام مدیر! ربات بالا آمد و آماده‌ام. هر سؤالی داری همین‌جا بپرس (وضعیت، گزارش، سلامت، کلیدواژه...).")
+        ok = await messenger_registry.notify_admins(text)
+        log_info(f"👋 سلامِ راه‌اندازی به مدیر {'ارسال شد' if ok else 'ارسال نشد (مدیر/فرستنده آماده نیست)'}")
 
     async def _generate_report(self):
         print("\n" + "="*60)

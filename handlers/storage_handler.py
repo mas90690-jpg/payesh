@@ -47,11 +47,10 @@ class StorageHandler(BaseHandler):
 
         # 🔒 تفکیکِ مدیر از پایش: اگر این پیامِ خصوصیِ یک «مدیر» روی پلتفرمِ مدیریت است،
         # سرنخ نیست (دستور است) → ذخیره نکن. (شماره‌ی پایش‌گر هرگز مدیر نیست و برعکس.)
-        if (self._admin_ids
-                and raw.get('platform') == self._admin_platform
-                and str(raw.get('user_id') or '') in self._admin_ids
-                and (raw.get('chat_type') or '') in ('private', 'user', '')):
-            return
+        _u = str(raw.get('user_id') or '')
+        if (self._admin_ids and raw.get('platform') == self._admin_platform
+                and _u in self._admin_ids):
+            return   # پیامِ مدیر = دستور برای هوش، نه سرنخ
 
         # ساخت شیء AnalyzedMessage
         from core.models import AnalyzedMessage

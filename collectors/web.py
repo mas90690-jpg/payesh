@@ -104,7 +104,7 @@ class WebCollector(BaseCollector):
                     if "=" in extra:
                         k, v = extra.split("=", 1)
                         params[k.strip()] = v.strip()
-                if mode not in ("page", "site"):
+                if mode not in ("page", "site", "news"):
                     mode = "page"
                 sources.append((mode, url, params))
         return sources

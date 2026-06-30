@@ -18,6 +18,7 @@ storage/bot.pid so Stop/Restart work precisely (child browsers are killed too).
 import os
 import sys
 import time
+import json
 import shutil
 import sqlite3
 import subprocess

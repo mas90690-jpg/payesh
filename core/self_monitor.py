@@ -63,7 +63,8 @@ class SelfMonitor:
             sample = errs[-1].get("msg", "")[:120]
             problems.append(f"❗️ {len(errs)} خطا در لاگِ اخیر. نمونه: {sample}")
 
-        # ۲) پلتفرمِ گیرکرده/قطع (آخرین فعالیت خیلی قدیمی)
+        # ۲) پلتفرمِ گیرکرده/قطع — آستانه نسبت به فاصلهٔ پولِ همان پلتفرم
+        # (وب هر ۲۴ساعت پول می‌شود؛ نباید با ۶۰دقیقه «گیرکرده» تلقی شود).
         for p in self.watch:
             try:
                 last = await self.db.get_last_poll(p) if self.db else None
@@ -71,7 +72,7 @@ class SelfMonitor:
                 last = None
             if last:
                 mins = (datetime.now() - last).total_seconds() / 60
-                if mins > self.stale_minutes:
+                if mins > self._idle_limit(p):
                     problems.append(f"⚠️ {p}: {int(mins)} دقیقه است فعالیتی ندارد (شاید قطع/گیرکرده).")
 
         if not problems:
@@ -89,6 +90,15 @@ class SelfMonitor:
             text += f"\n\n💡 پیشنهاد: {suggestion}"
         await self._alert(text)
         log_warning("self-monitor alerted admins: " + signature)
+
+    def _idle_limit(self, platform: str) -> float:
+        """حداکثر دقیقهٔ مجازِ بی‌فعالیتی = بیشینهٔ (stale_minutes، ۳× فاصلهٔ پولِ آن پلتفرم)."""
+        from config import PLUGINS_CONFIG, SYSTEM_CONFIG
+        if platform == "web":
+            secs = SYSTEM_CONFIG.get("poll_interval_hours", 24) * 3600
+        else:
+            secs = PLUGINS_CONFIG.get(f"{platform}collector", {}).get("poll_seconds", 120)
+        return max(self.stale_minutes, (secs * 3) / 60)
 
     def _recent_errors(self):
         out = []
