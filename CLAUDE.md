@@ -107,3 +107,20 @@
 
 <!-- last manual git-push test: 2026-06-30 -->
 
+## فاز ۶ — ربات مدیریتیِ ChatOps روی بله (۲۰۲۶-۰۶-۳۰) — ساخته و تست‌شده
+- `handlers/admin_handler.py` + `core/ai_assistant.py` (Ollama on-demand) + `core/messenger_registry.py`. بله متدِ `send_message` گرفت و در رجیستری ثبت می‌شود.
+- **امن:** فقط `ADMIN_IDS` (allowlist)، فقط چتِ خصوصی، فقط **whitelistِ کارها** (status/report/crm/logs/keywords/add_keyword/has_keyword/platform_status/get_param/set_param/restart/help) — بدون شل/eval.
+- **هوش:** متنِ آزاد → AI فقط **action** را تشخیص می‌دهد؛ **مقدارها** (کلیدواژه/پارامتر) با قاعده از متن درمی‌آیند (مدلِ ۳B گاهی مقدار را خراب می‌کند). قاعده‌ها رایج‌ها را مستقیم می‌گیرند؛ اگر Ollama خاموش باشد باز هم کار می‌کند.
+- `add_keyword` در `data/keywords_custom.json` می‌نویسد که keyword_finder خودکار (بدون ری‌استارت) می‌خواند.
+- پنل گزینهٔ ۱۳ (AI / Admin status). تنظیمات در `.env`: `ADMIN_IDS/ADMIN_PLATFORM/ADMIN_ENABLED/AI_ASSISTANT_ENABLED/OLLAMA_URL/OLLAMA_MODEL`.
+- **فعال‌سازی (pairing):** یک‌بار از حسابت به **اکانتِ بله‌ی ربات** پیامِ خصوصی بده → آی‌دی‌ات در لاگ می‌آید → در `.env` بگذار `ADMIN_IDS=<id>` → ری‌استارت.
+- تست: ۵۳/۵۳ سبز + تستِ زندهٔ AI (فارسی→دستور درست). **هنوز ارسال/دریافتِ زندهٔ بله تست نشده** (نیاز به pairing با حسابِ واقعی).
+
+## (آرشیو) نقشهٔ اولیهٔ ChatOps — اجرا شد
+کاربر می‌خواهد ربات را از طریقِ پیام‌رسان (بله/تلگرام) مدیریت کند: چند مدیر (allowlist چت‌آیدی)، گرفتنِ لاگ/گزارش، ری‌استارت، افزودن/بررسیِ کلیدواژه، «لینکدین کار می‌کند؟»، خواندن/تغییرِ پارامترها — **دسترسیِ کامل ولی کنترل‌شده (whitelist، بدون شل/eval)** تا ربات خراب نشود.
+- **فهمِ متنِ آزاد با هوشِ لوکال (Ollama):** مدل **on-demand** صدا زده می‌شود؛ `OLLAMA_KEEP_ALIVE=30s` تا در بی‌کاری رم آزاد شود (API: `http://localhost:11434`).
+  - **نامِ مدل از `.env` خوانده شود: `OLLAMA_MODEL`** → ساختار برای همهٔ نسخه‌ها یکی است. رم ۸گیگ = `qwen2.5:3b`؛ بعد از ارتقا به ۱۶گیگ فقط `ollama pull qwen2.5:7b` + تغییرِ `OLLAMA_MODEL` (بدون تغییرِ کد).
+  - **نصب در ایران:** Ollama از GitHub releases (`github.com/ollama/ollama/releases`، ویندوز: `OllamaSetup.exe`)؛ `ollama pull` نیاز به فیلترشکن/`HTTPS_PROXY` دارد (registry فیلتر است)، ولی بعد از یک‌بار دانلود لوکال و آفلاین کار می‌کند.
+- **قرار:** کاربر نصب/تنظیم را خودش انجام می‌دهد؛ وقتی گفت، من بات ChatOps را می‌سازم که فقط هنگامِ پیامِ مدیر Ollama را صدا بزند (on-demand، رمِ همیشگی صفر). هر قابلیت باید گزینهٔ متناظر در `panel.py` هم داشته باشد.
+
+

@@ -96,6 +96,10 @@ async def main():
     from core.obs_server import start_obs_server
     obs_runner = await start_obs_server(db, health_check, collectors)
 
+    # پایشگرِ خودکار: مشکلاتِ زمان‌اجرا را تشخیص و به مدیر در بله هشدار می‌دهد
+    from core.self_monitor import start_self_monitor
+    await start_self_monitor(db)
+
     # ========== بارگذاری و ثبت خودکار هندلرها ==========
     handlers = plugin_loader.discover_handlers()
     # لیست رویدادهایی که سیستم پشتیبانی می‌کند

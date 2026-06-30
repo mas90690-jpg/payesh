@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 from core.base_collector import BaseCollector, ConnectionStatus
 from core.logger import log_info, log_success, log_error, log_warning
+from core import messenger_registry
 
 # ایمپورتِ کتابخانه در سطح ماژول با محافظ: اگر نصب نبود برنامه نمی‌شکند (None می‌ماند)
 # و اگر بود، در connect استفاده می‌شود (و در تست‌ها قابل patch است).
@@ -345,6 +346,8 @@ class BaleCollector(BaseCollector):
                 await asyncio.sleep(5)
                 self._connected = True
                 self._set_status(ConnectionStatus.CONNECTED)
+                # برای ChatOps: ثبتِ تابعِ ارسال تا هندلرِ مدیر بتواند جواب بدهد
+                messenger_registry.register_sender("bale", self.send_message)
                 log_success("✅ اتصال به بله با موفقیت انجام شد")
                 return True
             else:
@@ -381,6 +384,19 @@ class BaleCollector(BaseCollector):
                 log_info(f"پیام‌های موجود در صف همگی قدیمی‌تر از since بودند")
         
         return new_msgs
+
+    async def send_message(self, chat_id, chat_type, text: str):
+        """ارسالِ پیامِ متنی (برای جوابِ ChatOps به مدیر). chat_type رشته‌ای است."""
+        if not self._client or chat_id is None:
+            return
+        try:
+            from aiobale.enums import ChatType
+            ct_map = {"private": ChatType.PRIVATE, "user": ChatType.PRIVATE,
+                      "group": ChatType.GROUP, "channel": ChatType.CHANNEL}
+            ct = ct_map.get(str(chat_type or "private").lower(), ChatType.PRIVATE)
+            await self._client.send_message(text=text, chat_id=int(chat_id), chat_type=ct)
+        except Exception as e:
+            log_warning(f"ارسالِ پیامِ بله ناموفق بود: {e}")
 
     async def disconnect(self) -> None:
         self._is_running = False

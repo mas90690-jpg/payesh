@@ -217,6 +217,48 @@ def health():
     status()
 
 
+def ai_status():
+    print("[..] AI assistant (Ollama) & admins")
+    import urllib.request
+    from config import AI, PLUGINS_CONFIG
+    try:
+        with urllib.request.urlopen(AI["url"] + "/api/tags", timeout=4) as r:
+            tags = json.loads(r.read().decode("utf-8"))
+        models = [m.get("name") for m in tags.get("models", [])]
+        print(f"  Ollama: UP at {AI['url']}  |  model in use: {AI['model']}")
+        print(f"  installed models: {', '.join(models) or 'none'}")
+    except Exception as e:
+        print(f"  Ollama: DOWN ({e}) — launch Ollama or check OLLAMA_URL")
+    ids = PLUGINS_CONFIG.get("adminhandler", {}).get("admin_ids", [])
+    if ids:
+        print(f"  Admins (ADMIN_IDS): {', '.join(ids)}")
+    else:
+        print("  Admins: NONE — DM the bot on Bale; it logs your id (pairing) → put it in ADMIN_IDS")
+
+
+def requests_and_errors():
+    print("[..] Feature requests & recent errors")
+    rq = os.path.join(ROOT, "storage", "requests.jsonl")
+    if os.path.exists(rq):
+        reqs = [json.loads(l) for l in open(rq, encoding="utf-8") if l.strip()]
+        print(f"  feature requests logged: {len(reqs)}")
+        for r in reqs[-5:]:
+            print("   - " + str(r.get("request", ""))[:80])
+    else:
+        print("  feature requests: none")
+    lg = os.path.join(ROOT, "storage", "logs", "app.jsonl")
+    errs = 0
+    if os.path.exists(lg):
+        for l in open(lg, encoding="utf-8").readlines()[-500:]:
+            try:
+                if json.loads(l).get("level") in ("ERROR", "CRITICAL"):
+                    errs += 1
+            except Exception:
+                pass
+    print(f"  recent errors in log: {errs}")
+    print("  (self-monitor auto-alerts admins on Bale while the bot runs)")
+
+
 def _git(args):
     """Run a git command in the project root; return (rc, stdout)."""
     try:
@@ -287,6 +329,8 @@ MENU = [
     ("10", "Cleanup old files", cleanup),
     ("11", "Push to GitHub", github_push),
     ("12", "Health & metrics", health),
+    ("13", "AI / Admin status", ai_status),
+    ("14", "Feature requests & errors", requests_and_errors),
 ]
 
 

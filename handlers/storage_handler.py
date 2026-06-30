@@ -122,6 +122,12 @@ class StorageHandler(BaseHandler):
             except Exception as e:
                 print(f"⚠️ خطا در save_lead: {e}")
 
+            # 🔔 هشدارِ زندهٔ سرنخ به مدیر در بله (برای رصدِ زنده/رونمایی) — fire-and-forget
+            try:
+                self._alert_lead(raw, analyzed.keywords)
+            except Exception:
+                pass
+
             self.stats["messages_with_keywords"] += 1
             
             # نمایش در کنسول
@@ -138,3 +144,34 @@ class StorageHandler(BaseHandler):
                   f"{self.stats['messages_with_keywords']} سرنخ ذخیره‌شده، "
                   f"{self.stats['dropped']} بی‌کلیدواژه (نادیده)، "
                   f"{self.stats['media_messages']} رسانه")
+
+    def _alert_lead(self, raw, keywords):
+        """هشدارِ زندهٔ سرنخ به مدیر در بله — «الان در فلان پلتفرم/گروه کلیدواژه دیده شد»."""
+        import asyncio
+        from config import LEAD_ALERTS
+        if not LEAD_ALERTS.get("enabled", True):
+            return
+        score = int(raw.get("opportunity_score") or 0)
+        if score < LEAD_ALERTS.get("min_score", 0):
+            return
+        try:
+            from core.daily_reporter import platform_label
+            plabel = platform_label(raw.get("platform"))
+        except Exception:
+            plabel = raw.get("platform")
+        text = (
+            "🔔 سرنخ جدید پیدا شد\n"
+            f"{plabel}\n"
+            f"👥 گروه: {raw.get('chat_name')}\n"
+            f"🔑 کلیدواژه: {raw.get('keywords')}\n"
+            f"🎯 {raw.get('opportunity_type') or '-'} (امتیاز {score})\n"
+            f"💬 {(raw.get('text') or raw.get('caption') or '')[:200]}\n"
+            f"🕒 {raw.get('timestamp')}"
+        )
+        if raw.get("chat_link"):
+            text += f"\n🔗 {raw.get('chat_link')}"
+        from core import messenger_registry
+        try:
+            asyncio.get_running_loop().create_task(messenger_registry.notify_admins(text))
+        except RuntimeError:
+            pass   # خارج از event loop (مثلاً در تست) → بی‌خیال

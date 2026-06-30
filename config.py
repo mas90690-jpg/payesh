@@ -211,6 +211,41 @@ PLUGINS_CONFIG = {
         "telegram_bot_token": os.getenv("NOTIFY_TELEGRAM_TOKEN"),
         "telegram_chat_id": os.getenv("NOTIFY_TELEGRAM_CHAT_ID"),
     },
+
+    # ========== مدیریتِ ربات از طریقِ پیام‌رسان (ChatOps) ==========
+    "adminhandler": {
+        # فقط این کاربران (user_id) اجازهٔ دستوردادن دارند. خالی = حالتِ pairing
+        # (بات آی‌دیِ هر کسی که پیام دهد را در لاگ می‌نویسد تا آن را اینجا بگذاری).
+        "admin_ids": [x.strip() for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()],
+        "platform": os.getenv("ADMIN_PLATFORM", "bale").strip().lower(),  # روی کدام پیام‌رسان
+        "enabled": os.getenv("ADMIN_ENABLED", "true").lower() == "true",
+    },
+
+    # ========== پایشگرِ خودکار (proactive self-monitor) ==========
+    "selfmonitor": {
+        "enabled": os.getenv("SELF_MONITOR_ENABLED", "true").lower() == "true",
+        "interval_seconds": int(os.getenv("SELF_MONITOR_INTERVAL", 600)),  # هر چند ثانیه چک کند
+        "error_threshold": int(os.getenv("SELF_MONITOR_ERROR_THRESHOLD", 5)),  # چند خطا = هشدار
+        "stale_minutes": int(os.getenv("SELF_MONITOR_STALE_MINUTES", 60)),  # بی‌فعالیتیِ پلتفرم
+    },
+}
+
+# ==================================================
+# هوشِ محلی (Ollama) برای فهمِ متنِ آزادِ دستورهای مدیریت
+# on-demand صدا زده می‌شود؛ رمِ همیشگی صفر. مدل از .env (برای همهٔ نسخه‌ها یکسان).
+# ==================================================
+AI = {
+    "enabled": os.getenv("AI_ASSISTANT_ENABLED", "true").lower() == "true",
+    "url": os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/"),
+    "model": os.getenv("OLLAMA_MODEL", "qwen2.5:3b"),
+    "keep_alive": os.getenv("OLLAMA_KEEP_ALIVE", "30s"),
+    "timeout": int(os.getenv("AI_TIMEOUT", "60")),
+}
+
+# هشدارِ زندهٔ سرنخ: لحظه‌ای که سرنخی پیدا شد، به مدیر در بله پیام بده (برای رونمایی/رصدِ زنده)
+LEAD_ALERTS = {
+    "enabled": os.getenv("LEAD_ALERTS_ENABLED", "true").lower() == "true",
+    "min_score": int(os.getenv("LEAD_ALERT_MIN_SCORE", "0")),   # فقط سرنخِ بالاتر از این امتیاز
 }
 
 # ==================================================
