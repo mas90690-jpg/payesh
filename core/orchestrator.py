@@ -171,6 +171,9 @@ class Orchestrator:
     async def _greet_admins(self):
         """فوراً به مدیر سلام می‌کند (بدون انتظار برای هوش)، و مدل را در پس‌زمینه گرم می‌کند
         تا اولین جوابِ مدیر سریع باشد. مهم: startup را بلاک نمی‌کند."""
+        from config import PLUGINS_CONFIG
+        if not PLUGINS_CONFIG.get("adminhandler", {}).get("enabled", True):
+            return   # مغز (هوش/مدیر) خاموش است → سلام/گرم‌کردن هم نه
         from core import messenger_registry
         text = ("🤖 سلام مدیر! ربات بالا آمد و آماده‌ام. هر سؤالی داری همین‌جا بپرس "
                 "(وضعیت، گزارش، سلامت، افزودن کلیدواژه، یا هر چیزِ دیگر).")

@@ -14,6 +14,13 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # اگر لازم شد مسیر دستی بده: CHROME_PATH=C:/Program Files/Google/Chrome/Application/chrome.exe
 CHROME_PATH = (os.getenv("CHROME_PATH", "") or "").strip() or None
 
+# ==================================================
+# سوییچِ اصلیِ «مغز» (هوشِ لوکال + پنلِ مدیر + چتِ زنده + سلامِ راه‌اندازی)
+# AI_ENABLED=false → کلِ لایهٔ هوش خاموش می‌شود (هیچ رم/سی‌پی‌یو/اولاما مصرف نمی‌شود)
+# تا فقط روی «چشم‌های عقاب» (پایش) تمرکز کنی. کد پاک نمی‌شود؛ بعداً true کن.
+# ==================================================
+AI_ENABLED = os.getenv("AI_ENABLED", "true").lower() == "true"
+
 # همه چیز توی یک پوشه به اسم storage
 STORAGE_DIR = os.path.join(BASE_DIR, "storage")
 
@@ -218,7 +225,7 @@ PLUGINS_CONFIG = {
         # (بات آی‌دیِ هر کسی که پیام دهد را در لاگ می‌نویسد تا آن را اینجا بگذاری).
         "admin_ids": [x.strip() for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()],
         "platform": os.getenv("ADMIN_PLATFORM", "bale").strip().lower(),  # روی کدام پیام‌رسان
-        "enabled": os.getenv("ADMIN_ENABLED", "true").lower() == "true",
+        "enabled": AI_ENABLED and os.getenv("ADMIN_ENABLED", "true").lower() == "true",
     },
 
     # ========== پایشگرِ خودکار (proactive self-monitor) ==========
@@ -235,7 +242,7 @@ PLUGINS_CONFIG = {
 # on-demand صدا زده می‌شود؛ رمِ همیشگی صفر. مدل از .env (برای همهٔ نسخه‌ها یکسان).
 # ==================================================
 AI = {
-    "enabled": os.getenv("AI_ASSISTANT_ENABLED", "true").lower() == "true",
+    "enabled": AI_ENABLED and os.getenv("AI_ASSISTANT_ENABLED", "true").lower() == "true",
     "url": os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/"),
     "model": os.getenv("OLLAMA_MODEL", "qwen2.5:3b"),
     "keep_alive": os.getenv("OLLAMA_KEEP_ALIVE", "30s"),

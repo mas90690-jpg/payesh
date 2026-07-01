@@ -172,6 +172,9 @@ async def start_obs_server(db, health_checker=None, collectors=None):
         return web.Response(text=_CHAT_HTML, content_type="text/html")
 
     async def chat_api(request):
+        from config import AI_ENABLED
+        if not AI_ENABLED:
+            return web.json_response({"reply": "🧠 هوش فعلاً خاموش است (در .env بزن AI_ENABLED=true)."})
         try:
             data = await request.json()
             reply = await _get_admin().process_text(data.get("message", ""))
