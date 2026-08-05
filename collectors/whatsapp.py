@@ -32,16 +32,31 @@ WHATSAPP_WEB_URL = "https://web.whatsapp.com/"
 _MAX_SEEN = 8000
 
 # نشانه‌های ورود/عدم‌ورود (وب‌واتساپ نسبتاً پایدار است)
-LOGIN_MARKERS = ['canvas[aria-label*="scan" i]', 'div[data-ref]', '[data-testid="qrcode"]']
-CHATLIST_MARKERS = ['#pane-side', '[data-testid="chat-list"]', 'div[aria-label="لیست چت"]']
-BUBBLE_SELECTORS = ['div.message-in, div.message-out', 'div[data-id]']
+LOGIN_MARKERS = [
+    'canvas[aria-label*="scan" i]',
+    "div[data-ref]",
+    '[data-testid="qrcode"]',
+]
+CHATLIST_MARKERS = [
+    "#pane-side",
+    '[data-testid="chat-list"]',
+    'div[aria-label="لیست چت"]',
+]
+BUBBLE_SELECTORS = ["div.message-in, div.message-out", "div[data-id]"]
 
 
 class WhatsAppCollector(BaseCollector):
-    def __init__(self, phone: str = None, headless: bool = True,
-                 poll_seconds: int = 180, max_chats: int = 15,
-                 chat_open_delay: float = 1.5, messages_per_chat: int = 30,
-                 backfill_scrolls: int = 6, **kwargs):
+    def __init__(
+        self,
+        phone: str = None,
+        headless: bool = True,
+        poll_seconds: int = 180,
+        max_chats: int = 15,
+        chat_open_delay: float = 1.5,
+        messages_per_chat: int = 30,
+        backfill_scrolls: int = 6,
+        **kwargs,
+    ):
         super().__init__()
         self.phone = phone
         self.headless = headless
@@ -62,6 +77,7 @@ class WhatsAppCollector(BaseCollector):
         self._kw = get_keyword_finder()
 
         from config import STORAGE_DIR
+
         self._user_data_dir = os.path.join(STORAGE_DIR, "sessions", "whatsapp")
         os.makedirs(self._user_data_dir, exist_ok=True)
         self._media_dir = os.path.join(STORAGE_DIR, "media", "whatsapp")
@@ -122,7 +138,11 @@ class WhatsAppCollector(BaseCollector):
             use_headless = self.headless if headless is None else headless
             self._pw = await async_playwright().start()
             self._context = await self._launch_context(use_headless)
-            self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
+            self._page = (
+                self._context.pages[0]
+                if self._context.pages
+                else await self._context.new_page()
+            )
             await self._page.goto(WHATSAPP_WEB_URL, wait_until="domcontentloaded")
             await asyncio.sleep(8)  # واتساپ‌وب کند بارگذاری می‌شود
 
@@ -148,16 +168,22 @@ class WhatsAppCollector(BaseCollector):
         """مرورگر را قابل‌حمل باز می‌کند: اگر CHROME_PATH ست باشد همان، وگرنه
         خودکار Chrome→Edge→Chromium (روی سرور لینوکس هم بدون مسیر هاردکد کار می‌کند)."""
         from config import CHROME_PATH
+
         base = dict(
             user_data_dir=self._user_data_dir,
             headless=use_headless,
             viewport={"width": 1280, "height": 900},
-            args=["--disable-blink-features=AutomationControlled",
-                  "--no-sandbox", "--disable-dev-shm-usage"],
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+            ],
         )
         if CHROME_PATH:
             try:
-                ctx = await self._pw.chromium.launch_persistent_context(executable_path=CHROME_PATH, **base)
+                ctx = await self._pw.chromium.launch_persistent_context(
+                    executable_path=CHROME_PATH, **base
+                )
                 log_info("مرورگر واتساپ‌وب با مسیرِ CHROME_PATH باز شد")
                 return ctx
             except Exception as e:
@@ -212,7 +238,7 @@ class WhatsAppCollector(BaseCollector):
         if not (self._needs_backfill and self._backfill_scrolls > 0):
             return
         try:
-            await self._page.mouse.move(640, 400)   # روی ناحیهٔ پیام‌ها
+            await self._page.mouse.move(640, 400)  # روی ناحیهٔ پیام‌ها
         except Exception:
             return
         for _ in range(self._backfill_scrolls):
@@ -224,7 +250,8 @@ class WhatsAppCollector(BaseCollector):
 
     async def _scrape_all_chats(self):
         """در لیست چت‌ها می‌چرخد، هر گروه/چت را باز می‌کند و پیام‌هایش را می‌خواند.
-        پیام‌های نخوانده/آفلاین هم همین‌جا گرفته می‌شوند (چون همهٔ چت‌ها مرور می‌شوند)."""
+        پیام‌های نخوانده/آفلاین هم همین‌جا گرفته می‌شوند (چون همهٔ چت‌ها مرور می‌شوند).
+        """
         page = self._page
         chat_selectors = [
             '#pane-side div[role="listitem"]',
@@ -248,7 +275,7 @@ class WhatsAppCollector(BaseCollector):
             return
 
         log_info(f"🔍 واتساپ: {len(chat_items)} چت برای مرور")
-        for idx, chat in enumerate(chat_items[:self._max_chats]):
+        for idx, chat in enumerate(chat_items[: self._max_chats]):
             try:
                 await chat.click()
                 await asyncio.sleep(self._chat_open_delay)
@@ -268,7 +295,7 @@ class WhatsAppCollector(BaseCollector):
             if bubbles:
                 break
 
-        for b in bubbles[-self._messages_per_chat:]:
+        for b in bubbles[-self._messages_per_chat :]:
             try:
                 data_id = await b.get_attribute("data-id") or ""
                 # data-id واتساپ: false_<chat>@g.us_<msgid>_<sender>
@@ -279,7 +306,9 @@ class WhatsAppCollector(BaseCollector):
                         chat_id = parts[1]
                 # متن
                 text = ""
-                tnode = await b.query_selector("span.selectable-text, .copyable-text span.selectable-text")
+                tnode = await b.query_selector(
+                    "span.selectable-text, .copyable-text span.selectable-text"
+                )
                 if tnode:
                     text = (await tnode.inner_text() or "").strip()
                 if not text:
@@ -303,35 +332,43 @@ class WhatsAppCollector(BaseCollector):
                 media_type, local_file_path = "text", None
                 try:
                     from core.web_media import download_dom_image
-                    mt, lp = await download_dom_image(self._page, b, self._media_dir, "whatsapp")
+
+                    mt, lp = await download_dom_image(
+                        self._page, b, self._media_dir, "whatsapp"
+                    )
                     if mt:
                         media_type, local_file_path = mt, lp
                 except Exception:
                     pass
 
-                self._messages_queue.append({
-                    "id": str(mid),
-                    "platform": "whatsapp",
-                    "text": text,
-                    "chat_id": str(chat_id),
-                    "chat_name": chat_name,
-                    "chat_type": "group" if "@g.us" in data_id else "private",
-                    "chat_username": None,
-                    "chat_link": None,  # واتساپ یوزرنیم عمومی ندارد؛ لینک دعوت جداست
-                    "user_id": "",
-                    "sender_name": "",
-                    "timestamp": datetime.now(),
-                    "media_type": media_type,
-                    "file_id": None,
-                    "local_file_path": local_file_path,
-                    "reply_to": None,
-                })
+                self._messages_queue.append(
+                    {
+                        "id": str(mid),
+                        "platform": "whatsapp",
+                        "text": text,
+                        "chat_id": str(chat_id),
+                        "chat_name": chat_name,
+                        "chat_type": "group" if "@g.us" in data_id else "private",
+                        "chat_username": None,
+                        "chat_link": None,  # واتساپ یوزرنیم عمومی ندارد؛ لینک دعوت جداست
+                        "user_id": "",
+                        "sender_name": "",
+                        "timestamp": datetime.now(),
+                        "media_type": media_type,
+                        "file_id": None,
+                        "local_file_path": local_file_path,
+                        "reply_to": None,
+                    }
+                )
             except Exception:
                 continue
 
     async def _get_open_chat_title(self) -> str:
-        for sel in ['header span[title]', '[data-testid="conversation-info-header"] span[title]',
-                    'header div[role="button"] span[dir="auto"]']:
+        for sel in [
+            "header span[title]",
+            '[data-testid="conversation-info-header"] span[title]',
+            'header div[role="button"] span[dir="auto"]',
+        ]:
             try:
                 el = await self._page.query_selector(sel)
                 if el:

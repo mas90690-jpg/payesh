@@ -102,7 +102,7 @@ def stop():
     try:
         if psutil:
             p = psutil.Process(pid)
-            for child in p.children(recursive=True):   # also kill child browsers/clients
+            for child in p.children(recursive=True):  # also kill child browsers/clients
                 try:
                     child.terminate()
                 except Exception:
@@ -129,16 +129,25 @@ def restart():
 
 def status():
     running = _is_running()
-    print("Bot status: " + ("RUNNING (PID " + str(_read_pid()) + ")" if running else "STOPPED"))
+    print(
+        "Bot status: "
+        + ("RUNNING (PID " + str(_read_pid()) + ")" if running else "STOPPED")
+    )
     if os.path.exists(DB_PATH):
         try:
             c = sqlite3.connect(DB_PATH)
             cur = c.cursor()
             total = cur.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-            leads = cur.execute("SELECT COUNT(*) FROM messages WHERE keywords!=''").fetchone()[0]
-            hot = cur.execute("SELECT COUNT(*) FROM messages WHERE opportunity_type='داغ'").fetchone()[0]
+            leads = cur.execute(
+                "SELECT COUNT(*) FROM messages WHERE keywords!=''"
+            ).fetchone()[0]
+            hot = cur.execute(
+                "SELECT COUNT(*) FROM messages WHERE opportunity_type='داغ'"
+            ).fetchone()[0]
             print("--- Leads by platform ---")
-            for row in cur.execute("SELECT platform, COUNT(*) FROM messages WHERE keywords!='' GROUP BY platform"):
+            for row in cur.execute(
+                "SELECT platform, COUNT(*) FROM messages WHERE keywords!='' GROUP BY platform"
+            ):
                 print(f"   {row[0]}: {row[1]}")
             print(f"[#] Total messages: {total} | Leads: {leads} | Hot: {hot}")
             c.close()
@@ -170,7 +179,11 @@ def backup():
 def report():
     print("[..] Generating executive + detailed reports...")
     try:
-        from core.daily_reporter import generate_executive_report, generate_detailed_report
+        from core.daily_reporter import (
+            generate_executive_report,
+            generate_detailed_report,
+        )
+
         generate_executive_report()
         generate_detailed_report(limit=200)
     except Exception as e:
@@ -181,6 +194,7 @@ def crm():
     print("[..] Exporting CRM (CSV + JSON + Excel)...")
     try:
         from core.crm_export import export_crm
+
         export_crm(30)
     except Exception as e:
         print(f"[X] CRM export error: {e}")
@@ -196,6 +210,7 @@ def cleanup():
     try:
         import asyncio
         from core.cleanup_service import CleanupService
+
         asyncio.run(CleanupService(None).run_once())
         print("[OK] Cleanup done.")
     except Exception as e:
@@ -210,9 +225,12 @@ def health():
     print(f"    http://localhost:{port}/metrics  (Prometheus)")
     try:
         import psutil
-        print(f"  CPU: {psutil.cpu_percent(interval=0.3)}%  |  "
-              f"RAM: {psutil.virtual_memory().percent}%  |  "
-              f"Disk: {psutil.disk_usage('/').percent}%")
+
+        print(
+            f"  CPU: {psutil.cpu_percent(interval=0.3)}%  |  "
+            f"RAM: {psutil.virtual_memory().percent}%  |  "
+            f"Disk: {psutil.disk_usage('/').percent}%"
+        )
     except Exception:
         pass
     status()
@@ -222,6 +240,7 @@ def ai_status():
     print("[..] AI assistant (Ollama) & admins")
     import urllib.request
     from config import AI, PLUGINS_CONFIG
+
     try:
         with urllib.request.urlopen(AI["url"] + "/api/tags", timeout=4) as r:
             tags = json.loads(r.read().decode("utf-8"))
@@ -234,7 +253,9 @@ def ai_status():
     if ids:
         print(f"  Admins (ADMIN_IDS): {', '.join(ids)}")
     else:
-        print("  Admins: NONE — DM the bot on Bale; it logs your id (pairing) → put it in ADMIN_IDS")
+        print(
+            "  Admins: NONE — DM the bot on Bale; it logs your id (pairing) → put it in ADMIN_IDS"
+        )
 
 
 def open_chat():
@@ -245,6 +266,7 @@ def open_chat():
     print("     (ربات باید روشن باشد — گزینهٔ ۱)")
     try:
         import webbrowser
+
         webbrowser.open(url)
     except Exception:
         pass
@@ -288,8 +310,10 @@ def github_push():
     # Safety guard: never push secrets
     rc, tracked = _git(["ls-files", ".env"])
     if ".env" in (tracked or ""):
-        print("[X] ABORT: .env is tracked by git — pushing would leak secrets. "
-              "Run: git rm --cached .env")
+        print(
+            "[X] ABORT: .env is tracked by git — pushing would leak secrets. "
+            "Run: git rm --cached .env"
+        )
         return
     rc, _ = _git(["rev-parse", "--is-inside-work-tree"])
     if rc != 0:
@@ -297,8 +321,10 @@ def github_push():
         return
     rc, remotes = _git(["remote"])
     if "origin" not in (remotes or ""):
-        print("[X] No 'origin' remote. Add it once:\n"
-              "    git remote add origin https://github.com/<you>/<repo>.git")
+        print(
+            "[X] No 'origin' remote. Add it once:\n"
+            "    git remote add origin https://github.com/<you>/<repo>.git"
+        )
         return
 
     try:

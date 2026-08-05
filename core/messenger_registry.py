@@ -22,6 +22,7 @@ async def notify_admins(text: str) -> bool:
     تنظیم نشده باشد، بی‌صدا رد می‌شود (هرگز کرش نمی‌کند)."""
     try:
         from config import PLUGINS_CONFIG
+
         cfg = PLUGINS_CONFIG.get("adminhandler", {})
         ids = cfg.get("admin_ids", [])
         platform = cfg.get("platform", "bale")

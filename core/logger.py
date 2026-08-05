@@ -34,18 +34,35 @@ SUCCESS_LEVEL = 25
 logging.addLevelName(SUCCESS_LEVEL, "SUCCESS")
 
 _LEVEL_NO = {
-    "DEBUG": logging.DEBUG, "INFO": logging.INFO, "SUCCESS": SUCCESS_LEVEL,
-    "WARNING": logging.WARNING, "ERROR": logging.ERROR, "CRITICAL": logging.CRITICAL,
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "SUCCESS": SUCCESS_LEVEL,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
 }
-_EMOJI = {"DEBUG": "🐛", "INFO": "ℹ️", "SUCCESS": "✅",
-          "WARNING": "⚠️", "ERROR": "❌", "CRITICAL": "🔥"}
-_COLOR = {"DEBUG": "\033[90m", "INFO": "\033[94m", "SUCCESS": "\033[92m",
-          "WARNING": "\033[93m", "ERROR": "\033[91m", "CRITICAL": "\033[95m"}
+_EMOJI = {
+    "DEBUG": "🐛",
+    "INFO": "ℹ️",
+    "SUCCESS": "✅",
+    "WARNING": "⚠️",
+    "ERROR": "❌",
+    "CRITICAL": "🔥",
+}
+_COLOR = {
+    "DEBUG": "\033[90m",
+    "INFO": "\033[94m",
+    "SUCCESS": "\033[92m",
+    "WARNING": "\033[93m",
+    "ERROR": "\033[91m",
+    "CRITICAL": "\033[95m",
+}
 _RESET = "\033[0m"
 
 
 class LogLevel(Enum):
     """Kept for backward compatibility with older call sites."""
+
     DEBUG = "🐛"
     INFO = "ℹ️"
     SUCCESS = "✅"
@@ -56,6 +73,7 @@ class LogLevel(Enum):
 
 class JsonFormatter(logging.Formatter):
     """One machine-readable JSON object per line."""
+
     def format(self, record: logging.LogRecord) -> str:
         obj = {
             "ts": datetime.fromtimestamp(record.created, timezone.utc).isoformat(),
@@ -67,12 +85,15 @@ class JsonFormatter(logging.Formatter):
         if ctx:
             obj["context"] = ctx
         if record.exc_info:
-            obj["exception"] = "".join(traceback.format_exception(*record.exc_info))[-2000:]
+            obj["exception"] = "".join(traceback.format_exception(*record.exc_info))[
+                -2000:
+            ]
         return json.dumps(obj, ensure_ascii=False)
 
 
 class ConsoleFormatter(logging.Formatter):
     """Readable line for the terminal (colored on real TTYs)."""
+
     def __init__(self):
         super().__init__()
         try:
@@ -98,6 +119,7 @@ def _env_bool(name: str, default: str = "true") -> bool:
 
 class Logger:
     """Singleton wrapper around a stdlib logger named 'srooyesh'."""
+
     _instance = None
 
     def __new__(cls):
@@ -111,9 +133,13 @@ class Logger:
             return
         self._initialized = True
 
-        self.log_dir = os.getenv("LOG_DIR", SYSTEM_CONFIG.get("log_directory", "storage/logs"))
+        self.log_dir = os.getenv(
+            "LOG_DIR", SYSTEM_CONFIG.get("log_directory", "storage/logs")
+        )
         os.makedirs(self.log_dir, exist_ok=True)
-        self.log_level = os.getenv("LOG_LEVEL", SYSTEM_CONFIG.get("log_level", "INFO")).upper()
+        self.log_level = os.getenv(
+            "LOG_LEVEL", SYSTEM_CONFIG.get("log_level", "INFO")
+        ).upper()
 
         self._logger = logging.getLogger("srooyesh")
         self._logger.setLevel(_LEVEL_NO.get(self.log_level, logging.INFO))
@@ -132,7 +158,9 @@ class Logger:
             fname = "app.jsonl" if as_json else "app.log"
             fh = logging.handlers.RotatingFileHandler(
                 os.path.join(self.log_dir, fname),
-                maxBytes=int(max_mb * 1024 * 1024), backupCount=backups, encoding="utf-8",
+                maxBytes=int(max_mb * 1024 * 1024),
+                backupCount=backups,
+                encoding="utf-8",
             )
             fh.setFormatter(JsonFormatter() if as_json else ConsoleFormatter())
             self._logger.addHandler(fh)
@@ -140,10 +168,18 @@ class Logger:
         self._stats = {"total_logs": 0, "by_level": {}, "last_log_time": None}
 
     # ---- core ----
-    def _emit(self, levelname: str, message: str, context: Optional[Dict] = None, exc_info=None):
+    def _emit(
+        self,
+        levelname: str,
+        message: str,
+        context: Optional[Dict] = None,
+        exc_info=None,
+    ):
         levelno = _LEVEL_NO.get(levelname, logging.INFO)
         self._stats["total_logs"] += 1
-        self._stats["by_level"][levelname] = self._stats["by_level"].get(levelname, 0) + 1
+        self._stats["by_level"][levelname] = (
+            self._stats["by_level"].get(levelname, 0) + 1
+        )
         self._stats["last_log_time"] = datetime.now()
         extra = {"context": context} if context else None
         self._logger.log(levelno, message, extra=extra, exc_info=exc_info)

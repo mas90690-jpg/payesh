@@ -5,7 +5,9 @@ from analyzers.keyword_finder import get_keyword_finder
 
 def test_keywords_loaded(keyword_finder):
     """بررسی اینکه حداقل ۲۹۰ کلیدواژه از محصولات بارگذاری شده باشد"""
-    assert len(keyword_finder.keywords) >= 290, f"فقط {len(keyword_finder.keywords)} کلیدواژه بارگذاری شد!"
+    assert (
+        len(keyword_finder.keywords) >= 290
+    ), f"فقط {len(keyword_finder.keywords)} کلیدواژه بارگذاری شد!"
 
 
 def test_persian_match(keyword_finder):

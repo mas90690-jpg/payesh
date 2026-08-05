@@ -68,11 +68,9 @@ class BackupService:
         stats = self._load_stats()
         if backup_type not in stats:
             stats[backup_type] = []
-        stats[backup_type].append({
-            "path": backup_path,
-            "size": size,
-            "date": datetime.now().isoformat()
-        })
+        stats[backup_type].append(
+            {"path": backup_path, "size": size, "date": datetime.now().isoformat()}
+        )
         stats[backup_type] = stats[backup_type][-50:]
         self._save_stats(stats)
 
@@ -97,13 +95,36 @@ class BackupService:
     def _get_code_files(self) -> List[str]:
         """دریافت لیست فایل‌های کد (بدون فایل‌های موقتی)"""
         ignore_dirs = {
-            "__pycache__", "backups", "storage", "data", ".git",
-            "venv", "reports", "logs", "cache", "sessions", "media"
+            "__pycache__",
+            "backups",
+            "storage",
+            "data",
+            ".git",
+            "venv",
+            "reports",
+            "logs",
+            "cache",
+            "sessions",
+            "media",
         }
-        ignore_extensions = {".pyc", ".db", ".log", ".bale", ".zip", ".7z", ".rar", ".pid"}
+        ignore_extensions = {
+            ".pyc",
+            ".db",
+            ".log",
+            ".bale",
+            ".zip",
+            ".7z",
+            ".rar",
+            ".pid",
+        }
         ignore_files = {
-            "hashes.json", "last_backup.txt", "last_full_backup.txt", "bot.pid",
-            "stats.json", "products_list.txt", "messages.txt"
+            "hashes.json",
+            "last_backup.txt",
+            "last_full_backup.txt",
+            "bot.pid",
+            "stats.json",
+            "products_list.txt",
+            "messages.txt",
         }
 
         code_files = []
@@ -114,7 +135,19 @@ class BackupService:
                     continue
                 if any(file.endswith(ext) for ext in ignore_extensions):
                     continue
-                if file.endswith(('.py', '.json', '.ini', '.txt', '.env', '.bat', '.md', '.yml', '.yaml')):
+                if file.endswith(
+                    (
+                        ".py",
+                        ".json",
+                        ".ini",
+                        ".txt",
+                        ".env",
+                        ".bat",
+                        ".md",
+                        ".yml",
+                        ".yaml",
+                    )
+                ):
                     rel = os.path.relpath(os.path.join(root, file), BASE_DIR)
                     code_files.append(rel)
 
@@ -138,7 +171,7 @@ class BackupService:
     def _compress_folder(self, source_dir: str, zip_path: str) -> bool:
         try:
             file_count = 0
-            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
                 for root, _, files in os.walk(source_dir):
                     for file in files:
                         full_path = os.path.join(root, file)
@@ -275,14 +308,18 @@ class BackupService:
     def _cleanup_old(self) -> None:
         """حذف بکاپ‌های قدیمی"""
         # پشتیبان‌های روزانه
-        daily_files = sorted([f for f in os.listdir(self.daily_dir) if f.endswith(".zip")])
+        daily_files = sorted(
+            [f for f in os.listdir(self.daily_dir) if f.endswith(".zip")]
+        )
         while len(daily_files) > KEEP_DAILY_BACKUPS:
             oldest = daily_files.pop(0)
             os.remove(os.path.join(self.daily_dir, oldest))
             log_info(f"حذف بکاپ قدیمی: {oldest}")
 
         # پشتیبان‌های کامل
-        full_files = sorted([f for f in os.listdir(self.full_dir) if f.endswith(".zip")])
+        full_files = sorted(
+            [f for f in os.listdir(self.full_dir) if f.endswith(".zip")]
+        )
         while len(full_files) > KEEP_FULL_BACKUPS:
             oldest = full_files.pop(0)
             os.remove(os.path.join(self.full_dir, oldest))

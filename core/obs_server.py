@@ -58,8 +58,18 @@ def render_prometheus(counts: dict, sys_stats: dict, collectors_up: dict) -> str
         out.append(f"# TYPE {name} {typ}")
         out.append(f"{name} {value}")
 
-    g("app_messages_total", counts.get("messages", 0), "Total stored messages", "counter")
-    g("app_leads_total", counts.get("leads", 0), "Total leads (keyword matches)", "counter")
+    g(
+        "app_messages_total",
+        counts.get("messages", 0),
+        "Total stored messages",
+        "counter",
+    )
+    g(
+        "app_leads_total",
+        counts.get("leads", 0),
+        "Total leads (keyword matches)",
+        "counter",
+    )
     g("app_hot_leads_total", counts.get("hot", 0), "Hot (high-intent) leads", "counter")
 
     out.append("# HELP app_leads_by_platform Leads per platform")
@@ -69,7 +79,12 @@ def render_prometheus(counts: dict, sys_stats: dict, collectors_up: dict) -> str
 
     g("system_cpu_percent", round(sys_stats.get("cpu", 0), 1), "Process host CPU %")
     g("system_ram_percent", round(sys_stats.get("ram", 0), 1), "Host RAM %")
-    g("app_uptime_seconds", int(sys_stats.get("uptime", 0)), "Uptime in seconds", "counter")
+    g(
+        "app_uptime_seconds",
+        int(sys_stats.get("uptime", 0)),
+        "Uptime in seconds",
+        "counter",
+    )
 
     out.append("# HELP collector_up Collector connected (1=up,0=down)")
     out.append("# TYPE collector_up gauge")
@@ -93,9 +108,11 @@ async def _gather_counts(db) -> dict:
             c = sqlite3.connect(path)
             cur = c.cursor()
             counts["hot"] = cur.execute(
-                "SELECT COUNT(*) FROM messages WHERE opportunity_type='داغ'").fetchone()[0]
+                "SELECT COUNT(*) FROM messages WHERE opportunity_type='داغ'"
+            ).fetchone()[0]
             for p, n in cur.execute(
-                    "SELECT platform, COUNT(*) FROM messages WHERE keywords!='' GROUP BY platform"):
+                "SELECT platform, COUNT(*) FROM messages WHERE keywords!='' GROUP BY platform"
+            ):
                 counts["by_platform"][p] = n
             c.close()
         except Exception:
@@ -106,6 +123,7 @@ async def _gather_counts(db) -> dict:
 def _sys_stats() -> dict:
     try:
         import psutil
+
         return {
             "cpu": psutil.cpu_percent(interval=None),
             "ram": psutil.virtual_memory().percent,
@@ -137,26 +155,39 @@ async def start_obs_server(db, health_checker=None, collectors=None):
         if health_checker is not None:
             try:
                 result = await health_checker.check_all()
-                code = 200 if result.get("overall_status") in ("healthy", "degraded") else 503
+                code = (
+                    200
+                    if result.get("overall_status") in ("healthy", "degraded")
+                    else 503
+                )
                 return web.json_response(result, status=code)
             except Exception as e:
-                return web.json_response({"overall_status": "unhealthy", "error": str(e)}, status=503)
+                return web.json_response(
+                    {"overall_status": "unhealthy", "error": str(e)}, status=503
+                )
         # fallback: minimal liveness
-        return web.json_response({"overall_status": "healthy", "uptime": _sys_stats()["uptime"]})
+        return web.json_response(
+            {"overall_status": "healthy", "uptime": _sys_stats()["uptime"]}
+        )
 
     async def metrics(request):
         counts = await _gather_counts(db)
-        ups = {getattr(c, "platform_name", "?"): getattr(c, "is_connected", False) for c in collectors}
+        ups = {
+            getattr(c, "platform_name", "?"): getattr(c, "is_connected", False)
+            for c in collectors
+        }
         text = render_prometheus(counts, _sys_stats(), ups)
         return web.Response(text=text, content_type="text/plain")
 
     async def index(request):
         counts = await _gather_counts(db)
         s = _sys_stats()
-        body = (f"Srooyesh Lead-Monitor — OK\n"
-                f"uptime: {int(s['uptime'])}s | cpu: {s['cpu']}% | ram: {s['ram']}%\n"
-                f"messages: {counts['messages']} | leads: {counts['leads']} | hot: {counts['hot']}\n"
-                f"endpoints: /health  /metrics  /chat (چت با هوشِ لوکال)\n")
+        body = (
+            f"Srooyesh Lead-Monitor — OK\n"
+            f"uptime: {int(s['uptime'])}s | cpu: {s['cpu']}% | ram: {s['ram']}%\n"
+            f"messages: {counts['messages']} | leads: {counts['leads']} | hot: {counts['hot']}\n"
+            f"endpoints: /health  /metrics  /chat (چت با هوشِ لوکال)\n"
+        )
         return web.Response(text=body, content_type="text/plain")
 
     # چتِ محلیِ هوش (روی لپ‌تاپ، بدونِ نت/بله) — همیشه روی http://localhost:PORT/chat
@@ -165,6 +196,7 @@ async def start_obs_server(db, health_checker=None, collectors=None):
     def _get_admin():
         if _admin["h"] is None:
             from handlers.admin_handler import AdminHandler
+
             _admin["h"] = AdminHandler(db)
         return _admin["h"]
 
@@ -173,8 +205,11 @@ async def start_obs_server(db, health_checker=None, collectors=None):
 
     async def chat_api(request):
         from config import AI_ENABLED
+
         if not AI_ENABLED:
-            return web.json_response({"reply": "🧠 هوش فعلاً خاموش است (در .env بزن AI_ENABLED=true)."})
+            return web.json_response(
+                {"reply": "🧠 هوش فعلاً خاموش است (در .env بزن AI_ENABLED=true)."}
+            )
         try:
             data = await request.json()
             reply = await _get_admin().process_text(data.get("message", ""))
@@ -194,7 +229,9 @@ async def start_obs_server(db, health_checker=None, collectors=None):
     site = web.TCPSite(runner, host, port)
     try:
         await site.start()
-        log_success(f"Observability server on http://{host}:{port}  (/health, /metrics)")
+        log_success(
+            f"Observability server on http://{host}:{port}  (/health, /metrics)"
+        )
     except Exception as e:
         log_error(f"Could not start observability server on :{port} — {e}")
         return None

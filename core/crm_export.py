@@ -24,8 +24,17 @@ DB_PATH = os.path.join(DB_DIR, "messages.db")
 
 # ستون‌های CRM (به فارسی؛ ترتیب مناسب واردکردن در اکثر CRMها)
 CRM_HEADERS = [
-    "منبع (پلتفرم)", "کانال/گروه", "فرد/فرستنده", "تاریخ",
-    "سطح فرصت", "امتیاز", "علاقه‌مندی (کلیدواژه)", "متن پیام", "لینک", "رسانه", "شناسه",
+    "منبع (پلتفرم)",
+    "کانال/گروه",
+    "فرد/فرستنده",
+    "تاریخ",
+    "سطح فرصت",
+    "امتیاز",
+    "علاقه‌مندی (کلیدواژه)",
+    "متن پیام",
+    "لینک",
+    "رسانه",
+    "شناسه",
 ]
 
 
@@ -41,14 +50,17 @@ def _rows(days: int):
 
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    cur = conn.execute(f"""
+    cur = conn.execute(
+        f"""
         SELECT platform, chat_name, chat_link, sender_name, user_id,
                text, keywords, media_type, timestamp, id,
                opportunity_score, opportunity_type
         FROM messages
         WHERE {where}
         ORDER BY opportunity_score DESC, timestamp DESC
-    """, params)
+    """,
+        params,
+    )
     rows = dedup_rows(cur.fetchall())
     conn.close()
     # مرتب‌سازی پایدار: ترتیبِ ثابتِ پلتفرم (امتیازِ نزولی درونِ هر پلتفرم حفظ می‌شود)
@@ -90,9 +102,19 @@ def export_crm(days: int = 30):
     records = [_record(r) for r in rows]
 
     def _row_cells(rec):
-        return [rec["source"], rec["channel"], rec["contact"], rec["date"],
-                rec["level"], rec["score"], rec["keywords"], rec["text"][:1000],
-                rec["link"], rec["media"], rec["id"]]
+        return [
+            rec["source"],
+            rec["channel"],
+            rec["contact"],
+            rec["date"],
+            rec["level"],
+            rec["score"],
+            rec["keywords"],
+            rec["text"][:1000],
+            rec["link"],
+            rec["media"],
+            rec["id"],
+        ]
 
     # CSV (utf-8-sig تا اکسل فارسی را درست نشان دهد)
     with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
@@ -113,7 +135,12 @@ def export_crm(days: int = 30):
     print(f"   • JSON: {json_path}")
     if xlsx_path:
         print(f"   • XLSX: {xlsx_path}")
-    return {"csv": csv_path, "json": json_path, "xlsx": xlsx_path, "count": len(records)}
+    return {
+        "csv": csv_path,
+        "json": json_path,
+        "xlsx": xlsx_path,
+        "count": len(records),
+    }
 
 
 def _export_xlsx(records, stamp):
@@ -135,9 +162,21 @@ def _export_xlsx(records, stamp):
             c.fill = head_fill
             c.alignment = Alignment(horizontal="center")
         for rec in records:
-            ws.append([rec["source"], rec["channel"], rec["contact"], str(rec["date"]),
-                       rec["level"], rec["score"], rec["keywords"], rec["text"][:1000],
-                       rec["link"], rec["media"], rec["id"]])
+            ws.append(
+                [
+                    rec["source"],
+                    rec["channel"],
+                    rec["contact"],
+                    str(rec["date"]),
+                    rec["level"],
+                    rec["score"],
+                    rec["keywords"],
+                    rec["text"][:1000],
+                    rec["link"],
+                    rec["media"],
+                    rec["id"],
+                ]
+            )
         ws.freeze_panes = "A2"
         widths = [12, 22, 16, 20, 10, 8, 24, 60, 30, 10, 18]
         for i, wd in enumerate(widths, 1):
@@ -152,5 +191,6 @@ def _export_xlsx(records, stamp):
 
 if __name__ == "__main__":
     import sys
+
     d = int(sys.argv[1]) if len(sys.argv) > 1 else 30
     export_crm(d)

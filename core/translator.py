@@ -22,9 +22,14 @@ from core.logger import log_info, log_warning
 
 
 class Translator:
-    def __init__(self, glossary_file: str = None, target: str = "fa", enabled: bool = True):
+    def __init__(
+        self, glossary_file: str = None, target: str = "fa", enabled: bool = True
+    ):
         from config import BASE_DIR
-        self.glossary_file = glossary_file or os.path.join(BASE_DIR, "data", "glossary.txt")
+
+        self.glossary_file = glossary_file or os.path.join(
+            BASE_DIR, "data", "glossary.txt"
+        )
         self.target = target
         self.enabled = enabled
         self.glossary: Dict[str, Tuple[str, str]] = self._load_glossary()
@@ -53,6 +58,7 @@ class Translator:
         if self._engine is None:
             try:
                 from deep_translator import GoogleTranslator
+
                 self._engine = GoogleTranslator(source="auto", target=self.target)
             except Exception as e:
                 log_warning(f"موتور ترجمه در دسترس نیست: {e}")
@@ -70,7 +76,7 @@ class Translator:
         for i, (_, (term, trans)) in enumerate(self.glossary.items()):
             pattern = re.compile(re.escape(term), re.IGNORECASE)
             if pattern.search(protected):
-                token = f"zzg{i}zz"   # نشانه‌ای که مترجم دست‌نخورده نگه می‌دارد
+                token = f"zzg{i}zz"  # نشانه‌ای که مترجم دست‌نخورده نگه می‌دارد
                 protected = pattern.sub(token, protected)
                 restore[token] = trans
 

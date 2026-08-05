@@ -36,7 +36,7 @@ class KeywordFinder(BaseAnalyzer):
         self.data_dir = data_dir
         self.keywords: List[str] = []
         self.pattern: Optional[re.Pattern] = None
-        self._signature = None          # امضای mtime منابع (برای تشخیص تغییر)
+        self._signature = None  # امضای mtime منابع (برای تشخیص تغییر)
         self._last_check = 0.0
         self._load()
 
@@ -84,7 +84,9 @@ class KeywordFinder(BaseAnalyzer):
                 if not fn.endswith(".json"):
                     continue
                 try:
-                    with open(os.path.join(self.data_dir, fn), "r", encoding="utf-8") as f:
+                    with open(
+                        os.path.join(self.data_dir, fn), "r", encoding="utf-8"
+                    ) as f:
                         data = json.load(f)
                 except Exception:
                     continue

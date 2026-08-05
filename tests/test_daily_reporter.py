@@ -2,8 +2,11 @@
 import pytest
 from datetime import datetime
 from core.daily_reporter import (
-    platform_label, platform_rank, group_by_platform, 
-    platform_summary_line, PLATFORM_ORDER
+    platform_label,
+    platform_rank,
+    group_by_platform,
+    platform_summary_line,
+    PLATFORM_ORDER,
 )
 
 

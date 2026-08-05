@@ -34,7 +34,15 @@ REPORTS_DIR = os.path.join(STORAGE_DIR, "reports")
 BACKUPS_DIR = os.path.join(STORAGE_DIR, "backups")
 
 # ایجاد خودکار همه پوشه‌ها
-for d in [DB_DIR, SESSIONS_DIR, LOGS_DIR, PYCACHE_DIR, MEDIA_DIR, REPORTS_DIR, BACKUPS_DIR]:
+for d in [
+    DB_DIR,
+    SESSIONS_DIR,
+    LOGS_DIR,
+    PYCACHE_DIR,
+    MEDIA_DIR,
+    REPORTS_DIR,
+    BACKUPS_DIR,
+]:
     os.makedirs(d, exist_ok=True)
 
 # ==================================================
@@ -72,10 +80,18 @@ SYSTEM_CONFIG = {
 # ۰ یعنی هرگز پاک نشود
 # ==================================================
 RETENTION = {
-    "media_days": int(os.getenv("KEEP_MEDIA_DAYS", 30)),          # عکس/فایل بعد از این تعداد روز پاک
-    "reports_days": int(os.getenv("KEEP_REPORTS_DAYS", 30)),      # گزارش‌ها بعد از این تعداد روز پاک
-    "messages_days": int(os.getenv("KEEP_MESSAGES_DAYS", 0)),     # پیام‌های دیتابیس (۰ = همیشه نگه‌دار)
-    "cleanup_interval_hours": int(os.getenv("CLEANUP_INTERVAL_HOURS", 24)),  # هر چند ساعت پاک‌سازی اجرا شود
+    "media_days": int(
+        os.getenv("KEEP_MEDIA_DAYS", 30)
+    ),  # عکس/فایل بعد از این تعداد روز پاک
+    "reports_days": int(
+        os.getenv("KEEP_REPORTS_DAYS", 30)
+    ),  # گزارش‌ها بعد از این تعداد روز پاک
+    "messages_days": int(
+        os.getenv("KEEP_MESSAGES_DAYS", 0)
+    ),  # پیام‌های دیتابیس (۰ = همیشه نگه‌دار)
+    "cleanup_interval_hours": int(
+        os.getenv("CLEANUP_INTERVAL_HOURS", 24)
+    ),  # هر چند ساعت پاک‌سازی اجرا شود
 }
 
 # ==================================================
@@ -83,8 +99,10 @@ RETENTION = {
 # ==================================================
 MONITOR = {
     "enabled": os.getenv("MONITOR_ENABLED", "true").lower() == "true",
-    "interval_seconds": int(os.getenv("MONITOR_INTERVAL_SECONDS", 30)),  # قبلاً ۵ بود (پرنویز)
-    "cpu_alert": float(os.getenv("MONITOR_CPU_ALERT", 95)),   # فقط بالای این درصد هشدار
+    "interval_seconds": int(
+        os.getenv("MONITOR_INTERVAL_SECONDS", 30)
+    ),  # قبلاً ۵ بود (پرنویز)
+    "cpu_alert": float(os.getenv("MONITOR_CPU_ALERT", 95)),  # فقط بالای این درصد هشدار
     "ram_alert": float(os.getenv("MONITOR_RAM_ALERT", 92)),
     "disk_alert": float(os.getenv("MONITOR_DISK_ALERT", 92)),
 }
@@ -94,8 +112,8 @@ MONITOR = {
 # ==================================================
 REPORT = {
     "enabled": os.getenv("REPORT_ENABLED", "true").lower() == "true",
-    "daily_time": os.getenv("REPORT_DAILY_TIME", "08:00"),    # ساعت گزارش روزانه (HH:MM)
-    "weekly_day": os.getenv("REPORT_WEEKLY_DAY", "sunday"),   # روز گزارش هفتگی
+    "daily_time": os.getenv("REPORT_DAILY_TIME", "08:00"),  # ساعت گزارش روزانه (HH:MM)
+    "weekly_day": os.getenv("REPORT_WEEKLY_DAY", "sunday"),  # روز گزارش هفتگی
     "weekly_time": os.getenv("REPORT_WEEKLY_TIME", "09:00"),  # ساعت گزارش هفتگی
 }
 
@@ -110,7 +128,6 @@ REPORT = {
 # برای غیرفعال کردن یک پلاگین خاص، آن را در بخش مربوطه enabled=False قرار دهید
 PLUGINS_CONFIG = {
     "enabled_plugins": [],  # لیست نام پلاگین‌های فعال (اختیاری)
-
     # ========== پیام‌رسان بله ==========
     "balecollector": {
         "type": os.getenv("BALE_TYPE", "user"),
@@ -119,18 +136,16 @@ PLUGINS_CONFIG = {
         "phone": os.getenv("BALE_PHONE"),
         "session_path": os.path.join(SESSIONS_DIR, "bale", "bale_session"),
         "media_dir": os.path.join(MEDIA_DIR, "bale"),
-        "enabled": os.getenv("BALE_ENABLED", "true").lower() == "true"
+        "enabled": os.getenv("BALE_ENABLED", "true").lower() == "true",
     },
-
     # ========== پیام‌رسان روبیکا ==========
     "rubikacollector": {
         "phone": os.getenv("RUBIKA_PHONE"),
         "password": os.getenv("RUBIKA_PASSWORD"),
         "session_path": os.path.join(SESSIONS_DIR, "rubika_session"),
         "media_dir": os.path.join(MEDIA_DIR, "rubika"),
-        "enabled": os.getenv("RUBIKA_ENABLED", "false").lower() == "true"
+        "enabled": os.getenv("RUBIKA_ENABLED", "false").lower() == "true",
     },
-
     # ========== پیام‌رسان ایتا ==========
     "eitaacollector": {
         "phone": os.getenv("EITAA_PHONE"),
@@ -140,14 +155,17 @@ PLUGINS_CONFIG = {
         "enabled": os.getenv("EITAA_ENABLED", "false").lower() == "true",
         # ایتا یک اسکرپرِ مرورگری سنگین است؛ نباید مثل کلکتورهای لحظه‌ای هر ۲ ثانیه
         # اجرا شود (همین باعث مصرف زیاد CPU/RAM و رصد تکراری پیام‌های قدیمی بود).
-        "poll_seconds": int(os.getenv("EITAA_POLL_SECONDS", 180)),   # هر چند ثانیه یک اسکرپ
-        "max_chats": int(os.getenv("EITAA_MAX_CHATS", 15)),          # حداکثر چت در هر دور
-        "chat_open_delay": float(os.getenv("EITAA_CHAT_DELAY", 1.5)),# مکث بعد از باز کردن هر چت
+        "poll_seconds": int(
+            os.getenv("EITAA_POLL_SECONDS", 180)
+        ),  # هر چند ثانیه یک اسکرپ
+        "max_chats": int(os.getenv("EITAA_MAX_CHATS", 15)),  # حداکثر چت در هر دور
+        "chat_open_delay": float(
+            os.getenv("EITAA_CHAT_DELAY", 1.5)
+        ),  # مکث بعد از باز کردن هر چت
         "messages_per_chat": int(os.getenv("EITAA_MSGS_PER_CHAT", 30)),
         # اسکرول به بالا در اولین اسکرپ بعد از اتصال، برای خواندن پیام‌های قدیمی‌تر (catch-up)
         "backfill_scrolls": int(os.getenv("EITAA_BACKFILL_SCROLLS", 6)),
     },
-
     # ========== پیام‌رسان تلگرام ==========
     "telegramcollector": {
         "api_id": os.getenv("TELEGRAM_API_ID"),
@@ -155,9 +173,8 @@ PLUGINS_CONFIG = {
         "phone": os.getenv("TELEGRAM_PHONE"),
         "session_path": os.path.join(SESSIONS_DIR, "telegram_session"),
         "media_dir": os.path.join(MEDIA_DIR, "telegram"),
-        "enabled": os.getenv("TELEGRAM_ENABLED", "false").lower() == "true"
+        "enabled": os.getenv("TELEGRAM_ENABLED", "false").lower() == "true",
     },
-
     # ========== پیام‌رسان واتساپ ==========
     "whatsappcollector": {
         "phone": os.getenv("WHATSAPP_PHONE"),
@@ -172,15 +189,18 @@ PLUGINS_CONFIG = {
         "backfill_scrolls": int(os.getenv("WHATSAPP_BACKFILL_SCROLLS", 6)),
         "headless": os.getenv("BROWSER_HEADLESS", "true").lower() == "true",
     },
-
     # ========== لینکدین (مرورگری، به‌عنوان کاربر) ==========
     "linkedincollector": {
         "email": os.getenv("LINKEDIN_EMAIL"),
         "password": os.getenv("LINKEDIN_PASSWORD"),
         "searches_file": os.path.join(BASE_DIR, "data", "linkedin_searches.txt"),
-        "poll_seconds": int(os.getenv("LINKEDIN_POLL_SECONDS", 600)),   # محافظه‌کارانه (۱۰ دقیقه)
+        "poll_seconds": int(
+            os.getenv("LINKEDIN_POLL_SECONDS", 600)
+        ),  # محافظه‌کارانه (۱۰ دقیقه)
         "max_results": int(os.getenv("LINKEDIN_MAX_RESULTS", 15)),
-        "search_delay": float(os.getenv("LINKEDIN_SEARCH_DELAY", 6)),   # مکث پایه بین جستجوها
+        "search_delay": float(
+            os.getenv("LINKEDIN_SEARCH_DELAY", 6)
+        ),  # مکث پایه بین جستجوها
         "scrolls": int(os.getenv("LINKEDIN_SCROLLS", 3)),
         # پایشِ فیدِ خانه (پست‌های پیج‌ها/افرادی که فالو کرده‌ای) — علاوه بر سرچ
         "monitor_feed": os.getenv("LINKEDIN_MONITOR_FEED", "true").lower() == "true",
@@ -188,16 +208,15 @@ PLUGINS_CONFIG = {
         "enabled": os.getenv("LINKEDIN_ENABLED", "false").lower() == "true",
         "headless": os.getenv("BROWSER_HEADLESS", "true").lower() == "true",
     },
-
     # ========== منابع وب (سایت/صفحه) ==========
     "webcollector": {
         "sources_file": os.path.join(BASE_DIR, "data", "web_sources.txt"),
         "max_pages": int(os.getenv("WEB_MAX_PAGES", 40)),
         "timeout": int(os.getenv("WEB_TIMEOUT", 20)),
-        "translate": os.getenv("WEB_TRANSLATE", "false").lower() == "true",  # ترجمهٔ فارسی + واژه‌نامه
+        "translate": os.getenv("WEB_TRANSLATE", "false").lower()
+        == "true",  # ترجمهٔ فارسی + واژه‌نامه
         "enabled": os.getenv("WEB_ENABLED", "false").lower() == "true",
     },
-
     # ========== هندلرها ==========
     "storagehandler": {
         "enabled": True,
@@ -207,33 +226,39 @@ PLUGINS_CONFIG = {
         "save_leads": True,
         "save_media": True,
     },
-    
     "scoringhandler": {
         "enabled": False,
         "min_score_for_alert": 70,
     },
-    
     "notificationhandler": {
         "enabled": False,
         "telegram_bot_token": os.getenv("NOTIFY_TELEGRAM_TOKEN"),
         "telegram_chat_id": os.getenv("NOTIFY_TELEGRAM_CHAT_ID"),
     },
-
     # ========== مدیریتِ ربات از طریقِ پیام‌رسان (ChatOps) ==========
     "adminhandler": {
         # فقط این کاربران (user_id) اجازهٔ دستوردادن دارند. خالی = حالتِ pairing
         # (بات آی‌دیِ هر کسی که پیام دهد را در لاگ می‌نویسد تا آن را اینجا بگذاری).
-        "admin_ids": [x.strip() for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()],
-        "platform": os.getenv("ADMIN_PLATFORM", "bale").strip().lower(),  # روی کدام پیام‌رسان
+        "admin_ids": [
+            x.strip() for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()
+        ],
+        "platform": os.getenv("ADMIN_PLATFORM", "bale")
+        .strip()
+        .lower(),  # روی کدام پیام‌رسان
         "enabled": AI_ENABLED and os.getenv("ADMIN_ENABLED", "true").lower() == "true",
     },
-
     # ========== پایشگرِ خودکار (proactive self-monitor) ==========
     "selfmonitor": {
         "enabled": os.getenv("SELF_MONITOR_ENABLED", "true").lower() == "true",
-        "interval_seconds": int(os.getenv("SELF_MONITOR_INTERVAL", 600)),  # هر چند ثانیه چک کند
-        "error_threshold": int(os.getenv("SELF_MONITOR_ERROR_THRESHOLD", 5)),  # چند خطا = هشدار
-        "stale_minutes": int(os.getenv("SELF_MONITOR_STALE_MINUTES", 60)),  # بی‌فعالیتیِ پلتفرم
+        "interval_seconds": int(
+            os.getenv("SELF_MONITOR_INTERVAL", 600)
+        ),  # هر چند ثانیه چک کند
+        "error_threshold": int(
+            os.getenv("SELF_MONITOR_ERROR_THRESHOLD", 5)
+        ),  # چند خطا = هشدار
+        "stale_minutes": int(
+            os.getenv("SELF_MONITOR_STALE_MINUTES", 60)
+        ),  # بی‌فعالیتیِ پلتفرم
     },
 }
 
@@ -242,37 +267,60 @@ PLUGINS_CONFIG = {
 # on-demand صدا زده می‌شود؛ رمِ همیشگی صفر. مدل از .env (برای همهٔ نسخه‌ها یکسان).
 # ==================================================
 AI = {
-    "enabled": AI_ENABLED and os.getenv("AI_ASSISTANT_ENABLED", "true").lower() == "true",
+    "enabled": AI_ENABLED
+    and os.getenv("AI_ASSISTANT_ENABLED", "true").lower() == "true",
     "url": os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/"),
     "model": os.getenv("OLLAMA_MODEL", "qwen2.5:3b"),
     "keep_alive": os.getenv("OLLAMA_KEEP_ALIVE", "30s"),
-    "timeout": int(os.getenv("AI_TIMEOUT", "120")),   # بارِ اولِ سرد، لودِ مدل کند است
+    "timeout": int(os.getenv("AI_TIMEOUT", "120")),  # بارِ اولِ سرد، لودِ مدل کند است
+}
+
+# ==================================================
+# تنظیمات مغز هوشمند (Brain) — حافظه API و دسترسی کامل
+# ==================================================
+BRAIN_CONFIG = {
+    # دسترسی کامل (دور زدن تمام محدودیت‌های امنیتی)
+    "full_access": os.getenv("FULL_ACCESS", "false").lower() == "true",
+    # استفاده از حافظه API به‌جای ChromaDB محلی
+    "use_api_memory": os.getenv("USE_API_MEMORY", "false").lower() == "true",
+    # آدرس API حافظه (مثلاً http://localhost:8080)
+    "memory_api_url": os.getenv("MEMORY_API_URL", "").strip(),
+    # کلید API حافظه (در صورت نیاز)
+    "memory_api_key": os.getenv("MEMORY_API_KEY", "").strip(),
 }
 
 # هشدارِ زندهٔ سرنخ: لحظه‌ای که سرنخی پیدا شد، به مدیر در بله پیام بده.
 # فعلاً به‌خواستهٔ کاربر خاموش است (کد می‌ماند برای بعد). با LEAD_ALERTS_ENABLED=true روشن می‌شود.
 LEAD_ALERTS = {
     "enabled": os.getenv("LEAD_ALERTS_ENABLED", "false").lower() == "true",
-    "min_score": int(os.getenv("LEAD_ALERT_MIN_SCORE", "0")),   # فقط سرنخِ بالاتر از این امتیاز
+    "min_score": int(
+        os.getenv("LEAD_ALERT_MIN_SCORE", "0")
+    ),  # فقط سرنخِ بالاتر از این امتیاز
 }
 
 # ==================================================
 # توابع کمکی
 # ==================================================
 
+
 def get_bale_config():
     return PLUGINS_CONFIG.get("balecollector", {})
+
 
 def get_rubika_config():
     return PLUGINS_CONFIG.get("rubikacollector", {})
 
+
 def get_eitaa_config():
     return PLUGINS_CONFIG.get("eitaacollector", {})
+
 
 def get_telegram_config():
     return PLUGINS_CONFIG.get("telegramcollector", {})
 
+
 def get_whatsapp_config():
     return PLUGINS_CONFIG.get("whatsappcollector", {})
+
 
 COLLECTORS_CONFIG = PLUGINS_CONFIG

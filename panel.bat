@@ -1,5 +1,4 @@
 @echo off
-REM Bot Control Panel - double-click to open
 chcp 65001 >nul
 cd /d "%~dp0"
 set PYTHONUTF8=1
@@ -9,3 +8,4 @@ if exist "venv\Scripts\python.exe" (
 ) else (
     python panel.py
 )
+pause

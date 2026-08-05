@@ -26,16 +26,27 @@ from typing import List, Dict, Any, Optional, Set, Tuple
 from core.base_collector import BaseCollector, ConnectionStatus
 from core.logger import log_info, log_success, log_error, log_warning
 
-DEFAULT_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-              "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+DEFAULT_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
 
 
 class WebCollector(BaseCollector):
-    def __init__(self, sources_file: str = None, max_pages: int = 40,
-                 timeout: int = 20, translate: bool = False, **kwargs):
+    def __init__(
+        self,
+        sources_file: str = None,
+        max_pages: int = 40,
+        timeout: int = 20,
+        translate: bool = False,
+        **kwargs,
+    ):
         super().__init__()
         from config import BASE_DIR
-        self.sources_file = sources_file or os.path.join(BASE_DIR, "data", "web_sources.txt")
+
+        self.sources_file = sources_file or os.path.join(
+            BASE_DIR, "data", "web_sources.txt"
+        )
         self.max_pages = int(max_pages)
         self.timeout = int(timeout)
         self.translate = bool(translate)
@@ -51,6 +62,7 @@ class WebCollector(BaseCollector):
     def _get_translator(self):
         if self._translator is None:
             from core.translator import Translator
+
             self._translator = Translator(enabled=True)
         return self._translator
 
@@ -70,6 +82,7 @@ class WebCollector(BaseCollector):
     def poll_interval_seconds(self) -> float:
         # وب اسکرپر سنگین است؛ با فاصلهٔ سیستم (پیش‌فرض ۲۴ ساعت) اجرا شود نه هر ۲ ثانیه.
         from config import SYSTEM_CONFIG
+
         return SYSTEM_CONFIG.get("poll_interval_hours", 24) * 3600
 
     # ==================================================
@@ -80,9 +93,13 @@ class WebCollector(BaseCollector):
         self._connected = True
         self._set_status(ConnectionStatus.CONNECTED)
         if self._sources:
-            log_success(f"✅ وب: {len(self._sources)} منبع از {os.path.basename(self.sources_file)} بارگذاری شد")
+            log_success(
+                f"✅ وب: {len(self._sources)} منبع از {os.path.basename(self.sources_file)} بارگذاری شد"
+            )
         else:
-            log_warning(f"⚠️ وب: هیچ لینکی در {self.sources_file} نیست (فقط لینک اضافه کن)")
+            log_warning(
+                f"⚠️ وب: هیچ لینکی در {self.sources_file} نیست (فقط لینک اضافه کن)"
+            )
         return True
 
     def _load_sources(self) -> List[Tuple[str, str, dict]]:
@@ -130,7 +147,9 @@ class WebCollector(BaseCollector):
             "Accept-Language": "en-US,en;q=0.9,fa;q=0.8",
         }
         try:
-            async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with aiohttp.ClientSession(
+                timeout=timeout, headers=headers
+            ) as session:
                 for mode, url, params in self._sources:
                     try:
                         if mode == "site":
@@ -141,7 +160,7 @@ class WebCollector(BaseCollector):
                             pages = await self._crawl_news(session, url, limit)
                         else:
                             pages = await self._read_single(session, url)
-                        for (page_url, title, text) in pages:
+                        for page_url, title, text in pages:
                             msg = self._make_message(page_url, title, text)
                             if msg:
                                 results.append(msg)
@@ -149,7 +168,7 @@ class WebCollector(BaseCollector):
                         log_warning(f"وب: خطا در خواندن {url}: {e}")
                         continue
         finally:
-            await self._close_browser()   # اگر مرورگرِ رندر باز شده بود، ببند
+            await self._close_browser()  # اگر مرورگرِ رندر باز شده بود، ببند
 
         if results:
             log_success(f"📥 وب: {len(results)} مطلب جدید")
@@ -162,7 +181,9 @@ class WebCollector(BaseCollector):
         title, text = self._extract(html)
         return [(url, title, text)] if text else []
 
-    async def _crawl_site(self, session, start_url, depth) -> List[Tuple[str, str, str]]:
+    async def _crawl_site(
+        self, session, start_url, depth
+    ) -> List[Tuple[str, str, str]]:
         """پیمایش هم‌دامنه تا عمق مشخص با محدودیت تعداد صفحه."""
         base_host = urlparse(start_url).netloc
         visited: Set[str] = set()
@@ -190,16 +211,19 @@ class WebCollector(BaseCollector):
             await asyncio.sleep(0.3)  # مودب بودن با سرور
         return out
 
-    async def _crawl_news(self, session, index_url, limit) -> List[Tuple[str, str, str]]:
+    async def _crawl_news(
+        self, session, index_url, limit
+    ) -> List[Tuple[str, str, str]]:
         """صفحهٔ فهرستِ اخبار را باز می‌کند، لینکِ خبرها را پیدا و **وارد خودِ خبرها** می‌شود
-        و متنِ کاملِ هر خبر را می‌خواند (نه فقط تیتر). فقط لینک‌های زیرشاخهٔ همان بخشِ خبری."""
+        و متنِ کاملِ هر خبر را می‌خواند (نه فقط تیتر). فقط لینک‌های زیرشاخهٔ همان بخشِ خبری.
+        """
         index_html = await self._get_html(session, index_url)
         if not index_html:
             return []
 
         base = urlparse(index_url)
         host = base.netloc
-        index_path = base.path.rstrip("/")           # مثلاً /en/news
+        index_path = base.path.rstrip("/")  # مثلاً /en/news
 
         def collect(links):
             out = []
@@ -215,18 +239,22 @@ class WebCollector(BaseCollector):
             return out
 
         # اول لینک‌های HTML ساکن
-        article_links = list(dict.fromkeys(collect(self._extract_links(index_html, index_url))))
+        article_links = list(
+            dict.fromkeys(collect(self._extract_links(index_html, index_url)))
+        )
 
         # اگر چیزی پیدا نشد (سایت JS-محور)، از DOMِ زندهٔ مرورگر بعد از اسکرول بگیر
         if not article_links:
-            article_links = list(dict.fromkeys(collect(await self._rendered_links(index_url))))
+            article_links = list(
+                dict.fromkeys(collect(await self._rendered_links(index_url)))
+            )
 
+        # محدود کردن تعداد
         article_links = article_links[:limit]
 
+        # ✅ اصلاح: اگر هیچ خبری پیدا نشد، هیچ چیزی برنگردان (به‌جای برگرداندن خودِ صفحهٔ فهرست)
         if not article_links:
-            # اگر ساختار خبرها زیرشاخه نبود، دستِ‌کم خودِ صفحهٔ فهرست را بده
-            t, x = self._extract(index_html)
-            return [(index_url, t, x)] if x else []
+            return []
 
         out: List[Tuple[str, str, str]] = []
         for art_url in article_links:
@@ -236,7 +264,8 @@ class WebCollector(BaseCollector):
             title, text = self._extract(html)
             if text:
                 out.append((art_url, title, text))
-            await asyncio.sleep(0.3)   # مودب بودن با سرور
+            await asyncio.sleep(0.3)  # مودب بودن با سرور
+
         log_info(f"وب(news): {len(out)} خبر از {host} خوانده شد")
         return out
 
@@ -268,6 +297,7 @@ class WebCollector(BaseCollector):
             log_warning("playwright نصب نیست؛ سایت‌های JS-محور/بلاک‌شده خوانده نمی‌شوند")
             return None
         from config import CHROME_PATH
+
         try:
             self._bpw = await async_playwright().start()
         except Exception as e:
@@ -286,11 +316,13 @@ class WebCollector(BaseCollector):
             try:
                 browser = await self._bpw.chromium.launch(**opt)
                 self._bctx = await browser.new_context(
-                    ignore_https_errors=True,   # گواهیِ منقضی را رد کن
+                    ignore_https_errors=True,  # گواهیِ منقضی را رد کن
                     user_agent=DEFAULT_UA,
                     viewport={"width": 1366, "height": 900},
                 )
-                log_info(f"وب: مرورگرِ رندر آماده شد ({opt.get('channel') or opt.get('executable_path') or 'chromium'})")
+                log_info(
+                    f"وب: مرورگرِ رندر آماده شد ({opt.get('channel') or opt.get('executable_path') or 'chromium'})"
+                )
                 return self._bctx
             except Exception:
                 continue
@@ -310,12 +342,14 @@ class WebCollector(BaseCollector):
         try:
             page = await ctx.new_page()
             # سایت‌های کند/ریدایرکتی (مثل گواهیِ منقضی) به مهلتِ بیشتری نیاز دارند
-            await page.goto(url, wait_until="domcontentloaded", timeout=max(self.timeout, 45) * 1000)
+            await page.goto(
+                url, wait_until="domcontentloaded", timeout=max(self.timeout, 45) * 1000
+            )
             try:
                 await page.wait_for_load_state("networkidle", timeout=8000)
             except Exception:
                 pass
-            await asyncio.sleep(2.0)   # فرصت به JS برای لود محتوا
+            await asyncio.sleep(2.0)  # فرصت به JS برای لود محتوا
             # گاهی صفحه در حال ناوبری است؛ content() را با چند تلاش بگیر
             for _ in range(3):
                 try:
@@ -335,14 +369,17 @@ class WebCollector(BaseCollector):
 
     async def _rendered_links(self, url) -> List[str]:
         """صفحه را رندر می‌کند، چند بار اسکرول می‌کند و همهٔ لینک‌های هم‌دامنه را از DOMِ
-        زنده برمی‌گرداند (برای سایت‌های خبریِ JS-محور که لینک‌ها بعد از اسکرول لود می‌شوند)."""
+        زنده برمی‌گرداند (برای سایت‌های خبریِ JS-محور که لینک‌ها بعد از اسکرول لود می‌شوند).
+        """
         ctx = await self._ensure_browser()
         if ctx is None:
             return []
         page = None
         try:
             page = await ctx.new_page()
-            await page.goto(url, wait_until="domcontentloaded", timeout=max(self.timeout, 45) * 1000)
+            await page.goto(
+                url, wait_until="domcontentloaded", timeout=max(self.timeout, 45) * 1000
+            )
             await asyncio.sleep(2.0)
             for _ in range(5):
                 try:
@@ -382,10 +419,15 @@ class WebCollector(BaseCollector):
     def _extract(html: str) -> Tuple[str, str]:
         try:
             from bs4 import BeautifulSoup
+
             soup = BeautifulSoup(html, "html.parser")
-            for tag in soup(["script", "style", "noscript", "svg", "header", "footer", "nav"]):
+            for tag in soup(
+                ["script", "style", "noscript", "svg", "header", "footer", "nav"]
+            ):
                 tag.decompose()
-            title = (soup.title.string.strip() if soup.title and soup.title.string else "")
+            title = (
+                soup.title.string.strip() if soup.title and soup.title.string else ""
+            )
             text = re.sub(r"\s+", " ", soup.get_text(" ")).strip()
         except Exception:
             # fallback ساده بدون bs4
@@ -399,6 +441,7 @@ class WebCollector(BaseCollector):
         links = []
         try:
             from bs4 import BeautifulSoup
+
             soup = BeautifulSoup(html, "html.parser")
             for a in soup.find_all("a", href=True):
                 links.append(urljoin(base_url, a["href"]))
@@ -407,7 +450,9 @@ class WebCollector(BaseCollector):
                 links.append(urljoin(base_url, m))
         return links
 
-    def _make_message(self, url: str, title: str, text: str) -> Optional[Dict[str, Any]]:
+    def _make_message(
+        self, url: str, title: str, text: str
+    ) -> Optional[Dict[str, Any]]:
         if not text:
             return None
         # اثرانگشت محتوا برای حذف تکراری
@@ -428,7 +473,7 @@ class WebCollector(BaseCollector):
                 log_warning(f"ترجمهٔ صفحه ناموفق بود: {e}")
 
         return {
-            "id": f"web_{fingerprint}",     # کلید یکتا → دیتابیس تکراری را رد می‌کند
+            "id": f"web_{fingerprint}",  # کلید یکتا → دیتابیس تکراری را رد می‌کند
             "platform": "web",
             "text": full_text,
             "text_translated": text_translated,
@@ -436,7 +481,7 @@ class WebCollector(BaseCollector):
             "chat_name": title or domain,
             "chat_type": "web",
             "chat_username": None,
-            "chat_link": url,               # آدرس دقیق صفحه
+            "chat_link": url,  # آدرس دقیق صفحه
             "user_id": domain,
             "sender_name": domain,
             "timestamp": datetime.now(),

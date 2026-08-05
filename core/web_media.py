@@ -33,11 +33,11 @@ async def download_dom_image(page, element, media_dir: str, prefix: str):
     خروجی: (media_type, local_path) یا (None, None) اگر عکسی نبود/نشد.
     """
     try:
-        img = await element.query_selector('img[src]')
+        img = await element.query_selector("img[src]")
         if not img:
             return None, None
-        src = await img.get_attribute('src')
-        if not src or src.startswith('data:image/svg'):  # آیکون‌های svg را رد کن
+        src = await img.get_attribute("src")
+        if not src or src.startswith("data:image/svg"):  # آیکون‌های svg را رد کن
             return None, None
 
         b64 = await page.evaluate(_FETCH_B64_JS, src)
@@ -45,13 +45,13 @@ async def download_dom_image(page, element, media_dir: str, prefix: str):
             return None, None
 
         os.makedirs(media_dir, exist_ok=True)
-        stamp = datetime.now().strftime('%Y%m%d%H%M%S%f')
+        stamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
         path = os.path.join(media_dir, f"{prefix}_{stamp}.jpg")
-        with open(path, 'wb') as f:
+        with open(path, "wb") as f:
             f.write(base64.b64decode(b64))
         if os.path.getsize(path) > 0:
             log_success(f"📁 عکس {prefix} ذخیره شد: {os.path.basename(path)}")
-            return 'photo', path
+            return "photo", path
         os.remove(path)
     except Exception as e:
         log_warning(f"دانلود عکس {prefix} ناموفق: {e}")

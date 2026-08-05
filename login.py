@@ -100,10 +100,14 @@ async def login_bale():
             return
         code = input("➡️  کد پیامکی بله را وارد کن: ").strip()
         result = await client.validate_code(code=code, transaction_hash=tx)
-        if "password" in str(type(result)).lower() or getattr(result, "need_password", False):
+        if "password" in str(type(result)).lower() or getattr(
+            result, "need_password", False
+        ):
             if not password or password == "your_password":
                 password = input("➡️  رمز دومرحله‌ای بله را وارد کن: ").strip()
-            result = await client.validate_password(password=password, transaction_hash=tx)
+            result = await client.validate_password(
+                password=password, transaction_hash=tx
+            )
         print(f"✅ ورود بله موفق بود. نشست ذخیره شد: {_bale_session_path()}")
 
 
@@ -116,7 +120,9 @@ async def login_telegram():
     api_hash = cfg.get("api_hash")
     phone = cfg.get("phone")
     if not api_id or not api_hash or not phone:
-        print("❌ TELEGRAM_API_ID / TELEGRAM_API_HASH / TELEGRAM_PHONE در .env تنظیم نشده.")
+        print(
+            "❌ TELEGRAM_API_ID / TELEGRAM_API_HASH / TELEGRAM_PHONE در .env تنظیم نشده."
+        )
         return
     try:
         from telethon import TelegramClient
@@ -139,11 +145,16 @@ async def login_telegram():
 # ==================================================
 async def login_browser(platform_label: str, collector_cls, url: str):
     from playwright.async_api import async_playwright
+
     collector = collector_cls(headless=False)
     print(f"\n🌐 مرورگر {platform_label} باز می‌شود...")
     collector._pw = await async_playwright().start()
     collector._context = await collector._launch_context(use_headless=False)
-    page = collector._context.pages[0] if collector._context.pages else await collector._context.new_page()
+    page = (
+        collector._context.pages[0]
+        if collector._context.pages
+        else await collector._context.new_page()
+    )
     await page.goto(url, wait_until="domcontentloaded")
     await asyncio.get_event_loop().run_in_executor(
         None, input, f"بعد از ورود کامل به {platform_label}، اینجا Enter بزن... "
@@ -164,16 +175,19 @@ async def login_browser(platform_label: str, collector_cls, url: str):
 
 async def login_eitaa():
     from collectors.eitaa import EitaaCollector
+
     await login_browser("ایتا", EitaaCollector, "https://web.eitaa.com/")
 
 
 async def login_whatsapp():
     from collectors.whatsapp import WhatsAppCollector
+
     await login_browser("واتساپ", WhatsAppCollector, "https://web.whatsapp.com/")
 
 
 async def login_linkedin():
     from collectors.linkedin import LinkedInCollector
+
     await login_browser("لینکدین", LinkedInCollector, "https://www.linkedin.com/login")
 
 

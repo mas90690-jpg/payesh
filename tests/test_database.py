@@ -7,17 +7,23 @@ from datetime import datetime, timedelta
 async def test_db_init_and_migrations(temp_db):
     """بررسی ایجاد جداول و مهاجرت‌ها"""
     # بررسی جدول messages
-    cursor = await temp_db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'")
+    cursor = await temp_db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'"
+    )
     row = await cursor.fetchone()
     assert row is not None, "جدول messages ساخته نشد!"
 
     # بررسی جدول leads
-    cursor = await temp_db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='leads'")
+    cursor = await temp_db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='leads'"
+    )
     row = await cursor.fetchone()
     assert row is not None, "جدول leads ساخته نشد!"
 
     # بررسی جدول last_poll
-    cursor = await temp_db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='last_poll'")
+    cursor = await temp_db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='last_poll'"
+    )
     row = await cursor.fetchone()
     assert row is not None, "جدول last_poll ساخته نشد!"
 
@@ -31,7 +37,7 @@ async def test_save_and_get_message(temp_db):
         "text": "قیمت یاراترا",
         "chat_name": "گروه تست",
         "timestamp": datetime.now(),
-        "keywords": "یاراترا"
+        "keywords": "یاراترا",
     }
     await temp_db.save_message(msg)
 
@@ -47,10 +53,16 @@ async def test_save_and_get_message(temp_db):
 async def test_save_and_get_lead(temp_db):
     """ذخیره و بازیابی یک سرنخ (lead)"""
     # leads.message_id کلید خارجی به messages.id است؛ مثل جریان واقعی، اول پیام را ذخیره کن
-    await temp_db.save_message({
-        "id": "bale_123", "platform": "bale", "text": "قیمت یاراترا",
-        "chat_name": "گروه فروش", "keywords": "یاراترا", "timestamp": datetime.now(),
-    })
+    await temp_db.save_message(
+        {
+            "id": "bale_123",
+            "platform": "bale",
+            "text": "قیمت یاراترا",
+            "chat_name": "گروه فروش",
+            "keywords": "یاراترا",
+            "timestamp": datetime.now(),
+        }
+    )
     lead = {
         "id": "lead_001",
         "message_id": "bale_123",
@@ -58,7 +70,7 @@ async def test_save_and_get_lead(temp_db):
         "text": "قیمت یاراترا",
         "chat_name": "گروه فروش",
         "keywords": "یاراترا",
-        "timestamp": datetime.now()
+        "timestamp": datetime.now(),
     }
     await temp_db.save_lead(lead)
 
@@ -105,7 +117,7 @@ async def test_get_keyword_stats(temp_db):
             "text": f"text {i}",
             "chat_name": f"chat_{i}",
             "timestamp": datetime.now(),
-            "keywords": kw
+            "keywords": kw,
         }
         await temp_db.save_message(msg)
 
@@ -113,4 +125,3 @@ async def test_get_keyword_stats(temp_db):
     # یاراترا باید ۲ بار باشد
     yara_count = next((c for k, c in stats if k == "یاراترا"), 0)
     assert yara_count == 2, f"یاراترا باید ۲ بار باشد، {yara_count} بار است"
-    

@@ -30,6 +30,7 @@ class RubikaCollector(BaseCollector):
         self._chat_cache: Dict[str, Dict[str, Any]] = {}
 
         from config import STORAGE_DIR
+
         self._session_dir = os.path.join(STORAGE_DIR, "sessions", "rubika")
         os.makedirs(self._session_dir, exist_ok=True)
         self._session_path = os.path.join(self._session_dir, "rubika_session")
@@ -135,7 +136,9 @@ class RubikaCollector(BaseCollector):
 
         media_type = "text"
         try:
-            if getattr(update, "is_file_inline", False) or getattr(update, "file_inline", None):
+            if getattr(update, "is_file_inline", False) or getattr(
+                update, "file_inline", None
+            ):
                 media_type = "file"
             elif getattr(update, "photo", None):
                 media_type = "photo"
@@ -154,8 +157,11 @@ class RubikaCollector(BaseCollector):
         if media_type != "text":
             file_id = str(getattr(update, "message_id", "") or "")
             from analyzers.keyword_finder import get_keyword_finder
+
             if get_keyword_finder().has_match(text):
-                local_file_path = await self._download_media(update, media_type, file_id)
+                local_file_path = await self._download_media(
+                    update, media_type, file_id
+                )
 
         return {
             "id": str(getattr(update, "message_id", "") or ""),
@@ -178,8 +184,13 @@ class RubikaCollector(BaseCollector):
     async def _download_media(self, update, media_type: str, file_id: str):
         """عکس/فایل پیام روبیکا را دانلود و در storage/media/rubika ذخیره می‌کند."""
         try:
-            ext = {"photo": ".jpg", "video": ".mp4", "voice": ".ogg",
-                   "audio": ".mp3", "file": ""}.get(media_type, "")
+            ext = {
+                "photo": ".jpg",
+                "video": ".mp4",
+                "voice": ".ogg",
+                "audio": ".mp3",
+                "file": "",
+            }.get(media_type, "")
             stamp = file_id or datetime.now().strftime("%Y%m%d%H%M%S%f")
             save_path = os.path.join(self._media_dir, f"rubika_{stamp}{ext}")
             await update.download(save_as=save_path)
@@ -203,8 +214,9 @@ class RubikaCollector(BaseCollector):
         try:
             obj = await update.get_object()
             data = obj.to_dict() if hasattr(obj, "to_dict") else {}
-            name = (data.get("title") or data.get("first_name")
-                    or data.get("name") or name)
+            name = (
+                data.get("title") or data.get("first_name") or data.get("name") or name
+            )
             username = data.get("username")
         except Exception:
             pass
@@ -214,7 +226,9 @@ class RubikaCollector(BaseCollector):
         return (name, username)
 
     @staticmethod
-    def _build_link(username: Optional[str], object_guid: Optional[str], chat_type: str) -> Optional[str]:
+    def _build_link(
+        username: Optional[str], object_guid: Optional[str], chat_type: str
+    ) -> Optional[str]:
         if username:
             return f"https://rubika.ir/{username}"
         return None
@@ -255,12 +269,16 @@ class RubikaCollector(BaseCollector):
             chats = self._extract_list(chats_resp, "chats")
             for ch in chats:
                 guid = self._dig(ch, "object_guid")
-                ctype = str(self._dig(ch, "abs_object", "type") or self._dig(ch, "type") or "").lower()
+                ctype = str(
+                    self._dig(ch, "abs_object", "type") or self._dig(ch, "type") or ""
+                ).lower()
                 if not guid or not any(k in ctype for k in ("group", "channel")):
                     continue
                 try:
                     _hl = os.getenv("RUBIKA_HISTORY_LIMIT", "200")
-                    msgs_resp = await self._client.get_messages(guid, max_id=None, limit=_hl)
+                    msgs_resp = await self._client.get_messages(
+                        guid, max_id=None, limit=_hl
+                    )
                     for m in self._extract_list(msgs_resp, "messages"):
                         mtime = self._dig(m, "time")
                         try:
@@ -271,17 +289,29 @@ class RubikaCollector(BaseCollector):
                         text = self._dig(m, "text") or ""
                         if not text:
                             continue
-                        results.append({
-                            "id": str(self._dig(m, "message_id") or ""),
-                            "platform": "rubika", "text": text,
-                            "chat_id": str(guid), "chat_name": str(guid),
-                            "chat_type": "channel" if "channel" in ctype else "group",
-                            "chat_username": None, "chat_link": None,
-                            "user_id": str(self._dig(m, "author_object_guid") or ""),
-                            "sender_name": "", "timestamp": datetime.now(),
-                            "media_type": "text", "file_id": None,
-                            "local_file_path": None, "reply_to": None,
-                        })
+                        results.append(
+                            {
+                                "id": str(self._dig(m, "message_id") or ""),
+                                "platform": "rubika",
+                                "text": text,
+                                "chat_id": str(guid),
+                                "chat_name": str(guid),
+                                "chat_type": (
+                                    "channel" if "channel" in ctype else "group"
+                                ),
+                                "chat_username": None,
+                                "chat_link": None,
+                                "user_id": str(
+                                    self._dig(m, "author_object_guid") or ""
+                                ),
+                                "sender_name": "",
+                                "timestamp": datetime.now(),
+                                "media_type": "text",
+                                "file_id": None,
+                                "local_file_path": None,
+                                "reply_to": None,
+                            }
+                        )
                     await asyncio.sleep(0.3)
                 except Exception:
                     continue

@@ -73,7 +73,7 @@ def dedup_rows(rows):
     out = []
     for r in rows:
         try:
-            chat = (r["chat_name"] or "")
+            chat = r["chat_name"] or ""
             txt = (r["text"] or "")[:200].strip()
         except (TypeError, KeyError, IndexError):
             chat, txt = "", ""
@@ -96,6 +96,7 @@ def platform_summary_line(rows) -> str:
 # ==================================================
 # کلاس اصلی گزارش‌ساز
 # ==================================================
+
 
 class DailyReporter:
     """گزارش‌ساز خودکار روزانه - نسخه یکپارچه"""
@@ -124,7 +125,7 @@ class DailyReporter:
 
         leads_data = await self._get_leads_by_date(report_date)
 
-        if not leads_data or leads_data['total'] == 0:
+        if not leads_data or leads_data["total"] == 0:
             log_info(f"هیچ سرنخی برای تاریخ {report_date} وجود ندارد")
             return
 
@@ -139,8 +140,14 @@ class DailyReporter:
         log_success(f"   📊 CSV: {csv_file}")
         log_success(f"   📋 JSON: {json_file}")
 
-        return {"txt": txt_file, "html": html_file, "csv": csv_file, "json": json_file,
-                "date": report_date, "total": leads_data['total']}
+        return {
+            "txt": txt_file,
+            "html": html_file,
+            "csv": csv_file,
+            "json": json_file,
+            "date": report_date,
+            "total": leads_data["total"],
+        }
 
     async def generate_today_report(self):
         """تولید گزارش برای امروز"""
@@ -157,34 +164,41 @@ class DailyReporter:
 
         async with aiosqlite.connect(self.db_path) as conn:
             conn.row_factory = aiosqlite.Row
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT id, platform, chat_name, text, keywords, timestamp
                 FROM messages 
                 WHERE date(timestamp) BETWEEN ? AND ? AND keywords != ''
                 ORDER BY timestamp DESC
-            """, (start_date, end_date))
+            """,
+                (start_date, end_date),
+            )
             messages = await cursor.fetchall()
 
             if not messages:
                 log_info("هیچ سرنخی در این بازه وجود ندارد")
                 return None
 
-            filename = os.path.join(REPORTS_DIR, f"weekly_report_{start_date}_to_{end_date}.txt")
+            filename = os.path.join(
+                REPORTS_DIR, f"weekly_report_{start_date}_to_{end_date}.txt"
+            )
             with open(filename, "w", encoding="utf-8") as f:
-                f.write("="*70 + "\n")
+                f.write("=" * 70 + "\n")
                 f.write(f"📊 گزارش هفتگی سرنخ‌های فروش\n")
                 f.write(f"بازه: {start_date} تا {end_date}\n")
-                f.write("="*70 + "\n")
+                f.write("=" * 70 + "\n")
                 f.write(f"📈 کل سرنخ‌ها: {len(messages)}\n")
                 f.write(f"🧭 به تفکیک پلتفرم: {platform_summary_line(messages)}\n")
 
                 # بخش‌بندی به ترتیب ثابتِ پلتفرم
                 for platform, rows in group_by_platform(messages):
-                    f.write("\n" + "═"*70 + "\n")
+                    f.write("\n" + "═" * 70 + "\n")
                     f.write(f"{platform_label(platform)} — {len(rows)} سرنخ\n")
-                    f.write("═"*70 + "\n")
+                    f.write("═" * 70 + "\n")
                     for i, msg in enumerate(rows, 1):
-                        f.write(f"[{i}] گروه: {msg['chat_name']}  |  🔑 {msg['keywords']}\n")
+                        f.write(
+                            f"[{i}] گروه: {msg['chat_name']}  |  🔑 {msg['keywords']}\n"
+                        )
                         f.write(f"    🕒 {msg['timestamp']}\n")
                         f.write(f"    💬 {msg['text'][:300] if msg['text'] else ''}\n")
 
@@ -199,53 +213,69 @@ class DailyReporter:
         شامل: تعداد کل سرنخ، تفکیک پلتفرم، تفکیک گروه‌های برتر
         """
         if date_from is None:
-            date_from = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
+            date_from = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
         if date_to is None:
-            date_to = datetime.now().strftime('%Y-%m-%d')
+            date_to = datetime.now().strftime("%Y-%m-%d")
 
         conn = sqlite3.connect(self.db_path)
         cur = conn.cursor()
 
-        cur.execute("""
+        cur.execute(
+            """
             SELECT COUNT(*) FROM messages 
             WHERE keywords != '' AND date(timestamp) BETWEEN ? AND ?
-        """, (date_from, date_to))
+        """,
+            (date_from, date_to),
+        )
         total_leads = cur.fetchone()[0]
 
-        cur.execute("""
+        cur.execute(
+            """
             SELECT platform, COUNT(*) FROM messages 
             WHERE keywords != '' AND date(timestamp) BETWEEN ? AND ?
             GROUP BY platform
-        """, (date_from, date_to))
+        """,
+            (date_from, date_to),
+        )
         platform_stats = cur.fetchall()
 
-        cur.execute("""
+        cur.execute(
+            """
             SELECT chat_name, platform, COUNT(*) as cnt, MAX(chat_link) as link FROM messages
             WHERE keywords != '' AND date(timestamp) BETWEEN ? AND ?
             GROUP BY chat_name, platform
             ORDER BY cnt DESC LIMIT 5
-        """, (date_from, date_to))
+        """,
+            (date_from, date_to),
+        )
         top_groups = cur.fetchall()
 
-        cur.execute("""
+        cur.execute(
+            """
             SELECT keywords, COUNT(*) as cnt FROM messages 
             WHERE keywords != '' AND date(timestamp) BETWEEN ? AND ?
             GROUP BY keywords
             ORDER BY cnt DESC LIMIT 10
-        """, (date_from, date_to))
+        """,
+            (date_from, date_to),
+        )
         top_keywords = cur.fetchall()
 
         conn.close()
 
-        report_file = os.path.join(REPORTS_DIR, f"executive_{date_from}_to_{date_to}.txt")
-        with open(report_file, 'w', encoding='utf-8') as f:
+        report_file = os.path.join(
+            REPORTS_DIR, f"executive_{date_from}_to_{date_to}.txt"
+        )
+        with open(report_file, "w", encoding="utf-8") as f:
             f.write(f"📊 گزارش مدیریتی (مدیرعامل)\n")
             f.write(f"بازه: {date_from} تا {date_to}\n")
-            f.write("="*60 + "\n")
+            f.write("=" * 60 + "\n")
             f.write(f"🔹 تعداد کل فرصت‌ها (سرنخ): {total_leads}\n\n")
 
             f.write("🔸 تفکیک بر اساس پلتفرم:\n")
-            for platform, cnt in sorted(platform_stats, key=lambda x: platform_rank(x[0])):
+            for platform, cnt in sorted(
+                platform_stats, key=lambda x: platform_rank(x[0])
+            ):
                 f.write(f"   • {platform_label(platform)}: {cnt} سرنخ\n")
             f.write("\n")
 
@@ -271,8 +301,15 @@ class DailyReporter:
 
     # ========== گزارش تخصصی (جزئیات کامل) ==========
 
-    def generate_detailed_report(self, platform=None, chat_name=None, keyword=None, 
-                                  date_from=None, date_to=None, limit=200):
+    def generate_detailed_report(
+        self,
+        platform=None,
+        chat_name=None,
+        keyword=None,
+        date_from=None,
+        date_to=None,
+        limit=200,
+    ):
         """
         گزارش کامل برای کارشناس (همزمان - برای استفاده در ترمینال)
         امکان فیلتر بر اساس پلتفرم، نام گروه، کلیدواژه، بازه زمانی
@@ -327,16 +364,30 @@ class DailyReporter:
         json_file = os.path.join(REPORTS_DIR, f"detailed_{timestamp_str}.json")
 
         # CSV
-        with open(csv_file, 'w', newline='', encoding='utf-8-sig') as f:
+        with open(csv_file, "w", newline="", encoding="utf-8-sig") as f:
             writer = csv.writer(f)
-            writer.writerow(['شناسه پیام', 'پلتفرم', 'نام گروه', 'لینک گروه', 'یوزرنیم گروه',
-                            'نوع گروه', 'متن پیام', 'زمان', 'کلیدواژه‌ها', 'نوع رسانه',
-                            'فایل ID', 'توضیحات', 'پاسخ به'])
+            writer.writerow(
+                [
+                    "شناسه پیام",
+                    "پلتفرم",
+                    "نام گروه",
+                    "لینک گروه",
+                    "یوزرنیم گروه",
+                    "نوع گروه",
+                    "متن پیام",
+                    "زمان",
+                    "کلیدواژه‌ها",
+                    "نوع رسانه",
+                    "فایل ID",
+                    "توضیحات",
+                    "پاسخ به",
+                ]
+            )
             for row in rows:
                 writer.writerow(row)
 
         # TXT
-        with open(txt_file, 'w', encoding='utf-8') as f:
+        with open(txt_file, "w", encoding="utf-8") as f:
             f.write(f"📄 گزارش تخصصی - جزئیات سرنخ‌ها\n")
             f.write(f"تاریخ تولید: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write(f"تعداد سرنخ‌ها: {len(rows)}\n")
@@ -346,11 +397,24 @@ class DailyReporter:
                 f.write(f"فیلتر گروه: {chat_name}\n")
             if keyword:
                 f.write(f"فیلتر کلیدواژه: {keyword}\n")
-            f.write("="*80 + "\n\n")
+            f.write("=" * 80 + "\n\n")
 
             for idx, row in enumerate(rows, 1):
-                (msg_id, platform, chat, chat_link, chat_username, chat_type,
-                 text, ts, keywords, media_type, file_id, caption, reply_to) = row
+                (
+                    msg_id,
+                    platform,
+                    chat,
+                    chat_link,
+                    chat_username,
+                    chat_type,
+                    text,
+                    ts,
+                    keywords,
+                    media_type,
+                    file_id,
+                    caption,
+                    reply_to,
+                ) = row
                 f.write(f"[{idx}] ───────────────────────────────────────\n")
                 f.write(f"🆔 شناسه: {msg_id}\n")
                 f.write(f"📱 پلتفرم: {platform}\n")
@@ -374,24 +438,39 @@ class DailyReporter:
         # JSON
         data = []
         for row in rows:
-            (msg_id, platform, chat, chat_link, chat_username, chat_type,
-             text, ts, keywords, media_type, file_id, caption, reply_to) = row
-            data.append({
-                "id": msg_id,
-                "platform": platform,
-                "chat_name": chat,
-                "chat_link": chat_link,
-                "chat_username": chat_username,
-                "chat_type": chat_type,
-                "text": text,
-                "timestamp": ts,
-                "keywords": keywords.split(',') if keywords else [],
-                "media_type": media_type,
-                "file_id": file_id,
-                "caption": caption,
-                "reply_to": reply_to
-            })
-        with open(json_file, 'w', encoding='utf-8') as f:
+            (
+                msg_id,
+                platform,
+                chat,
+                chat_link,
+                chat_username,
+                chat_type,
+                text,
+                ts,
+                keywords,
+                media_type,
+                file_id,
+                caption,
+                reply_to,
+            ) = row
+            data.append(
+                {
+                    "id": msg_id,
+                    "platform": platform,
+                    "chat_name": chat,
+                    "chat_link": chat_link,
+                    "chat_username": chat_username,
+                    "chat_type": chat_type,
+                    "text": text,
+                    "timestamp": ts,
+                    "keywords": keywords.split(",") if keywords else [],
+                    "media_type": media_type,
+                    "file_id": file_id,
+                    "caption": caption,
+                    "reply_to": reply_to,
+                }
+            )
+        with open(json_file, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
         print(f"✅ گزارش تخصصی ذخیره شد: {txt_file}")
@@ -405,21 +484,27 @@ class DailyReporter:
         """جستجوی یک سرنخ با شناسه پیام و پلتفرم"""
         conn = sqlite3.connect(self.db_path)
         if platform:
-            cur = conn.execute("""
+            cur = conn.execute(
+                """
                 SELECT id, platform, chat_name, text, timestamp, keywords
                 FROM messages
                 WHERE id = ? AND platform = ?
-            """, (message_id, platform))
+            """,
+                (message_id, platform),
+            )
         else:
-            cur = conn.execute("""
+            cur = conn.execute(
+                """
                 SELECT id, platform, chat_name, text, timestamp, keywords
                 FROM messages
                 WHERE id = ?
-            """, (message_id,))
-        
+            """,
+                (message_id,),
+            )
+
         row = cur.fetchone()
         conn.close()
-        
+
         if row:
             print(f"\n🔍 سرنخ یافت شد:")
             print(f"   پلتفرم: {row[1]}")
@@ -437,32 +522,41 @@ class DailyReporter:
     async def _get_leads_by_date(self, date: str):
         async with aiosqlite.connect(self.db_path) as conn:
             conn.row_factory = aiosqlite.Row
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT id, platform, chat_name, user_id, text, keywords,
                        media_type, opportunity_score, opportunity_type, timestamp
                 FROM messages
                 WHERE date(timestamp) = ? AND keywords != ''
                 ORDER BY opportunity_score DESC, timestamp DESC
-            """, (date,))
+            """,
+                (date,),
+            )
             messages = await cursor.fetchall()
 
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT chat_name, platform, COUNT(*) as count 
                 FROM messages 
                 WHERE date(timestamp) = ? AND keywords != ''
                 GROUP BY chat_name, platform 
                 ORDER BY count DESC
-            """, (date,))
+            """,
+                (date,),
+            )
             group_stats = await cursor.fetchall()
 
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT keywords, COUNT(*) as count 
                 FROM messages 
                 WHERE date(timestamp) = ? AND keywords != ''
                 GROUP BY keywords 
                 ORDER BY count DESC 
                 LIMIT 15
-            """, (date,))
+            """,
+                (date,),
+            )
             keyword_stats = await cursor.fetchall()
 
             return {
@@ -470,7 +564,7 @@ class DailyReporter:
                 "total": len(messages),
                 "messages": messages,
                 "group_stats": group_stats,
-                "keyword_stats": keyword_stats
+                "keyword_stats": keyword_stats,
             }
 
     @staticmethod
@@ -482,7 +576,11 @@ class DailyReporter:
             if not val:
                 continue
             # کلیدواژه‌ها ممکن است با کاما چندتایی باشند
-            parts = [p.strip() for p in str(val).split(",")] if key == "keywords" else [str(val)]
+            parts = (
+                [p.strip() for p in str(val).split(",")]
+                if key == "keywords"
+                else [str(val)]
+            )
             for p in parts:
                 if p:
                     counts[p] = counts.get(p, 0) + 1
@@ -491,32 +589,46 @@ class DailyReporter:
     async def _save_text_report(self, data, date):
         filename = os.path.join(REPORTS_DIR, f"daily_report_{date}.txt")
         with open(filename, "w", encoding="utf-8") as f:
-            f.write("="*70 + "\n")
+            f.write("=" * 70 + "\n")
             f.write(f"📊 گزارش روزانه سرنخ‌های فروش — {date}\n")
-            f.write("="*70 + "\n")
+            f.write("=" * 70 + "\n")
             f.write(f"📈 کل سرنخ‌ها: {data['total']}\n")
             f.write(f"🧭 به تفکیک پلتفرم: {platform_summary_line(data['messages'])}\n")
 
             # بدنهٔ گزارش: پلتفرم به پلتفرم، به ترتیب ثابت
-            for platform, rows in group_by_platform(data['messages']):
-                f.write("\n" + "═"*70 + "\n")
+            for platform, rows in group_by_platform(data["messages"]):
+                f.write("\n" + "═" * 70 + "\n")
                 f.write(f"{platform_label(platform)} — {len(rows)} سرنخ\n")
-                f.write("═"*70 + "\n")
+                f.write("═" * 70 + "\n")
 
                 top_groups = self._count_top(rows, "chat_name")
                 if top_groups:
-                    f.write("🏆 پرسرنخ‌ترین گروه‌ها: "
-                            + "، ".join(f"{g} ({c})" for g, c in top_groups) + "\n")
+                    f.write(
+                        "🏆 پرسرنخ‌ترین گروه‌ها: "
+                        + "، ".join(f"{g} ({c})" for g, c in top_groups)
+                        + "\n"
+                    )
                 top_kw = self._count_top(rows, "keywords")
                 if top_kw:
-                    f.write("🔑 کلیدواژه‌های داغ: "
-                            + "، ".join(f"{k} ({c})" for k, c in top_kw) + "\n")
-                f.write("-"*70 + "\n")
+                    f.write(
+                        "🔑 کلیدواژه‌های داغ: "
+                        + "، ".join(f"{k} ({c})" for k, c in top_kw)
+                        + "\n"
+                    )
+                f.write("-" * 70 + "\n")
 
                 for i, msg in enumerate(dedup_rows(rows), 1):
                     f.write(f"[{i}] گروه: {msg['chat_name']}  |  🔑 {msg['keywords']}")
-                    score = msg['opportunity_score'] if 'opportunity_score' in msg.keys() else 0
-                    lvl = msg['opportunity_type'] if 'opportunity_type' in msg.keys() else None
+                    score = (
+                        msg["opportunity_score"]
+                        if "opportunity_score" in msg.keys()
+                        else 0
+                    )
+                    lvl = (
+                        msg["opportunity_type"]
+                        if "opportunity_type" in msg.keys()
+                        else None
+                    )
                     if score:
                         f.write(f"  |  🎯 {lvl or ''} (امتیاز {score})")
                     f.write(f"\n    🕒 {msg['timestamp']}\n")
@@ -525,6 +637,7 @@ class DailyReporter:
 
     async def _save_html_report(self, data, date):
         import html as _html
+
         filename = os.path.join(REPORTS_DIR, f"daily_report_{date}.html")
         head = f"""<!DOCTYPE html>
 <html dir="rtl" lang="fa">
@@ -556,8 +669,8 @@ class DailyReporter:
 """
         body = ""
         # بخش‌بندی به ترتیب ثابتِ پلتفرم
-        for platform, rows in group_by_platform(data['messages']):
-            body += f'\n        <h2>{platform_label(platform)} — {len(rows)} سرنخ</h2>'
+        for platform, rows in group_by_platform(data["messages"]):
+            body += f"\n        <h2>{platform_label(platform)} — {len(rows)} سرنخ</h2>"
             for msg in rows:
                 body += f"""
         <div class="message-card">
@@ -577,41 +690,48 @@ class DailyReporter:
         filename = os.path.join(REPORTS_DIR, f"daily_report_{date}.csv")
         with open(filename, "w", newline="", encoding="utf-8-sig") as f:
             writer = csv.writer(f)
-            writer.writerow(['پلتفرم', 'شناسه', 'گروه', 'متن', 'کلیدواژه', 'زمان'])
+            writer.writerow(["پلتفرم", "شناسه", "گروه", "متن", "کلیدواژه", "زمان"])
             # مرتب به ترتیب ثابتِ پلتفرم (ستون پلتفرم اول، تا فایل منسجم باشد)
-            for platform, rows in group_by_platform(data['messages']):
+            for platform, rows in group_by_platform(data["messages"]):
                 for msg in rows:
-                    writer.writerow([
-                        platform, msg['id'], msg['chat_name'],
-                        msg['text'][:500] if msg['text'] else '',
-                        msg['keywords'], msg['timestamp']
-                    ])
+                    writer.writerow(
+                        [
+                            platform,
+                            msg["id"],
+                            msg["chat_name"],
+                            msg["text"][:500] if msg["text"] else "",
+                            msg["keywords"],
+                            msg["timestamp"],
+                        ]
+                    )
         return filename
 
     async def _save_json_report(self, data, date):
         filename = os.path.join(REPORTS_DIR, f"daily_report_{date}.json")
         # خروجی گروه‌بندی‌شده بر اساس پلتفرم (به ترتیب ثابت) — منسجم و ماشین‌خوان
         by_platform = []
-        for platform, rows in group_by_platform(data['messages']):
-            by_platform.append({
-                "platform": platform,
-                "label": PLATFORM_LABELS.get(platform, platform),
-                "count": len(rows),
-                "leads": [
-                    {
-                        "id": msg['id'],
-                        "chat_name": msg['chat_name'],
-                        "text": msg['text'][:500] if msg['text'] else '',
-                        "keywords": msg['keywords'],
-                        "timestamp": msg['timestamp'],
-                    }
-                    for msg in rows
-                ],
-            })
+        for platform, rows in group_by_platform(data["messages"]):
+            by_platform.append(
+                {
+                    "platform": platform,
+                    "label": PLATFORM_LABELS.get(platform, platform),
+                    "count": len(rows),
+                    "leads": [
+                        {
+                            "id": msg["id"],
+                            "chat_name": msg["chat_name"],
+                            "text": msg["text"][:500] if msg["text"] else "",
+                            "keywords": msg["keywords"],
+                            "timestamp": msg["timestamp"],
+                        }
+                        for msg in rows
+                    ],
+                }
+            )
         output = {
             "date": date,
-            "total": data['total'],
-            "summary": platform_summary_line(data['messages']),
+            "total": data["total"],
+            "summary": platform_summary_line(data["messages"]),
             "platforms": by_platform,
         }
         with open(filename, "w", encoding="utf-8") as f:
@@ -620,24 +740,48 @@ class DailyReporter:
 
     # ========== زمان‌بندی ==========
 
-    def start(self, report_hour=8, report_minute=0,
-              weekly_day="sunday", weekly_hour=9, weekly_minute=0):
+    def start(
+        self,
+        report_hour=8,
+        report_minute=0,
+        weekly_day="sunday",
+        weekly_hour=9,
+        weekly_minute=0,
+    ):
         """شروع زمان‌بندی گزارش روزانه و هفتگی (ساعت‌ها از .env می‌آیند)."""
         self.scheduler.add_job(
             lambda: asyncio.create_task(self.generate_report()),
-            'cron', hour=report_hour, minute=report_minute, id='daily_report'
+            "cron",
+            hour=report_hour,
+            minute=report_minute,
+            id="daily_report",
         )
-        day_map = {"saturday": "sat", "sunday": "sun", "monday": "mon", "tuesday": "tue",
-                   "wednesday": "wed", "thursday": "thu", "friday": "fri"}
+        day_map = {
+            "saturday": "sat",
+            "sunday": "sun",
+            "monday": "mon",
+            "tuesday": "tue",
+            "wednesday": "wed",
+            "thursday": "thu",
+            "friday": "fri",
+        }
         dow = day_map.get(str(weekly_day).lower(), "sun")
         self.scheduler.add_job(
             lambda: asyncio.create_task(self.generate_weekly_report()),
-            'cron', day_of_week=dow, hour=weekly_hour, minute=weekly_minute, id='weekly_report'
+            "cron",
+            day_of_week=dow,
+            hour=weekly_hour,
+            minute=weekly_minute,
+            id="weekly_report",
         )
         # گزارشِ ماهانه: اولِ هر ماه
         self.scheduler.add_job(
             lambda: asyncio.create_task(self.generate_monthly_report()),
-            'cron', day=1, hour=report_hour, minute=(report_minute + 5) % 60, id='monthly_report'
+            "cron",
+            day=1,
+            hour=report_hour,
+            minute=(report_minute + 5) % 60,
+            id="monthly_report",
         )
         self.scheduler.start()
         log_success(
@@ -652,7 +796,9 @@ class DailyReporter:
         log_info(f"📊 گزارش ماهانه {date_from} تا {date_to}")
         try:
             path = self.generate_executive_report(date_from, date_to)
-            self.generate_detailed_report(date_from=date_from, date_to=date_to, limit=500)
+            self.generate_detailed_report(
+                date_from=date_from, date_to=date_to, limit=500
+            )
             log_success(f"✅ گزارش ماهانه ذخیره شد: {path}")
             return path
         except Exception as e:
@@ -664,9 +810,11 @@ class DailyReporter:
 # توابع سطح بالا برای استفاده آسان
 # ==================================================
 
+
 async def start_daily_reporter(db):
     """راه‌اندازی گزارش‌ساز خودکار (تنظیمات از .env)."""
     from config import REPORT
+
     reporter = DailyReporter(db)
     if not REPORT.get("enabled", True):
         log_info("📅 گزارش خودکار غیرفعال است (REPORT_ENABLED=false)")
@@ -681,9 +829,13 @@ async def start_daily_reporter(db):
 
     dh, dm = _parse(REPORT.get("daily_time", "08:00"), 8, 0)
     wh, wm = _parse(REPORT.get("weekly_time", "09:00"), 9, 0)
-    reporter.start(report_hour=dh, report_minute=dm,
-                   weekly_day=REPORT.get("weekly_day", "sunday"),
-                   weekly_hour=wh, weekly_minute=wm)
+    reporter.start(
+        report_hour=dh,
+        report_minute=dm,
+        weekly_day=REPORT.get("weekly_day", "sunday"),
+        weekly_hour=wh,
+        weekly_minute=wm,
+    )
     return reporter
 
 
@@ -693,12 +845,14 @@ def generate_executive_report(date_from=None, date_to=None):
     return reporter.generate_executive_report(date_from, date_to)
 
 
-def generate_detailed_report(platform=None, chat_name=None, keyword=None, 
-                              date_from=None, date_to=None, limit=200):
+def generate_detailed_report(
+    platform=None, chat_name=None, keyword=None, date_from=None, date_to=None, limit=200
+):
     """گزارش تخصصی (همزمان) - برای استفاده در ترمینال"""
     reporter = DailyReporter()
-    return reporter.generate_detailed_report(platform, chat_name, keyword, 
-                                              date_from, date_to, limit)
+    return reporter.generate_detailed_report(
+        platform, chat_name, keyword, date_from, date_to, limit
+    )
 
 
 def search_lead(message_id: str, platform: str = None):
@@ -711,6 +865,7 @@ def generate_daily_report():
     """گزارش روزانه (همزمان) - برای سازگاری با کد قدیمی"""
     reporter = DailyReporter()
     import asyncio
+
     return asyncio.run(reporter.generate_report())
 
 
@@ -718,6 +873,7 @@ def generate_weekly_report():
     """گزارش هفتگی (همزمان) - برای سازگاری با کد قدیمی"""
     reporter = DailyReporter()
     import asyncio
+
     return asyncio.run(reporter.generate_weekly_report())
 
 

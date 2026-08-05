@@ -51,7 +51,9 @@ class CleanupService:
         if self.db and self.keep_messages_days > 0:
             try:
                 await self.db.delete_old_messages(self.keep_messages_days)
-                log_success(f"🧹 پیام‌های قدیمی‌تر از {self.keep_messages_days} روز از دیتابیس حذف شد")
+                log_success(
+                    f"🧹 پیام‌های قدیمی‌تر از {self.keep_messages_days} روز از دیتابیس حذف شد"
+                )
             except Exception as e:
                 log_error(f"خطا در حذف پیام‌های قدیمی دیتابیس: {e}")
 

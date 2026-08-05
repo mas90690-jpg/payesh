@@ -24,6 +24,9 @@ async def test_execute_status_and_keywords(temp_db, tmp_path, monkeypatch):
     h = AdminHandler(db=temp_db)
     h.db_path = temp_db.db_path
 
+    # مغز هوشمند (Brain/API) نباید در تست شبکه را صدا بزند — مسیر سنتی و قطعی تست شود
+    monkeypatch.setattr("handlers.admin_handler._brain_available", False)
+
     # status (tables exist, counts = 0)
     txt = await h._execute("status", None, "وضعیت")
     assert "پیام" in txt
@@ -44,14 +47,16 @@ def test_rule_parse_feature_and_logs():
     h = AdminHandler(db=None)
     assert h._rule_parse("میخوام بتونی پیامک هم بفرستی")[0] == "feature_request"
     assert h._rule_parse("این لاگ یعنی چی؟")[0] == "explain_logs"
-    assert h._rule_parse("لاگ‌ها رو نشون بده")[0] == "logs"   # بدون «یعنی/توضیح» = نمایش
+    assert h._rule_parse("لاگ‌ها رو نشون بده")[0] == "logs"  # بدون «یعنی/توضیح» = نمایش
 
 
 @pytest.mark.asyncio
 async def test_feature_request_logged(temp_db, tmp_path, monkeypatch):
     h = AdminHandler(db=temp_db)
     monkeypatch.setattr("handlers.admin_handler.REQUESTS", str(tmp_path / "req.jsonl"))
-    txt = await h._execute("feature_request", None, "میخوام بتونی به ایمیل هم گزارش بفرستی")
+    txt = await h._execute(
+        "feature_request", None, "میخوام بتونی به ایمیل هم گزارش بفرستی"
+    )
     assert "ثبت" in txt
     line = open(tmp_path / "req.jsonl", encoding="utf-8").read()
     assert "ایمیل" in line
@@ -61,13 +66,22 @@ async def test_feature_request_logged(temp_db, tmp_path, monkeypatch):
 async def test_non_admin_ignored(temp_db):
     """پیامِ کاربرِ غیرمجاز نباید پردازش/جواب داده شود."""
     h = AdminHandler(db=temp_db)
-    h.admin_ids = {"999"}            # فقط کاربر ۹۹۹ مجاز است
+    h.admin_ids = {"999"}  # فقط کاربر ۹۹۹ مجاز است
     sent = []
+
     # rig the reply to capture
-    async def fake_reply(raw, text): sent.append(text)
+    async def fake_reply(raw, text):
+        sent.append(text)
+
     h._reply = fake_reply
 
     class Ev:
-        data = {"platform": "bale", "chat_type": "private", "user_id": "123", "text": "وضعیت"}
+        data = {
+            "platform": "bale",
+            "chat_type": "private",
+            "user_id": "123",
+            "text": "وضعیت",
+        }
+
     await h.handle(Ev())
-    assert sent == []                # کاربر ۱۲۳ مجاز نیست → هیچ جوابی
+    assert sent == []  # کاربر ۱۲۳ مجاز نیست → هیچ جوابی

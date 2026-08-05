@@ -4,7 +4,7 @@
 > کوتاه و ساختارمند نگهش دار؛ پخش‌وپلا و طولانی نکن (هزینهٔ توکن).
 
 ## ادامهٔ کار — شروع سریع
-- مسیر: `C:\Users\saei\Desktop\srooyesh\2` — ربات رصد سرنخِ چندپیام‌رسانی (Python).
+- مسیر: `C:\Users\saei\Desktop\srooyesh\پایشگر پیامرسان` — ربات رصد سرنخِ چندپیام‌رسانی (Python). (پوشهٔ همسایه `پایشگر ویندوز` پروژهٔ جداست.)
 - اجرا: **دابل‌کلیک روی `panel.bat`** → پنلِ عددیِ انگلیسی (`panel.py`): 1 Start، 2 Restart، 3 Stop، 4 Status، 5 Login، 6 Backup، 7 Reports، 8 CRM، 9 Tests، 10 Cleanup، 11 Push GitHub، 12 Health، 13 AI/Admin، 14 Requests/Errors. یا `python main.py`.
 - **قانون‌ها: (الف) همیشه `CLAUDE.md` را به‌روز نگه دار. (ب) هر قابلیتِ جدید یک گزینهٔ متناظر در `MENU`ی `panel.py` هم داشته باشد. (ج) جواب‌ها به کاربر خیلی کوتاه و ساده.**
 - ریموت گیت‌هاب: `origin` → `github.com/mas90690-jpg/srooyesh_r2` (شاخهٔ `main`؛ دکمهٔ ۱۱). `.env`/نشست‌ها در `.gitignore`.

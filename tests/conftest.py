@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
-    
+
 from core.database import SQLiteDatabase
 from analyzers.keyword_finder import get_keyword_finder
 
@@ -74,5 +74,5 @@ def sample_message_data(sample_text_with_keyword):
         "file_id": None,
         "local_file_path": None,
         "caption": None,
-        "reply_to": None
+        "reply_to": None,
     }

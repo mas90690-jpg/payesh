@@ -7,6 +7,7 @@ from typing import List, Dict, Any, Optional
 @dataclass
 class Message:
     """قالب یکسان برای پیام از هر پلتفرمی"""
+
     platform: str
     platform_id: str
     chat_id: str
@@ -20,6 +21,7 @@ class Message:
 @dataclass
 class AnalyzedMessage(Message):
     """پیام با تحلیل کلیدواژه و متادیتا"""
+
     keywords: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
     score: Optional[int] = None
@@ -32,6 +34,7 @@ class AnalyzedMessage(Message):
 @dataclass
 class Lead:
     """مدل سرنخ فروش"""
+
     id: str
     message_id: str
     platform: str

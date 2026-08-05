@@ -34,19 +34,37 @@ LINKEDIN_SEARCH_URL = (
 )
 
 # نشانه‌های صفحهٔ ورود (یعنی هنوز لاگین نیستیم)
-LOGIN_MARKERS = ['input#username', 'input[name="session_key"]', 'button[data-litms-control-urn="login-submit"]']
+LOGIN_MARKERS = [
+    "input#username",
+    'input[name="session_key"]',
+    'button[data-litms-control-urn="login-submit"]',
+]
 # نشانه‌های ورودِ موفق
-LOGGEDIN_MARKERS = ['#global-nav', '.global-nav', 'div.scaffold-layout', 'input.search-global-typeahead__input']
+LOGGEDIN_MARKERS = [
+    "#global-nav",
+    ".global-nav",
+    "div.scaffold-layout",
+    "input.search-global-typeahead__input",
+]
 
 _MAX_SEEN = 8000
 
 
 class LinkedInCollector(BaseCollector):
-    def __init__(self, email: str = None, password: str = None,
-                 headless: bool = True, poll_seconds: int = 600,
-                 searches_file: str = None, max_results: int = 15,
-                 search_delay: float = 6.0, scrolls: int = 3,
-                 monitor_feed: bool = True, max_feed_posts: int = 25, **kwargs):
+    def __init__(
+        self,
+        email: str = None,
+        password: str = None,
+        headless: bool = True,
+        poll_seconds: int = 600,
+        searches_file: str = None,
+        max_results: int = 15,
+        search_delay: float = 6.0,
+        scrolls: int = 3,
+        monitor_feed: bool = True,
+        max_feed_posts: int = 25,
+        **kwargs,
+    ):
         super().__init__()
         self.email = email
         self.password = password
@@ -66,7 +84,10 @@ class LinkedInCollector(BaseCollector):
         self._kw = get_keyword_finder()
 
         from config import BASE_DIR, STORAGE_DIR
-        self._searches_file = searches_file or os.path.join(BASE_DIR, "data", "linkedin_searches.txt")
+
+        self._searches_file = searches_file or os.path.join(
+            BASE_DIR, "data", "linkedin_searches.txt"
+        )
         self._user_data_dir = os.path.join(STORAGE_DIR, "sessions", "linkedin_web")
         os.makedirs(self._user_data_dir, exist_ok=True)
         self._media_dir = os.path.join(STORAGE_DIR, "media", "linkedin")
@@ -135,17 +156,24 @@ class LinkedInCollector(BaseCollector):
             try:
                 from playwright.async_api import async_playwright
             except ImportError:
-                log_error("playwright نصب نیست: pip install playwright && playwright install chromium")
+                log_error(
+                    "playwright نصب نیست: pip install playwright && playwright install chromium"
+                )
                 return False
 
             use_headless = self.headless if headless is None else headless
             self._pw = await async_playwright().start()
             self._context = await self._launch_context(use_headless)
-            self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
+            self._page = (
+                self._context.pages[0]
+                if self._context.pages
+                else await self._context.new_page()
+            )
             await self._page.goto(LINKEDIN_FEED_URL, wait_until="domcontentloaded")
+            await asyncio.sleep(2)
 
             if await self._wait_login():
-                await self._export_state()    # نشست را برای دفعهٔ بعد پایدار کن
+                await self._export_state()  # نشست را برای دفعهٔ بعد پایدار کن
                 return True
 
             # پروفایل مرورگر نشست نداشت؛ از فایلِ نشستِ ذخیره‌شده (کوکی li_at) امتحان کن
@@ -154,6 +182,13 @@ class LinkedInCollector(BaseCollector):
                 if await self._wait_login(rounds=6):
                     await self._export_state()
                     log_success("✅ نشست لینکدین از کوکی ذخیره‌شده بازیابی شد")
+                    return True
+
+            # آخرین تلاش: صفحهٔ ورود را باز کن و خودکار با ایمیل/رمزِ env وارد شو
+            if self.email and self.password:
+                log_info("🔄 تلاش برای ورود خودکار لینکدین با ایمیل/رمز .env...")
+                if await self._auto_login():
+                    await self._export_state()
                     return True
 
             log_error(
@@ -165,6 +200,45 @@ class LinkedInCollector(BaseCollector):
         except Exception as e:
             log_error(f"خطا در اتصال لینکدین: {e}")
             self._set_error(str(e))
+            return False
+
+    async def _auto_login(self) -> bool:
+        """ورود خودکار با ایمیل/رمز (فقط به‌عنوان آخرین راه‌حل، چون ریسک بن دارد).
+
+        اگر صفحهٔ ورود باز بود، فرم را پر می‌کند؛ بعد از ورود، منتظر می‌ماند تا
+        صفحهٔ اصلی لود شود. خروجی: True اگر لاگین تشخیص داده شد.
+        """
+        try:
+            await self._page.goto("https://www.linkedin.com/login", wait_until="domcontentloaded")
+            await asyncio.sleep(2)
+            email_sel = await self._page.query_selector('input#username')
+            if not email_sel:
+                log_warning("لینکدین: صفحهٔ ورود پیدا نشد — ورود خودکار لغو شد")
+                return False
+            await self._page.fill('input#username', self.email)
+            await self._page.fill('input#password', self.password)
+            await asyncio.sleep(0.5)
+            try:
+                await self._page.click('button[type="submit"]')
+            except Exception:
+                try:
+                    await self._page.click('button.btn__primary--large')
+                except Exception:
+                    pass
+            # منتظر بمان تا از صفحهٔ ورود خارج شویم (با سقف زمانی)
+            for _ in range(20):
+                await asyncio.sleep(2)
+                if await self._is_logged_in():
+                    self._connected = True
+                    self._set_status(ConnectionStatus.CONNECTED)
+                    log_success("✅ ورود خودکار لینکدین موفق شد")
+                    return True
+                if "/checkpoint" in (self._page.url or ""):
+                    log_warning("⚠️ لینکدین تأیید امنیتی خواست (checkpoint) — ورود خودکار ممکن نیست")
+                    return False
+            return False
+        except Exception as e:
+            log_warning(f"ورود خودکار لینکدین ناموفق: {e}")
             return False
 
     async def _wait_login(self, rounds: int = 15) -> bool:
@@ -203,12 +277,13 @@ class LinkedInCollector(BaseCollector):
         """مرورگر را قابل‌حمل باز می‌کند: اگر CHROME_PATH ست باشد همان، وگرنه
         خودکار Chrome→Edge→Chromium (روی سرور لینوکس هم بدون مسیر هاردکد کار می‌کند)."""
         from config import CHROME_PATH
+
         base = dict(
             user_data_dir=self._user_data_dir,
             headless=use_headless,
             viewport={"width": 1366, "height": 900},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
@@ -220,7 +295,9 @@ class LinkedInCollector(BaseCollector):
         # اگر مسیر مرورگر دستی داده شده، همان (بدون channel)
         if CHROME_PATH:
             try:
-                ctx = await self._pw.chromium.launch_persistent_context(executable_path=CHROME_PATH, **base)
+                ctx = await self._pw.chromium.launch_persistent_context(
+                    executable_path=CHROME_PATH, **base
+                )
                 log_info(f"مرورگر لینکدین با مسیرِ CHROME_PATH باز شد")
                 return ctx
             except Exception as e:
@@ -240,16 +317,31 @@ class LinkedInCollector(BaseCollector):
         raise RuntimeError(f"هیچ مرورگری برای لینکدین باز نشد: {last_err}")
 
     async def _is_logged_in(self) -> bool:
+        """آیا واقعاً وارد لینکدین هستیم؟
+
+        لینکدین گاهی بدون ریدایرکت، یک مودال «Sign in» روی همان صفحه می‌گذارد؛ پس
+        صرفِ نبودِ فرمِ ورود کافی نیست. فقط وقتی مطمئن می‌شویم که نوارِ اصلیِ
+        (global-nav) یا input جستجو موجود باشد.
+        """
         try:
-            for sel in LOGIN_MARKERS:
-                if await self._page.query_selector(sel):
+            # اگر مودالِ ورود روی همان صفحه است، یعنی لاگین نیستیم
+            for sel in ("div.modal", ".sign-in-modal", "#authwall-standalone-form"):
+                el = await self._page.query_selector(sel)
+                if el and await el.is_visible():
                     return False
+            # نوارِ اصلیِ لاگین‌شده‌ها
             for sel in LOGGEDIN_MARKERS:
-                if await self._page.query_selector(sel):
+                el = await self._page.query_selector(sel)
+                if el and await el.is_visible():
                     return True
+            # اگر نه لاگین‌مارکر هست نه فرمِ ورود، احتمالاً صفحهٔ خالی/خطاست → محافظه‌کارانه
+            for sel in LOGIN_MARKERS:
+                el = await self._page.query_selector(sel)
+                if el and await el.is_visible():
+                    return False
+            return False
         except Exception:
-            pass
-        return False
+            return False
 
     # ==================================================
     # دریافت پیام‌ها = اجرای جستجوها
@@ -268,11 +360,13 @@ class LinkedInCollector(BaseCollector):
         # ۲) جستجوی محتوا برای عبارت‌های اختیاریِ data/linkedin_searches.txt
         searches = self._load_searches()
         for q in searches:
-            if not self._connected:    # اگر وسطِ کار نشست منقضی شد، ادامه نده
+            if not self._connected:  # اگر وسطِ کار نشست منقضی شد، ادامه نده
                 break
             try:
                 await self._scrape_search(q)
-                await asyncio.sleep(self._search_delay + random.uniform(0, self._search_delay))
+                await asyncio.sleep(
+                    self._search_delay + random.uniform(0, self._search_delay)
+                )
             except Exception as e:
                 log_warning(f"لینکدین: خطا در جستجوی «{q}»: {e}")
                 continue
@@ -283,7 +377,7 @@ class LinkedInCollector(BaseCollector):
         new_msgs = self._messages_queue.copy()
         self._messages_queue.clear()
         self._save_seen()
-        await self._export_state()     # نشست را تازه نگه دار (پایداری)
+        await self._export_state()  # نشست را تازه نگه دار (پایداری)
         if new_msgs:
             log_success(f"📥 {len(new_msgs)} پست مرتبط از لینکدین")
         return new_msgs
@@ -295,7 +389,9 @@ class LinkedInCollector(BaseCollector):
             if "/login" in url or "/authwall" in url or "/checkpoint" in url:
                 self._connected = False
                 self._set_status(ConnectionStatus.ERROR)
-                log_warning("⚠️ نشست لینکدین منقضی شد — یک‌بار دوباره `python login.py` (گزینهٔ ۶) را اجرا کن")
+                log_warning(
+                    "⚠️ نشست لینکدین منقضی شد — یک‌بار دوباره `python login.py` (گزینهٔ ۶) را اجرا کن"
+                )
                 return False
         except Exception:
             pass
@@ -304,7 +400,11 @@ class LinkedInCollector(BaseCollector):
     async def _scrape_feed(self):
         """فیدِ خانه را می‌خواند؛ پست‌هایی که کلیدواژهٔ محصول دارند نگه داشته می‌شوند."""
         page = self._page
-        await page.goto(LINKEDIN_FEED_URL, wait_until="domcontentloaded")
+        try:
+            await page.goto(LINKEDIN_FEED_URL, wait_until="domcontentloaded")
+        except Exception as e:
+            log_warning(f"لینکدین: خطا در باز کردن فید: {e}")
+            return
         await asyncio.sleep(3)
         if not await self._check_session_alive():
             return
@@ -316,14 +416,18 @@ class LinkedInCollector(BaseCollector):
             await asyncio.sleep(1.2 + random.uniform(0, 1.0))
 
         posts = await self._find_posts()
-        count = await self._harvest_posts(posts[:self._max_feed_posts], source="فید")
+        count = await self._harvest_posts(posts[: self._max_feed_posts], source="فید")
         if count:
             log_success(f"🏠 فید لینکدین: {count} پست مرتبط جدید")
 
     async def _scrape_search(self, query: str):
         page = self._page
         url = LINKEDIN_SEARCH_URL.format(q=quote(query))
-        await page.goto(url, wait_until="domcontentloaded")
+        try:
+            await page.goto(url, wait_until="domcontentloaded")
+        except Exception as e:
+            log_warning(f"لینکدین: خطا در باز کردن جستجو «{query}»: {e}")
+            return
         await asyncio.sleep(3)
         if not await self._check_session_alive():
             return
@@ -340,17 +444,19 @@ class LinkedInCollector(BaseCollector):
         if not posts:
             log_info(f"لینکدین: نتیجه‌ای برای «{query}» پیدا نشد")
             return
-        count = await self._harvest_posts(posts[:self._max_results], source=query, query=query)
+        count = await self._harvest_posts(
+            posts[: self._max_results], source=query, query=query
+        )
         if count:
             log_success(f"🔎 لینکدین «{query}»: {count} پست مرتبط جدید")
 
     async def _find_posts(self):
         """عناصرِ پست را با چند انتخابگرِ پشتیبان پیدا می‌کند (فید و سرچ مشترک)."""
         post_selectors = [
-            'div.feed-shared-update-v2',
-            'div.update-components-text',
-            'li.reusable-search__result-container',
-            'div.fie-impression-container',
+            "div.feed-shared-update-v2",
+            "div.update-components-text",
+            "li.reusable-search__result-container",
+            "div.fie-impression-container",
         ]
         for sel in post_selectors:
             posts = await self._page.query_selector_all(sel)
@@ -372,46 +478,59 @@ class LinkedInCollector(BaseCollector):
                 if not matched:
                     continue  # پستِ بی‌ربط را اصلاً نگه ندار
 
-                urn = await post.get_attribute("data-urn") or await post.get_attribute("data-id")
+                urn = await post.get_attribute("data-urn") or await post.get_attribute(
+                    "data-id"
+                )
                 mid = urn or hashlib.md5(text.encode("utf-8")).hexdigest()[:16]
                 if mid in self._seen_ids:
                     continue
                 self._seen_ids.add(mid)
 
-                author = await self._extract(post, [
-                    '.update-components-actor__name', '.update-components-actor__title',
-                    'span.feed-shared-actor__name',
-                ])
+                author = await self._extract(
+                    post,
+                    [
+                        ".update-components-actor__name",
+                        ".update-components-actor__title",
+                        "span.feed-shared-actor__name",
+                    ],
+                )
                 permalink = await self._extract_link(post)
 
                 # عکس فقط برای پست‌های مرتبط (کلیدواژه‌دار) دانلود شود
                 media_type, local_file_path = "text", None
                 try:
                     from core.web_media import download_dom_image
-                    mt, lp = await download_dom_image(self._page, post, self._media_dir, "linkedin")
+
+                    mt, lp = await download_dom_image(
+                        self._page, post, self._media_dir, "linkedin"
+                    )
                     if mt:
                         media_type, local_file_path = mt, lp
                 except Exception:
                     pass
 
-                self._messages_queue.append({
-                    "id": str(mid),
-                    "platform": "linkedin",
-                    "text": text[:5000],
-                    "chat_id": source,
-                    "chat_name": f"LinkedIn: {source}",
-                    "chat_type": "linkedin",
-                    "chat_username": None,
-                    "chat_link": permalink,
-                    "user_id": author or "",
-                    "sender_name": author or "",
-                    "timestamp": datetime.now(),
-                    "media_type": media_type,
-                    "file_id": None,
-                    "local_file_path": local_file_path,
-                    "keywords": ",".join(sorted(matched)),  # storage این‌ها را حفظ می‌کند
-                    "reply_to": None,
-                })
+                self._messages_queue.append(
+                    {
+                        "id": str(mid),
+                        "platform": "linkedin",
+                        "text": text[:5000],
+                        "chat_id": source,
+                        "chat_name": f"LinkedIn: {source}",
+                        "chat_type": "linkedin",
+                        "chat_username": None,
+                        "chat_link": permalink,
+                        "user_id": author or "",
+                        "sender_name": author or "",
+                        "timestamp": datetime.now(),
+                        "media_type": media_type,
+                        "file_id": None,
+                        "local_file_path": local_file_path,
+                        "keywords": ",".join(
+                            sorted(matched)
+                        ),  # storage این‌ها را حفظ می‌کند
+                        "reply_to": None,
+                    }
+                )
                 count += 1
             except Exception as e:
                 log_warning(f"لینکدین: خطا در یک پست: {e}")
@@ -441,9 +560,11 @@ class LinkedInCollector(BaseCollector):
     @staticmethod
     async def _extract_link(post) -> Optional[str]:
         try:
-            a = await post.query_selector('a.app-aware-link[href*="/feed/update/"]') \
-                or await post.query_selector('a[href*="/posts/"]') \
-                or await post.query_selector('a.app-aware-link[href]')
+            a = (
+                await post.query_selector('a.app-aware-link[href*="/feed/update/"]')
+                or await post.query_selector('a[href*="/posts/"]')
+                or await post.query_selector("a.app-aware-link[href]")
+            )
             if a:
                 href = await a.get_attribute("href")
                 if href:

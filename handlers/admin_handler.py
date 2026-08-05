@@ -25,28 +25,63 @@ from core.base_handler import BaseHandler
 from core.logger import get_logger, log_info, log_warning
 from analyzers.keyword_finder import get_keyword_finder
 from core.ai_assistant import get_ai_assistant
+from core.safe_brain import SafeBrain, get_safe_brain
 from core import messenger_registry
+
+# ════════════════════════════════════════
+# مغز هوشمند امن (یکپارچه با bot1.py)
+# ════════════════════════════════════════
+try:
+    from core.brain import get_brain
+
+    _brain = None  # lazy init
+    _brain_available = True
+except ImportError:
+    _brain = None
+    _brain_available = False
+    log_warning("⚠️ مغز هوشمند (brain.py) در دسترس نیست — حالت سنتی استفاده می‌شود")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CUSTOM_KW = os.path.join(ROOT, "data", "keywords_custom.json")
 PID_FILE = os.path.join(ROOT, "storage", "bot.pid")
 KNOWLEDGE = os.path.join(ROOT, "data", "bot_knowledge.md")
 REQUESTS = os.path.join(ROOT, "storage", "requests.jsonl")
-MEMORY = os.path.join(ROOT, "storage", "ai_memory.jsonl")   # حافظهٔ سبکِ گفتگو (capped)
-MEMORY_MAX = 200                                            # سقفِ خطوط (کم‌حجم می‌ماند)
+MEMORY = os.path.join(ROOT, "storage", "ai_memory.jsonl")  # حافظهٔ سبکِ گفتگو (capped)
+MEMORY_MAX = 200  # سقفِ خطوط (کم‌حجم می‌ماند)
 
 # Parameters the admin is allowed to read/change (safe whitelist; everything else refused)
 SAFE_PARAMS = {
-    "KEYWORDS_ONLY", "EITAA_POLL_SECONDS", "WHATSAPP_POLL_SECONDS",
-    "LINKEDIN_POLL_SECONDS", "LINKEDIN_MONITOR_FEED", "WEB_ENABLED",
-    "EITAA_ENABLED", "BALE_ENABLED", "RUBIKA_ENABLED", "TELEGRAM_ENABLED",
-    "WHATSAPP_ENABLED", "LINKEDIN_ENABLED", "OBS_PORT", "LOG_LEVEL",
+    "KEYWORDS_ONLY",
+    "EITAA_POLL_SECONDS",
+    "WHATSAPP_POLL_SECONDS",
+    "LINKEDIN_POLL_SECONDS",
+    "LINKEDIN_MONITOR_FEED",
+    "WEB_ENABLED",
+    "EITAA_ENABLED",
+    "BALE_ENABLED",
+    "RUBIKA_ENABLED",
+    "TELEGRAM_ENABLED",
+    "WHATSAPP_ENABLED",
+    "LINKEDIN_ENABLED",
+    "OBS_PORT",
+    "LOG_LEVEL",
 }
 _PLATFORM_MAP = {
-    "ایتا": "eitaa", "بله": "bale", "روبیکا": "rubika", "تلگرام": "telegram",
-    "واتساپ": "whatsapp", "واتس‌اپ": "whatsapp", "لینکدین": "linkedin", "وب": "web",
-    "eitaa": "eitaa", "bale": "bale", "rubika": "rubika", "telegram": "telegram",
-    "whatsapp": "whatsapp", "linkedin": "linkedin", "web": "web",
+    "ایتا": "eitaa",
+    "بله": "bale",
+    "روبیکا": "rubika",
+    "تلگرام": "telegram",
+    "واتساپ": "whatsapp",
+    "واتس‌اپ": "whatsapp",
+    "لینکدین": "linkedin",
+    "وب": "web",
+    "eitaa": "eitaa",
+    "bale": "bale",
+    "rubika": "rubika",
+    "telegram": "telegram",
+    "whatsapp": "whatsapp",
+    "linkedin": "linkedin",
+    "web": "web",
 }
 
 
@@ -55,12 +90,20 @@ class AdminHandler(BaseHandler):
         self.db = db
         self.kw = get_keyword_finder()
         self.ai = get_ai_assistant()
+        # SafeBrain — مغز امن با کش و حافظه (جایگزین هوشمند برای کاهش هزینه)
+        from config import AI as AI_CONFIG
+
+        api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+        self.safe_brain: SafeBrain = get_safe_brain(api_key=api_key)
         from config import PLUGINS_CONFIG
+
         cfg = PLUGINS_CONFIG.get("adminhandler", {})
         self.enabled = cfg.get("enabled", True)
         self.admin_ids = set(str(x) for x in cfg.get("admin_ids", []))
         self.platform = cfg.get("platform", "bale")
-        self.db_path = getattr(db, "db_path", os.path.join(ROOT, "storage", "database", "messages.db"))
+        self.db_path = getattr(
+            db, "db_path", os.path.join(ROOT, "storage", "database", "messages.db")
+        )
         self._knowledge = ""
         try:
             with open(KNOWLEDGE, "r", encoding="utf-8") as f:
@@ -80,15 +123,19 @@ class AdminHandler(BaseHandler):
         if raw.get("platform") != self.platform:
             return
         sender = str(raw.get("user_id") or "").strip()
-        ct = (raw.get("chat_type") or "")
+        ct = raw.get("chat_type") or ""
         # تشخیصی: هر پیامِ یک مدیر را لاگ کن تا اگر جواب نداد، علتش معلوم باشد
         if sender in self.admin_ids:
-            log_info(f"🛡️ admin msg | chat_type={ct} chat_id={raw.get('chat_id')} sender={sender}")
+            log_info(
+                f"🛡️ admin msg | chat_type={ct} chat_id={raw.get('chat_id')} sender={sender}"
+            )
         # فقط چتِ خصوصی = دستور. بله گاهی چتِ خصوصی را اشتباهی «group» می‌زند؛
         # پس اگر فرستنده مدیر است، چتِ یک‌به‌یک (chat_id==فرستنده) را هم خصوصی حساب کن.
-        is_private = (ct in ("private", "user", "")
-                      or str(raw.get("chat_id")) == sender
-                      or sender in self.admin_ids)   # پیامِ خصوصیِ مدیر همیشه دستور است
+        is_private = (
+            ct in ("private", "user", "")
+            or str(raw.get("chat_id")) == sender
+            or sender in self.admin_ids
+        )  # پیامِ خصوصیِ مدیر همیشه دستور است
         if not is_private:
             return
         text = (raw.get("text") or raw.get("caption") or "").strip()
@@ -97,10 +144,15 @@ class AdminHandler(BaseHandler):
 
         # حالتِ pairing: هنوز مدیری ثبت نشده → آی‌دی را اعلام کن
         if not self.admin_ids:
-            log_warning(f"🔑 ADMIN PAIRING — platform={self.platform} user_id={sender} | "
-                        f"این آی‌دی را در .env بگذار: ADMIN_IDS={sender}")
-            await self._reply(raw, f"👋 آی‌دیِ تو: {sender}\nآن را در .env بگذار:\nADMIN_IDS={sender}\n"
-                                   f"بعد ربات را ری‌استارت کن تا مدیر شوی.")
+            log_warning(
+                f"🔑 ADMIN PAIRING — platform={self.platform} user_id={sender} | "
+                f"این آی‌دی را در .env بگذار: ADMIN_IDS={sender}"
+            )
+            await self._reply(
+                raw,
+                f"👋 آی‌دیِ تو: {sender}\nآن را در .env بگذار:\nADMIN_IDS={sender}\n"
+                f"بعد ربات را ری‌استارت کن تا مدیر شوی.",
+            )
             return
 
         if sender not in self.admin_ids:
@@ -110,11 +162,26 @@ class AdminHandler(BaseHandler):
         action, value = self._rule_parse(text)
         try:
             if action is None:
-                # دستورِ روشن نبود → گفتگوی آزاد با هوش (نه روتینگِ مدلِ کوچک که
-                # ممکن است اشتباهی گزارش/ری‌استارت بزند). همیشه پاسخِ طبیعی می‌دهد.
-                reply = await self._ask(text)
+                # ── دستورِ روشن نبود → SafeBrain (مغز امن با کش و حافظه) ──
+                reply = await self.safe_brain.process(text)
+                if not reply or reply.startswith("🤖 SafeBrain"):
+                    # اگر SafeBrain نتوانست، fallback به روش‌های قبلی
+                    if _brain_available:
+                        global _brain
+                        if _brain is None:
+                            _brain = get_brain(db=self.db)
+                        try:
+                            reply = await _brain.process_admin_command(text)
+                        except Exception as e:
+                            log_warning(f"مغز خطا در گفتگوی آزاد، fallback: {e}")
+                            reply = await self._ask(text)
+                    else:
+                        reply = await self._ask(text)
             else:
-                reply = await self._execute(action, value, text)
+                # برای اکشن‌های شناخته شده، اول SafeBrain امتحان می‌کند
+                reply = await self.safe_brain.process(text)
+                if not reply or reply.startswith("🤖 SafeBrain"):
+                    reply = await self._execute(action, value, text)
         except Exception as e:
             reply = f"❌ خطا در اجرای دستور: {e}"
         await self._reply(raw, reply)
@@ -125,6 +192,12 @@ class AdminHandler(BaseHandler):
         text = (text or "").strip()
         if not text:
             return ""
+        try:
+            reply = await self.safe_brain.process(text)
+            if reply and not reply.startswith("🤖 SafeBrain"):
+                return reply
+        except Exception:
+            pass
         action, value = self._rule_parse(text)
         try:
             if action is None:
@@ -139,7 +212,8 @@ class AdminHandler(BaseHandler):
     @staticmethod
     def _extract_value(text: str):
         import re
-        m = re.search(r"[«\"']([^»\"']+)[»\"']", text)   # «...» or "..." or '...'
+
+        m = re.search(r"[«\"']([^»\"']+)[»\"']", text)  # «...» or "..." or '...'
         return m.group(1).strip() if m else None
 
     def _platform_in(self, low: str):
@@ -153,26 +227,66 @@ class AdminHandler(BaseHandler):
         val = self._extract_value(text)
         if any(w in low for w in ["help", "راهنما", "کمک", "دستورات", "منو"]):
             return "help", None
-        if any(w in low for w in ["restart", "ری‌استارت", "ریستارت", "راه‌اندازی مجدد", "ری استارت"]):
+        if any(
+            w in low
+            for w in ["restart", "ری‌استارت", "ریستارت", "راه‌اندازی مجدد", "ری استارت"]
+        ):
             return "restart", None
-        if (("حذف" in low or "remove" in low or "پاک" in low or "delete" in low)
-                and ("کلیدواژه" in low or "keyword" in low or val)):
+        if ("حذف" in low or "remove" in low or "پاک" in low or "delete" in low) and (
+            "کلیدواژه" in low or "keyword" in low or val
+        ):
             return "remove_keyword", val
-        if ("اضافه" in low or "add" in low) and ("کلیدواژه" in low or "keyword" in low or val):
+        if ("اضافه" in low or "add" in low) and (
+            "کلیدواژه" in low or "keyword" in low or val
+        ):
             return "add_keyword", val
-        if (("دار" in low or "هست" in low or "has" in low or "exist" in low)
-                and ("کلیدواژه" in low or "keyword" in low)):
+        if ("دار" in low or "هست" in low or "has" in low or "exist" in low) and (
+            "کلیدواژه" in low or "keyword" in low
+        ):
             return "has_keyword", val
         # جزئیاتِ سرنخ (برای رونمایی): «اولین/آخرین سرنخ را با جزئیات بگو»
-        if ("سرنخ" in low or "پایش" in low or "lead" in low) and any(w in low for w in ["جزئیات", "اولین", "آخرین", "detail", "first", "last", "نشون", "بگو"]):
+        if ("سرنخ" in low or "پایش" in low or "lead" in low) and any(
+            w in low
+            for w in [
+                "جزئیات",
+                "اولین",
+                "آخرین",
+                "detail",
+                "first",
+                "last",
+                "نشون",
+                "بگو",
+            ]
+        ):
             which = "first" if ("اولین" in low or "first" in low) else "last"
             return "lead_details", which
         # سلامتِ کاملِ ۰-۱۰۰
-        if any(w in low for w in ["سلامت", "health", "چک کامل", "تندرستی", "همه پلتفرم", "وضعیت کامل"]):
+        if any(
+            w in low
+            for w in [
+                "سلامت",
+                "health",
+                "چک کامل",
+                "تندرستی",
+                "همه پلتفرم",
+                "وضعیت کامل",
+            ]
+        ):
             return "health", None
         # درخواستِ قابلیتِ جدید: فقط وقتی فعلِ «خواستن» + اشارهٔ «قابلیت/توانایی» باشد
         # (تا سؤالِ «چه قابلیت‌هایی داری؟» اشتباه گرفته نشود — آن سؤال است نه درخواست).
-        _want = any(w in low for w in ["میخوام", "می‌خوام", "میخواهم", "می‌خواهم", "کاش", "اضافه کن", "اضاف کن"])
+        _want = any(
+            w in low
+            for w in [
+                "میخوام",
+                "می‌خوام",
+                "میخواهم",
+                "می‌خواهم",
+                "کاش",
+                "اضافه کن",
+                "اضاف کن",
+            ]
+        )
         _cap = any(w in low for w in ["بتون", "قابلیت", "feature", "توانایی"])
         if _want and _cap and "کلیدواژه" not in low:
             return "feature_request", None
@@ -183,16 +297,31 @@ class AdminHandler(BaseHandler):
         if any(w in low for w in ["crm", "سی آر ام", "خروجی"]):
             return "crm", None
         # «این لاگ چیه/یعنی چی/توضیح بده» → توضیح؛ صرفِ «لاگ» → نمایش
-        if ("لاگ" in low or "log" in low) and any(w in low for w in ["چیه", "یعنی", "توضیح", "معنی", "explain", "چرا"]):
+        if ("لاگ" in low or "log" in low) and any(
+            w in low for w in ["چیه", "یعنی", "توضیح", "معنی", "explain", "چرا"]
+        ):
             return "explain_logs", None
         if any(w in low for w in ["لاگ", "log"]):
             return "logs", None
-        if (any(w in low for w in ["وضعیت", "آمار", "اوضاع", "حال", "چطور",
-                                   "سرنخ", "lead", "status", "stat"])
-                and not self._platform_in(low)):
+        if any(
+            w in low
+            for w in [
+                "وضعیت",
+                "آمار",
+                "اوضاع",
+                "حال",
+                "چطور",
+                "سرنخ",
+                "lead",
+                "status",
+                "stat",
+            ]
+        ) and not self._platform_in(low):
             return "status", None
         p = self._platform_in(low)
-        if p and any(w in low for w in ["کار", "وصل", "working", "status", "?", "؟", "فعال"]):
+        if p and any(
+            w in low for w in ["کار", "وصل", "working", "status", "?", "؟", "فعال"]
+        ):
             return "platform_status", p
         return None, val
 
@@ -200,19 +329,45 @@ class AdminHandler(BaseHandler):
     # safe actions (whitelist) → reply text
     # ==================================================
     async def _execute(self, action: str, value, raw_text: str) -> str:
+        # ── تلاش برای استفاده از مغز هوشمند (brain) ──
+        if _brain_available:
+            global _brain
+            if _brain is None:
+                _brain = get_brain(db=self.db)
+            brain_cmds = {
+                "help",
+                "status",
+                "health",
+                "lead_details",
+                "keywords",
+                "has_keyword",
+                "add_keyword",
+                "remove_keyword",
+            }
+            if action in brain_cmds:
+                try:
+                    return await _brain.process_admin_command(raw_text)
+                except Exception as e:
+                    log_warning(f"مغز خطا داد، fallback به حالت سنتی: {e}")
+
+        # ── حالت سنتی (Fallback) ──
         if action == "help":
             return self._help()
         if action == "status":
             return self._status()
         if action == "report":
             from core.daily_reporter import generate_executive_report
+
             path = generate_executive_report()
             return f"📄 گزارش مدیریتی ساخته شد:\n{path}"
         if action == "crm":
             from core.crm_export import export_crm
+
             res = export_crm(30)
-            return (f"📤 خروجی CRM آماده شد ({res.get('count', 0)} سرنخ):\n"
-                    f"{res.get('xlsx') or res.get('csv')}")
+            return (
+                f"📤 خروجی CRM آماده شد ({res.get('count', 0)} سرنخ):\n"
+                f"{res.get('xlsx') or res.get('csv')}"
+            )
         if action == "logs":
             return self._logs()
         if action == "keywords":
@@ -232,7 +387,9 @@ class AdminHandler(BaseHandler):
             if not v:
                 return "کدام کلیدواژه؟ داخل « » بنویس."
             found = bool(self.kw.has_match(v) or v in self.kw.keywords)
-            return f"{'✅ بله' if found else '❌ نه'}، «{v}» {'هست' if found else 'نیست'}."
+            return (
+                f"{'✅ بله' if found else '❌ نه'}، «{v}» {'هست' if found else 'نیست'}."
+            )
         if action == "platform_status":
             return await self._platform_status(value)
         if action == "get_param":
@@ -252,13 +409,19 @@ class AdminHandler(BaseHandler):
     async def _ask(self, question: str) -> str:
         """پاسخ به سؤالِ آزاد — هویتِ ربات + سندِ دانش + حافظهٔ زندهٔ دیتابیس + گفتگوی اخیر."""
         from core.ai_assistant import PERSONA
-        system = (PERSONA + "\n\n# دانشِ ربات:\n" + self._knowledge
-                  + "\n\n# وضعیتِ زندهٔ همین الان (از دیتابیس):\n" + self._live_context()
-                  + self._recent_memory())
+
+        system = (
+            PERSONA
+            + "\n\n# دانشِ ربات:\n"
+            + self._knowledge
+            + "\n\n# وضعیتِ زندهٔ همین الان (از دیتابیس):\n"
+            + self._live_context()
+            + self._recent_memory()
+        )
         ans = await self.ai.chat(question, system=system)
         if not ans:
-            return ("هوش الان در دسترس نیست. خلاصهٔ قابلیت‌ها:\n" + self._help())
-        self._remember(question, ans)   # حافظهٔ سبک (capped) — کم‌کم باهوش‌تر می‌شود
+            return "هوش الان در دسترس نیست. خلاصهٔ قابلیت‌ها:\n" + self._help()
+        self._remember(question, ans)  # حافظهٔ سبک (capped) — کم‌کم باهوش‌تر می‌شود
         return ans
 
     def _recent_memory(self, n: int = 6) -> str:
@@ -283,8 +446,13 @@ class AdminHandler(BaseHandler):
         try:
             os.makedirs(os.path.dirname(MEMORY), exist_ok=True)
             with open(MEMORY, "a", encoding="utf-8") as f:
-                f.write(json.dumps({"ts": datetime.now().isoformat(), "q": q, "a": a},
-                                   ensure_ascii=False) + "\n")
+                f.write(
+                    json.dumps(
+                        {"ts": datetime.now().isoformat(), "q": q, "a": a},
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
             # سقفِ حجم: فقط آخرین MEMORY_MAX خط نگه داشته شود
             with open(MEMORY, "r", encoding="utf-8") as f:
                 lines = f.readlines()
@@ -296,27 +464,47 @@ class AdminHandler(BaseHandler):
 
     def _live_context(self) -> str:
         """خلاصهٔ کوتاه و زندهٔ وضعیت از دیتابیس (حافظه = همان دیتابیس؛ سبک، هر بار تازه).
-        با بزرگ‌شدنِ داده‌ها سنگین نمی‌شود چون فقط چند عددِ خلاصه و آخرین سرنخ را می‌خواند."""
+        با بزرگ‌شدنِ داده‌ها سنگین نمی‌شود چون فقط چند عددِ خلاصه و آخرین سرنخ را می‌خواند.
+        """
         try:
             c = sqlite3.connect(self.db_path)
             cur = c.cursor()
-            total = cur.execute("SELECT COUNT(*) FROM messages WHERE keywords!=''").fetchone()[0]
-            today = cur.execute("SELECT COUNT(*) FROM messages WHERE keywords!='' AND date(timestamp)=date('now')").fetchone()[0]
-            byp = cur.execute("SELECT platform, COUNT(*) FROM messages WHERE keywords!='' GROUP BY platform").fetchall()
-            last = cur.execute("SELECT platform, chat_name, keywords, timestamp FROM messages WHERE keywords!='' ORDER BY timestamp DESC LIMIT 1").fetchone()
+            total = cur.execute(
+                "SELECT COUNT(*) FROM messages WHERE keywords!=''"
+            ).fetchone()[0]
+            today = cur.execute(
+                "SELECT COUNT(*) FROM messages WHERE keywords!='' AND date(timestamp)=date('now')"
+            ).fetchone()[0]
+            byp = cur.execute(
+                "SELECT platform, COUNT(*) FROM messages WHERE keywords!='' GROUP BY platform"
+            ).fetchall()
+            last = cur.execute(
+                "SELECT platform, chat_name, keywords, timestamp FROM messages WHERE keywords!='' ORDER BY timestamp DESC LIMIT 1"
+            ).fetchone()
             c.close()
-            parts = [f"کل سرنخ‌ها: {total}", f"امروز: {today}",
-                     "به‌تفکیک: " + "، ".join(f"{p}={n}" for p, n in byp) if byp else "به‌تفکیک: -"]
+            parts = [
+                f"کل سرنخ‌ها: {total}",
+                f"امروز: {today}",
+                (
+                    "به‌تفکیک: " + "، ".join(f"{p}={n}" for p, n in byp)
+                    if byp
+                    else "به‌تفکیک: -"
+                ),
+            ]
             if last:
-                parts.append(f"آخرین سرنخ: {last[0]} / گروه {last[1]} / کلیدواژه {last[2]} / {last[3]}")
+                parts.append(
+                    f"آخرین سرنخ: {last[0]} / گروه {last[1]} / کلیدواژه {last[2]} / {last[3]}"
+                )
             return "\n".join(parts)
         except Exception:
             return "(فعلاً آماری در دسترس نیست)"
 
     async def _explain_logs(self) -> str:
         logs = self._logs(15)
-        prompt = (f"این لاگ‌های ربات را خیلی ساده به فارسی توضیح بده که چه اتفاقی افتاده و "
-                  f"اگر خطایی هست یعنی چه و چه باید کرد:\n\n{logs}")
+        prompt = (
+            f"این لاگ‌های ربات را خیلی ساده به فارسی توضیح بده که چه اتفاقی افتاده و "
+            f"اگر خطایی هست یعنی چه و چه باید کرد:\n\n{logs}"
+        )
         ans = await self.ai.chat(prompt)
         return ans or logs
 
@@ -324,31 +512,48 @@ class AdminHandler(BaseHandler):
         try:
             os.makedirs(os.path.dirname(REQUESTS), exist_ok=True)
             with open(REQUESTS, "a", encoding="utf-8") as f:
-                f.write(json.dumps({"ts": datetime.now().isoformat(), "request": text},
-                                   ensure_ascii=False) + "\n")
-            return ("📝 ثبت شد. این یک قابلیتِ جدید است که الان ربات ندارد؛ برای توسعه‌دهنده "
-                    "ثبتش کردم تا اضافه شود.")
+                f.write(
+                    json.dumps(
+                        {"ts": datetime.now().isoformat(), "request": text},
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+            return (
+                "📝 ثبت شد. این یک قابلیتِ جدید است که الان ربات ندارد؛ برای توسعه‌دهنده "
+                "ثبتش کردم تا اضافه شود."
+            )
         except Exception as e:
             return f"خطا در ثبتِ درخواست: {e}"
 
     def _help(self) -> str:
-        return ("🛡️ دستورها (متن آزاد هم می‌فهمم):\n"
-                "• وضعیت / آمار\n• گزارش\n• CRM (اکسل)\n• لاگ\n"
-                "• کلیدواژه‌ها\n• کلیدواژه «...» را اضافه کن\n• کلیدواژه «...» را داری؟\n"
-                "• لینکدین کار می‌کند؟ (یا هر پلتفرم)\n• ری‌استارت")
+        return (
+            "🛡️ دستورها (متن آزاد هم می‌فهمم):\n"
+            "• وضعیت / آمار\n• گزارش\n• CRM (اکسل)\n• لاگ\n"
+            "• کلیدواژه‌ها\n• کلیدواژه «...» را اضافه کن\n• کلیدواژه «...» را داری؟\n"
+            "• لینکدین کار می‌کند؟ (یا هر پلتفرم)\n• ری‌استارت"
+        )
 
     def _status(self) -> str:
         try:
             c = sqlite3.connect(self.db_path)
             cur = c.cursor()
             total = cur.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-            leads = cur.execute("SELECT COUNT(*) FROM messages WHERE keywords!=''").fetchone()[0]
-            hot = cur.execute("SELECT COUNT(*) FROM messages WHERE opportunity_type='داغ'").fetchone()[0]
-            rows = cur.execute("SELECT platform, COUNT(*) FROM messages WHERE keywords!='' GROUP BY platform").fetchall()
+            leads = cur.execute(
+                "SELECT COUNT(*) FROM messages WHERE keywords!=''"
+            ).fetchone()[0]
+            hot = cur.execute(
+                "SELECT COUNT(*) FROM messages WHERE opportunity_type='داغ'"
+            ).fetchone()[0]
+            rows = cur.execute(
+                "SELECT platform, COUNT(*) FROM messages WHERE keywords!='' GROUP BY platform"
+            ).fetchall()
             c.close()
             by = "، ".join(f"{p}: {n}" for p, n in rows) or "—"
-            return (f"📊 وضعیت:\nکل پیام: {total} | سرنخ: {leads} | داغ: {hot}\n"
-                    f"به تفکیک پلتفرم: {by}")
+            return (
+                f"📊 وضعیت:\nکل پیام: {total} | سرنخ: {leads} | داغ: {hot}\n"
+                f"به تفکیک پلتفرم: {by}"
+            )
         except Exception as e:
             return f"خطا در خواندن آمار: {e}"
 
@@ -398,8 +603,10 @@ class AdminHandler(BaseHandler):
                 with open(CUSTOM_KW, "r", encoding="utf-8") as f:
                     data = json.load(f)
             if not isinstance(data, list) or value not in data:
-                return (f"«{value}» در کلیدواژه‌های افزودنی نیست. "
-                        f"(فقط کلیدواژه‌هایی که از همین‌جا اضافه شده‌اند قابلِ حذف‌اند، نه محصولاتِ اصلی.)")
+                return (
+                    f"«{value}» در کلیدواژه‌های افزودنی نیست. "
+                    f"(فقط کلیدواژه‌هایی که از همین‌جا اضافه شده‌اند قابلِ حذف‌اند، نه محصولاتِ اصلی.)"
+                )
             data = [k for k in data if k != value]
             with open(CUSTOM_KW, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
@@ -423,7 +630,10 @@ class AdminHandler(BaseHandler):
                 lines.append(f"• {p}: {mark} آخرین فعالیت {int(mins)} دقیقه پیش")
         try:
             import psutil
-            lines.append(f"💻 CPU {psutil.cpu_percent(interval=0.3)}% | RAM {psutil.virtual_memory().percent}%")
+
+            lines.append(
+                f"💻 CPU {psutil.cpu_percent(interval=0.3)}% | RAM {psutil.virtual_memory().percent}%"
+            )
         except Exception:
             pass
         lines.append(self._status())
@@ -438,28 +648,34 @@ class AdminHandler(BaseHandler):
             row = c.execute(
                 f"SELECT platform, chat_name, chat_link, keywords, opportunity_type, "
                 f"opportunity_score, text, timestamp FROM messages WHERE keywords!='' "
-                f"ORDER BY timestamp {order} LIMIT 1").fetchone()
+                f"ORDER BY timestamp {order} LIMIT 1"
+            ).fetchone()
             c.close()
         except Exception as e:
             return f"خطا در خواندن سرنخ: {e}"
         if not row:
             return "هنوز هیچ سرنخی ثبت نشده."
         label = "اولین" if which == "first" else "آخرین"
-        detail = (f"🔎 {label} سرنخ:\n"
-                  f"📱 پلتفرم: {row['platform']}\n"
-                  f"👥 گروه: {row['chat_name']}\n"
-                  f"🔑 کلیدواژه: {row['keywords']}\n"
-                  f"🎯 {row['opportunity_type'] or '-'} (امتیاز {row['opportunity_score'] or 0})\n"
-                  f"🕒 {row['timestamp']}\n"
-                  f"💬 {(row['text'] or '')[:300]}")
+        detail = (
+            f"🔎 {label} سرنخ:\n"
+            f"📱 پلتفرم: {row['platform']}\n"
+            f"👥 گروه: {row['chat_name']}\n"
+            f"🔑 کلیدواژه: {row['keywords']}\n"
+            f"🎯 {row['opportunity_type'] or '-'} (امتیاز {row['opportunity_score'] or 0})\n"
+            f"🕒 {row['timestamp']}\n"
+            f"💬 {(row['text'] or '')[:300]}"
+        )
         if row["chat_link"]:
             detail += f"\n🔗 {row['chat_link']}"
         # توضیحِ طبیعیِ نحوهٔ ثبت (با زبانِ خودِ ربات) اگر هوش در دسترس باشد
         from core.ai_assistant import PERSONA
+
         narration = await self.ai.chat(
             "این سرنخ را برای مدیر در یک جلسه توضیح بده: چه دیدی، چطور تشخیص دادی کلیدواژه دارد، "
             "و مراحلِ ثبتش چه بود (خواندن پیام → تطبیق کلیدواژه → امتیازدهی → ذخیره در دیتابیس). کوتاه و طبیعی.\n\n"
-            + detail, system=PERSONA)
+            + detail,
+            system=PERSONA,
+        )
         return detail + (("\n\n🗣️ " + narration) if narration else "")
 
     async def _platform_status(self, platform) -> str:
@@ -471,7 +687,9 @@ class AdminHandler(BaseHandler):
         except Exception:
             last = None
         if not last:
-            return f"ℹ️ {platform}: هنوز فعالیتی ثبت نشده (شاید تازه شروع شده یا وصل نیست)."
+            return (
+                f"ℹ️ {platform}: هنوز فعالیتی ثبت نشده (شاید تازه شروع شده یا وصل نیست)."
+            )
         mins = (datetime.now() - last).total_seconds() / 60
         if mins < 30:
             return f"✅ {platform}: فعال — آخرین فعالیت {int(mins)} دقیقه پیش."
@@ -484,6 +702,7 @@ class AdminHandler(BaseHandler):
 
     def _set_param(self, raw_text: str) -> str:
         import re
+
         m = re.search(r"([A-Z_]{3,})\s*[=:]\s*(\S+)", raw_text)
         if not m:
             return "قالب: set PARAM=VALUE"
@@ -521,7 +740,9 @@ class AdminHandler(BaseHandler):
                 kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
             else:
                 kwargs["start_new_session"] = True
-            proc = subprocess.Popen([sys.executable, os.path.join(ROOT, "main.py")], **kwargs)
+            proc = subprocess.Popen(
+                [sys.executable, os.path.join(ROOT, "main.py")], **kwargs
+            )
             try:
                 with open(PID_FILE, "w") as f:
                     f.write(str(proc.pid))
@@ -533,7 +754,9 @@ class AdminHandler(BaseHandler):
     async def _reply(self, raw: dict, text: str):
         sender = messenger_registry.get_sender(self.platform)
         if not sender:
-            log_warning(f"admin reply skipped — no sender registered for {self.platform}")
+            log_warning(
+                f"admin reply skipped — no sender registered for {self.platform}"
+            )
             return
         # اگر چتِ یک‌به‌یک است، حتماً private بفرست (بله گاهی آن را group می‌زند)
         ct = raw.get("chat_type")

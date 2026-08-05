@@ -10,7 +10,9 @@ import signal
 # ==================================================
 def is_venv() -> bool:
     """بررسی می‌کند که آیا در محیط مجازی هستیم یا خیر."""
-    return (sys.prefix != sys.base_prefix) or (os.environ.get("VIRTUAL_ENV") is not None)
+    return (sys.prefix != sys.base_prefix) or (
+        os.environ.get("VIRTUAL_ENV") is not None
+    )
 
 
 if not is_venv():
@@ -38,13 +40,15 @@ from core.database import create_database
 from core.plugin_loader import PluginLoader
 from core.monitor import SystemMonitor, PerformanceMonitor
 from core.health_check import HealthChecker
-from core.logger import log_info, log_success, log_error
+from core.logger import log_info, log_success, log_error, log_warning
 
 shutdown_event = asyncio.Event()
+
 
 def signal_handler():
     print("\n⚠️ Shutdown signal received, cleaning up...")
     shutdown_event.set()
+
 
 async def shutdown_cleanup(db, system_monitor, orchestrator):
     log_info("Shutting down...")
@@ -56,10 +60,11 @@ async def shutdown_cleanup(db, system_monitor, orchestrator):
         await db.close()
     log_success("Cleanup completed.")
 
+
 async def main():
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("🚀 Smart Lead Monitoring System - Final Version")
-    print("="*70)
+    print("=" * 70)
 
     db = create_database()
     await db.init()
@@ -68,19 +73,32 @@ async def main():
     plugin_loader = PluginLoader()
 
     # ========== تنظیم وابستگی‌های مورد نیاز برای پلاگین‌ها ==========
-    # هر پلاگینی که در __init__ خود پارامتری مثل db، scorer، ... داشته باشد،
-    # این مقادیر به آن تزریق می‌شود.
     plugin_loader.set_dependencies(db=db, scorer=None)
 
+    # ========== راه‌اندازی مغز هوشمند ==========
+    from core.safe_brain import get_safe_brain
+    from config import BRAIN_CONFIG
+
+    get_safe_brain(
+        full_access=BRAIN_CONFIG.get("full_access", False),
+        use_api_memory=BRAIN_CONFIG.get("use_api_memory", False),
+        memory_api_url=BRAIN_CONFIG.get("memory_api_url", ""),
+        memory_api_key=BRAIN_CONFIG.get("memory_api_key", ""),
+    )
+    log_success("🧠 مغز هوشمند (SafeBrain) با تنظیمات جدید راه‌اندازی شد")
+
     from config import MONITOR
+
     system_monitor = SystemMonitor()
     perf_monitor = PerformanceMonitor()
     health_check = HealthChecker(db)
 
     if MONITOR.get("enabled", True):
-        asyncio.create_task(system_monitor.start_monitoring(
-            interval_seconds=MONITOR.get("interval_seconds", 30)
-        ))
+        asyncio.create_task(
+            system_monitor.start_monitoring(
+                interval_seconds=MONITOR.get("interval_seconds", 30)
+            )
+        )
     await health_check.check_all()
 
     # ========== بارگذاری خودکار کلکتورها ==========
@@ -90,40 +108,58 @@ async def main():
         await shutdown_cleanup(db, system_monitor, None)
         return
 
-    # ثبت کلکتورها برای health-check + اجرای سرورِ observability (/health و /metrics)
     for _c in collectors:
         health_check.register_collector(_c)
     from core.obs_server import start_obs_server
+
     obs_runner = await start_obs_server(db, health_check, collectors)
 
-    # پایشگرِ خودکار: مشکلاتِ زمان‌اجرا را تشخیص و به مدیر در بله هشدار می‌دهد
+    # پایشگرِ خودکار
     from core.self_monitor import start_self_monitor
+
     await start_self_monitor(db)
 
     # ========== بارگذاری و ثبت خودکار هندلرها ==========
     handlers = plugin_loader.discover_handlers()
-    # لیست رویدادهایی که سیستم پشتیبانی می‌کند
     supported_events = ["message.received", "lead.saved", "error.occurred"]
 
     for handler in handlers:
         for event_name in supported_events:
             if handler.can_handle(event_name):
                 event_bus.subscribe(event_name, handler.handle)
-                log_success(f"Handler '{handler.handler_name}' subscribed to '{event_name}'")
+                log_success(
+                    f"Handler '{handler.handler_name}' subscribed to '{event_name}'"
+                )
 
-    # ========== راه‌اندازی سرویس پشتیبان‌گیری ==========
-    from core.backup_service import start_backup_service
-    await start_backup_service()
-
-    from core.cleanup_service import start_cleanup_service
-    await start_cleanup_service(db)
-
-    from core.daily_reporter import start_daily_reporter
-    await start_daily_reporter(db)
-    
+    # ========== راه‌اندازی Orchestrator ==========
     orchestrator = Orchestrator(collectors, event_bus, db)
     orchestrator_task = asyncio.create_task(orchestrator.start())
 
+    # ========== منتظر اتصال بله و ارسال گزارش ==========
+    # صبر می‌کنیم تا بله متصل شود
+    await asyncio.sleep(10)  # ۱۰ ثانیه صبر برای اطمینان از اتصال
+    
+    try:
+        from core.daily_reporter import generate_executive_report
+        from core import messenger_registry
+        
+        report_path = generate_executive_report()
+        with open(report_path, 'r', encoding='utf-8') as f:
+            report_text = f.read()
+        
+        # بررسی اینکه sender ثبت شده باشد
+        if messenger_registry.get_sender("bale"):
+            await messenger_registry.notify_admins(
+                f"🔄 **ربات ری‌استارت شد!**\n\n"
+                f"📊 **گزارش خلاصه:**\n{report_text[:2000]}"
+            )
+            log_success("✅ گزارش ری‌استارت به مدیر ارسال شد")
+        else:
+            log_warning("⚠️ سندر بله ثبت نشده، گزارش ارسال نشد")
+    except Exception as e:
+        log_error(f"⚠️ ارسال گزارش ری‌استارت失敗: {e}")
+
+    # ========== منتظر سیگنال خاموشی ==========
     try:
         await shutdown_event.wait()
     except KeyboardInterrupt:
@@ -141,15 +177,21 @@ async def main():
             pass
     await shutdown_cleanup(db, system_monitor, orchestrator)
 
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("📊 Final Monitoring Report (before exit)")
-    print("="*70)
+    print("=" * 70)
 
     sys_report = system_monitor.get_report()
     print(f"\n🖥️ System Status:")
-    print(f"   CPU: {sys_report['system']['cpu'].value if sys_report['system']['cpu'] else 0}%")
-    print(f"   RAM: {sys_report['system']['ram'].value if sys_report['system']['ram'] else 0}%")
-    print(f"   Disk: {sys_report['system']['disk'].value if sys_report['system']['disk'] else 0}%")
+    print(
+        f"   CPU: {sys_report['system']['cpu'].value if sys_report['system']['cpu'] else 0}%"
+    )
+    print(
+        f"   RAM: {sys_report['system']['ram'].value if sys_report['system']['ram'] else 0}%"
+    )
+    print(
+        f"   Disk: {sys_report['system']['disk'].value if sys_report['system']['disk'] else 0}%"
+    )
     print(f"   Uptime: {sys_report['system']['uptime']}")
 
     perf_stats = perf_monitor.get_stats()
@@ -160,20 +202,23 @@ async def main():
 
     perf_monitor.show_slowest_operations()
 
-    if sys_report['alerts']:
+    if sys_report["alerts"]:
         print(f"\n🚨 Recent Alerts:")
-        for alert in sys_report['alerts'][-3:]:
+        for alert in sys_report["alerts"][-3:]:
             print(f"   {alert.level}: {alert.title} - {alert.message}")
 
     log_success("Program finished cleanly.")
 
+
 if __name__ == "__main__":
     if sys.platform == "win32":
+
         async def main_wrapper():
             try:
                 await main()
             except KeyboardInterrupt:
                 signal_handler()
+
         asyncio.run(main_wrapper())
     else:
         loop = asyncio.new_event_loop()

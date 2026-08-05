@@ -95,94 +95,58 @@ class BaleCollector(BaseCollector):
         return extensions.get(media_type, ".bin")
     
     def _get_media_type_from_message(self, message) -> tuple:
-        """تشخیص نوع رسانه و استخراج file_id از شیء Message"""
-        # بررسی انواع مختلف رسانه با try/except
-        media_type = "text"
-        file_id = None
-        caption = None
-        
+        """تشخیص نوع رسانه و استخراج file_id از شیء Message (aiobale).
+
+        نکتهٔ مهم: در aiobale هر رسانه‌ای (عکس/ویدیو/صدا/سند/گیف) فقط از طریق
+        `message.document` در دسترس است — فیلدهای photo/video/audio وجود ندارند.
+        نوعِ دقیق از روی mime_type/نامِ فایل حدس زده می‌شود؛ کپشن هم روی document است.
+        """
+        # متن خالص → بدون رسانه
         try:
-            # عکس
-            if hasattr(message, 'photo') and message.photo:
-                media_type = "photo"
-                if hasattr(message.photo, '__getitem__') and len(message.photo) > 0:
-                    if hasattr(message.photo[-1], 'file_id'):
-                        file_id = message.photo[-1].file_id
-                    elif hasattr(message.photo[-1], 'file_unique_id'):
-                        file_id = message.photo[-1].file_unique_id
-                caption = getattr(message, 'caption', None)
-                return media_type, file_id, caption
+            if getattr(message, "text", None):
+                return "text", None, None
         except Exception:
             pass
-        
+
+        doc = None
         try:
-            # ویدیو
-            if hasattr(message, 'video') and message.video:
-                media_type = "video"
-                if hasattr(message.video, 'file_id'):
-                    file_id = message.video.file_id
-                elif hasattr(message.video, 'file_unique_id'):
-                    file_id = message.video.file_unique_id
-                caption = getattr(message, 'caption', None)
-                return media_type, file_id, caption
+            doc = getattr(message, "document", None)
         except Exception:
-            pass
-        
-        try:
-            # صدا
-            if hasattr(message, 'audio') and message.audio:
-                media_type = "audio"
-                if hasattr(message.audio, 'file_id'):
-                    file_id = message.audio.file_id
-                caption = getattr(message, 'caption', None)
-                return media_type, file_id, caption
-        except Exception:
-            pass
-        
-        try:
-            # ویس
-            if hasattr(message, 'voice') and message.voice:
-                media_type = "voice"
-                if hasattr(message.voice, 'file_id'):
-                    file_id = message.voice.file_id
-                caption = getattr(message, 'caption', None)
-                return media_type, file_id, caption
-        except Exception:
-            pass
-        
-        try:
-            # سند
-            if hasattr(message, 'document') and message.document:
-                media_type = "document"
-                if hasattr(message.document, 'file_id'):
-                    file_id = message.document.file_id
-                caption = getattr(message, 'caption', None)
-                return media_type, file_id, caption
-        except Exception:
-            pass
-        
-        try:
-            # استیکر/GIF
-            if hasattr(message, 'sticker') and message.sticker:
-                media_type = "sticker"
-                if hasattr(message.sticker, 'file_id'):
-                    file_id = message.sticker.file_id
-                caption = None
-                return media_type, file_id, caption
-        except Exception:
-            pass
-        
-        try:
-            if hasattr(message, 'animation') and message.animation:
-                media_type = "gif"
-                if hasattr(message.animation, 'file_id'):
-                    file_id = message.animation.file_id
-                caption = getattr(message, 'caption', None)
-                return media_type, file_id, caption
-        except Exception:
-            pass
-        
+            doc = None
+        if not doc:
+            return "text", None, None
+
+        file_id = getattr(doc, "file_id", None) or getattr(doc, "access_hash", None)
+        caption = self._caption_str(getattr(doc, "caption", None))
+        mime = str(getattr(doc, "mime_type", "") or "").lower()
+        name = str(getattr(doc, "name", "") or "").lower()
+
+        if "image/" in mime or name.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif")):
+            media_type = "gif" if (name.endswith(".gif") or "image/gif" in mime) else "photo"
+        elif "video/" in mime or name.endswith((".mp4", ".mkv", ".mov", ".avi")):
+            media_type = "video"
+        elif "audio/" in mime or name.endswith((".mp3", ".ogg", ".m4a", ".wav")):
+            media_type = "voice" if ("ogg" in mime or name.endswith(".ogg")) else "audio"
+        else:
+            media_type = "document"
         return media_type, file_id, caption
+
+    @staticmethod
+    def _caption_str(caption) -> str:
+        """کپشنِ aiobale ممکن است رشته یا آبجکت MessageCaption باشد."""
+        if caption is None:
+            return ""
+        if isinstance(caption, str):
+            return caption
+        # MessageCaption: .text یا .value یا .text_content
+        for attr in ("text", "value", "text_content"):
+            try:
+                v = getattr(caption, attr, None)
+                if v:
+                    return str(v)
+            except Exception:
+                continue
+        return str(caption)
 
     def _chat_type_of(self, chat) -> str:
         """تشخیص نوع چت از روی فیلد type در aiobale."""
@@ -239,7 +203,11 @@ class BaleCollector(BaseCollector):
         group_info = await self._resolve_group(chat_id_raw, chat_type)
         user_id = self._extract_sender_id(message)
         media_type, file_id, caption = self._get_media_type_from_message(message)
-        text_content = getattr(message, 'text', None) or caption or ""
+
+        # متن = متنِ خودِ پیام؛ اگر نبود، کپشنِ فایل (برای تطبیق کلیدواژهٔ عکس/سند)
+        text_content = (getattr(message, 'text', None) or "").strip()
+        if not text_content and caption:
+            text_content = str(caption or "").strip()
 
         # دانلود فایل فقط وقتی متن/کپشن کلیدواژه داشته باشد (نه برای هر پیام).
         local_file_path = None
@@ -287,11 +255,15 @@ class BaleCollector(BaseCollector):
                     _hl = int(os.getenv("BALE_HISTORY_LIMIT", "200"))
                     history = await self._client.load_history(chat_id=chat_id, chat_type=ptype, limit=_hl)
                     for m in history:
-                        # فیلتر زمانی (فقط بعد از since)
+                        # فیلتر زمانی (فقط بعد از since). aiobale تاریخ را datetime می‌دهد.
                         mdate = getattr(m, 'date', None)
                         try:
-                            if isinstance(mdate, (int, float)) and datetime.fromtimestamp(mdate) < since:
-                                continue
+                            if isinstance(mdate, datetime):
+                                if mdate < since:
+                                    continue
+                            elif isinstance(mdate, (int, float)):
+                                if datetime.fromtimestamp(mdate) < since:
+                                    continue
                         except Exception:
                             pass
                         msg = await self._build_unified(m)
@@ -326,7 +298,17 @@ class BaleCollector(BaseCollector):
                     phone_number = phone_number[1:]
 
                 self._dispatcher = Dispatcher()
-                self._client = Client(self._dispatcher, session_file=self._session_path)
+                client_kwargs = {}
+                # پروکسی/فیلترشکن اختیاری از .env (BALE_PROXY یا PROXY_URL)
+                proxy = (os.getenv("BALE_PROXY", "") or os.getenv("PROXY_URL", "")).strip()
+                if proxy:
+                    client_kwargs["proxy"] = proxy
+                    log_info(f"🛡️ بله از طریق پروکسی وصل می‌شود: {proxy}")
+                self._client = Client(
+                    self._dispatcher,
+                    session_file=self._session_path,
+                    **client_kwargs,
+                )
 
                 @self._dispatcher.message()
                 async def message_handler(message: Message):
@@ -340,10 +322,37 @@ class BaleCollector(BaseCollector):
                         import traceback
                         traceback.print_exc()
 
+                # ⚠️ بررسی واقعیِ نشست: اگر نشستِ ذخیره‌شده منقضی/بی‌اعتبار باشد،
+                # نباید «متصل» اعلام کنیم (قبلاً همیشه true می‌شد و هیچ پیامی نمی‌آمد).
+                session_ok = False
+                try:
+                    me = await self._client.get_full_me()
+                    if getattr(me, "user_id", None) or getattr(self._client, "me", None) or getattr(self._client, "id", None):
+                        session_ok = True
+                except Exception as e:
+                    log_warning(f"نشست بله هنوز اعتبارسنجی نشده (طبیعی در اولین بار): {e}")
+                if not session_ok:
+                    # آخرین تلاش: اگر یک نشست فایل روی دیسک باشد، خودِ run() آن را می‌خواند.
+                    log_info("📞 بررسی نشست بله... (اگر نشست ندارد، با `python login.py` وارد شو)")
+
                 log_info(f"📞 در حال اتصال با شماره: {phone_number}")
                 self._listen_task = asyncio.create_task(self._client.run())
 
-                await asyncio.sleep(5)
+                # صبر واقعی برای بالا آمدنِ websocket + اعتبارسنجی نشست
+                for _ in range(10):
+                    await asyncio.sleep(1)
+                    if self._client.id or getattr(self._client, "me", None):
+                        session_ok = True
+                        break
+                if not session_ok:
+                    log_error(
+                        "❌ نشست بله معتبر نیست یا سرور پاسخ نداد. "
+                        "یک‌بار `python login.py` (گزینه‌ی ۲) را اجرا کن و کد پیامکی را وارد کن. "
+                        "اگر با فیلترشکن وصل می‌شوی، BALE_PROXY را در .env بگذار."
+                    )
+                    await self.disconnect()
+                    return False
+
                 self._connected = True
                 self._set_status(ConnectionStatus.CONNECTED)
                 # برای ChatOps: ثبتِ تابعِ ارسال تا هندلرِ مدیر بتواند جواب بدهد
@@ -416,14 +425,16 @@ class BaleCollector(BaseCollector):
         log_info("🔌 قطع ارتباط از بله")
 
     async def check_health(self) -> bool:
-        if not self._connected:
+        """سلامتِ اتصال: `_connected` واقعی (کلاینتِ aiobale متد is_connected ندارد).
+        فقط وقتی که websocket زنده است و نشست معتبر است، سالم محسوب می‌شود."""
+        if not self._connected or not self._client:
             return False
-        try:
-            if self._client and hasattr(self._client, 'is_connected'):
-                return self._client.is_connected
-        except:
-            pass
-        return self._connected
+        if self._listen_task and self._listen_task.done():
+            # تسکِ گوش‌دادن مرده است → اتصال قطع شده
+            self._connected = False
+            self._set_status(ConnectionStatus.ERROR)
+            return False
+        return True
     
     async def get_chats(self) -> List[Dict[str, Any]]:
         return []
