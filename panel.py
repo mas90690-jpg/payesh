@@ -995,6 +995,126 @@ def github_push() -> None:
             f"[X] Push failed (check internet/credentials):\n{out}"
         )
 
+def github_pull() -> None:
+    """Pull از GitHub — با محافظ در برابر از دست دادن تغییرات محلی."""
+    _print("[..] Pull from GitHub")
+
+    # ─── بررسی: مخزن گیت ───
+    rc, _ = _git(["rev-parse", "--is-inside-work-tree"])
+    if rc != 0:
+        _print("[X] Not a git repository.")
+        return
+
+    # ─── بررسی: remote ───
+    rc, remotes = _git(["remote"])
+    if "origin" not in (remotes or ""):
+        _print(
+            "[X] No 'origin' remote. Add it once:\n"
+            "    git remote add origin "
+            "https://github.com/<you>/<repo>.git"
+        )
+        return
+
+    # ─── شاخهٔ فعلی ───
+    rc, branch = _git(["rev-parse", "--abbrev-ref", "HEAD"])
+    branch = (branch or "main").strip() or "main"
+
+    # ─── fetch اول (تا بدانیم چه چیزی می‌آید) ───
+    _print(f"  [..] Fetching origin/{branch}...")
+    rc, out = _git(["fetch", "origin", branch])
+    if rc != 0:
+        _print(f"[X] Fetch failed:\n{out}")
+        return
+
+    # ─── چک: چند commit عقب هستیم؟ ───
+    rc, behind = _git([
+        "rev-list", "--count", f"HEAD..origin/{branch}"
+    ])
+    try:
+        behind_n = int((behind or "0").strip() or "0")
+    except ValueError:
+        behind_n = 0
+
+    # ─── چک: چند commit جلو هستیم؟ ───
+    rc, ahead = _git([
+        "rev-list", "--count", f"origin/{branch}..HEAD"
+    ])
+    try:
+        ahead_n = int((ahead or "0").strip() or "0")
+    except ValueError:
+        ahead_n = 0
+
+    _print(f"  وضعیت: {ahead_n} commit جلوتر، {behind_n} commit عقب‌تر")
+
+    if behind_n == 0:
+        _print("[i] چیز جدیدی برای pull نیست.")
+        return
+
+    # ─── چک: تغییرات uncommitted ───
+    rc, status_out = _git(["status", "--short"])
+    has_local_changes = bool(status_out.strip())
+
+    if has_local_changes:
+        _print("\n  ⚠️ تغییرات محلی uncommitted:")
+        for line in status_out.strip().splitlines()[:15]:
+            _print(f"    {line}")
+        if len(status_out.strip().splitlines()) > 15:
+            _print(
+                f"    ... و {len(status_out.strip().splitlines()) - 15} "
+                f"خط دیگر"
+            )
+
+    if ahead_n > 0:
+        _print(
+            f"\n  ⚠️ شما {ahead_n} commit محلی دارید که در GitHub نیست."
+        )
+        _print("     Pull ممکن است باعث merge یا conflict شود.")
+
+    # ─── تأیید ───
+    confirm = _ask_input(
+        f"\n  Pull {behind_n} commit از origin/{branch}؟ [y/N]: "
+    )
+    if confirm is None or confirm.strip().lower() not in (
+        "y", "yes", "بله"
+    ):
+        _print("[i] لغو شد.")
+        return
+
+    # ─── گزینه: stash اگر تغییرات محلی هست ───
+    stashed = False
+    if has_local_changes:
+        ans = _ask_input(
+            "  تغییرات محلی را موقتاً stash کنم؟ [y/N]: "
+        )
+        if ans is not None and ans.strip().lower() in (
+            "y", "yes", "بله"
+        ):
+            rc, out = _git(["stash", "push", "-u", "-m",
+                            f"panel-pull-{datetime.now():%Y%m%d-%H%M}"])
+            if rc == 0:
+                stashed = True
+                _print("[OK] تغییرات محلی stash شد.")
+            else:
+                _print(f"[X] Stash failed:\n{out}")
+                return
+
+    # ─── Pull ───
+    _print(f"  [..] Pulling origin/{branch}...")
+    rc, out = _git(["pull", "--no-rebase", "origin", branch])
+    if rc == 0:
+        _print(f"[OK] Pull موفق — {behind_n} commit به‌روز شد.")
+        if stashed:
+            _print(
+                "  💡 تغییرات شما در stash است. "
+                "برای برگرداندن: git stash pop"
+            )
+    else:
+        _print(f"[X] Pull failed:\n{out}")
+        if stashed:
+            _print(
+                "  💡 تغییرات شما در stash است. "
+                "برای برگرداندن: git stash pop"
+            )
 
 # ═══════════════════════════════════════════════════
 # Menu
