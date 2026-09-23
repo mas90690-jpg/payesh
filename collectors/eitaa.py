@@ -89,15 +89,14 @@ class EitaaCollector(BaseCollector):
         self._chat_open_delay = float(chat_open_delay)
         self._messages_per_chat = int(messages_per_chat)
         self._backfill_scrolls = int(backfill_scrolls)
-        self._needs_backfill = True  # اولین اسکرپ بعد از اتصال = catch-up
+        self._needs_backfill = True
         self._pw = None
         self._context = None
         self._page = None
         self._connected = False
         self._messages_queue: list[dict[str, Any]] = []
         self._seen_ids = set()
-        self._targets = get_target_groups()  # فقط گروه‌های هدف باز شوند
-        # matcher مشترک: عکس فقط برای پیام‌های کلیدواژه‌دار دانلود می‌شود
+        self._targets = get_target_groups()
         self._kw = get_keyword_finder()
 
         from config import STORAGE_DIR
@@ -116,7 +115,6 @@ class EitaaCollector(BaseCollector):
 
     @property
     def poll_interval_seconds(self) -> float:
-        # ایتا اسکرپرِ مرورگری سنگین است؛ هر poll_seconds ثانیه یک‌بار.
         return float(self._poll_seconds)
 
     # ==================================================

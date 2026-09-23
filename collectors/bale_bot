@@ -1,0 +1,194 @@
+import asyncio
+import os
+from datetime import datetime
+from typing import Any
+
+from core.contracts.base_collector import BaseCollector, ConnectionStatus
+from core.kernel.logger import log_info, log_success, log_error, log_warning
+from core.adapters import messenger_registry
+
+try:
+    import aiohttp
+except ImportError:
+    aiohttp = None
+
+
+class BaleBotCollector(BaseCollector):
+    """کلکتور ربات بله — فقط برای ChatOps با مدیر."""
+
+    def __init__(self, token: str = None, **kwargs):
+        super().__init__()
+        self.token = token or os.getenv("BALE_BOT_TOKEN", "")
+        self._connected = False
+        self._messages_queue = []
+        self._session = None
+        self._poll_task = None
+        self._offset = 0
+
+    @property
+    def platform_name(self) -> str:
+        return "bale"
+
+    @property
+    def supports_history(self) -> bool:
+        return False
+
+    @property
+    def supports_websocket(self) -> bool:
+        return False
+
+    @property
+    def poll_interval_seconds(self) -> float:
+        return 2.0
+
+    @property
+    def _base(self) -> str:
+        return f"https://tapi.bale.ai/bot{self.token}"
+
+    async def connect(self) -> bool:
+        if not self.token:
+            log_error("BALE_BOT_TOKEN در .env تنظیم نشده")
+            return False
+        if aiohttp is None:
+            log_error("aiohttp نصب نیست")
+            return False
+
+        try:
+            self._session = aiohttp.ClientSession()
+            # تست: getMe
+            async with self._session.get(f"{self._base}/getMe") as r:
+                data = await r.json()
+                if not data.get("ok"):
+                    log_error(f"توکن ربات نامعتبر: {data}")
+                    return False
+                bot_info = data.get("result", {})
+                log_success(
+                    f"✅ ربات بله وصل شد | "
+                    f"username=@{bot_info.get('username')} | "
+                    f"id={bot_info.get('id')}"
+                )
+
+            # ثبت sender برای ارسال پیام
+            messenger_registry.register_sender("bale_bot", self.send_message)
+
+            self._connected = True
+            self._set_status(ConnectionStatus.CONNECTED)
+
+            # شروع polling
+            self._poll_task = asyncio.create_task(self._poll_loop())
+            return True
+
+        except Exception as e:
+            log_error(f"خطا در اتصال ربات بله: {e}")
+            return False
+
+    async def _poll_loop(self):
+        """دریافت پیام‌ها با long polling."""
+        while self._connected:
+            try:
+                url = (
+                    f"{self._base}/getUpdates"
+                    f"?offset={self._offset}&timeout=25"
+                )
+                async with self._session.get(url) as r:
+                    data = await r.json()
+                    if not data.get("ok"):
+                        await asyncio.sleep(5)
+                        continue
+
+                    for upd in data.get("result", []):
+                        self._offset = upd.get("update_id", 0) + 1
+                        msg = upd.get("message")
+                        if not msg:
+                            continue
+                        await self._handle_update(msg)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                log_warning(f"خطا در poll ربات بله: {e}")
+                await asyncio.sleep(5)
+
+    async def _handle_update(self, msg: dict):
+        """پیام را به فرمت استاندارد تبدیل و صف می‌کند."""
+        try:
+            chat = msg.get("chat", {})
+            sender = msg.get("from", {})
+            chat_id = str(chat.get("id", ""))
+            chat_type = chat.get("type", "private")
+            user_id = str(sender.get("id", ""))
+            sender_name = (
+                sender.get("first_name")
+                or sender.get("username")
+                or "ناشناس"
+            )
+            text = msg.get("text") or msg.get("caption") or ""
+            msg_id = str(msg.get("message_id", ""))
+
+            if not text or not chat_id:
+                return
+
+            unified = {
+                "id": f"bot_{msg_id}",
+                "platform": "bale",
+                "text": text,
+                "chat_id": chat_id,
+                "chat_name": sender_name,
+                "chat_type": chat_type,
+                "chat_username": None,
+                "chat_link": None,
+                "user_id": user_id,
+                "sender_name": sender_name,
+                "timestamp": datetime.now(),
+                "media_type": "text",
+                "file_id": None,
+                "local_file_path": None,
+                "reply_to": None,
+                "via_bot": True,  # ← نشانه که از ربات آمده
+            }
+            self._messages_queue.append(unified)
+            log_success(f"📩 [ربات بله] {sender_name}: {text[:40]}")
+
+        except Exception as e:
+            log_error(f"خطا در پردازش update ربات: {e}")
+
+    async def fetch_messages(self, since=None):
+        if not self._connected:
+            return []
+        msgs = self._messages_queue.copy()
+        self._messages_queue.clear()
+        return msgs
+
+    async def send_message(self, chat_id, chat_type, text: str) -> bool:
+        if not self._session or not self._connected:
+            return False
+        try:
+            url = f"{self._base}/sendMessage"
+            payload = {
+                "chat_id": int(chat_id),
+                "text": text,
+            }
+            async with self._session.post(url, json=payload) as r:
+                data = await r.json()
+                if data.get("ok"):
+                    return True
+                log_warning(f"ارسال ربات ناموفق: {data}")
+                return False
+        except Exception as e:
+            log_warning(f"خطا در ارسال ربات بله: {e}")
+            return False
+
+    async def disconnect(self):
+        self._connected = False
+        if self._poll_task and not self._poll_task.done():
+            self._poll_task.cancel()
+            try:
+                await self._poll_task
+            except asyncio.CancelledError:
+                pass
+        if self._session:
+            await self._session.close()
+        log_info("🔌 قطع ارتباط ربات بله")
+
+    async def check_health(self) -> bool:
+        return self._connected
