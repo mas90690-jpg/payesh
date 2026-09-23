@@ -27,7 +27,7 @@ messenger_registry — رجیستری سبک برای فرستنده‌های پ
   - 🧹 type hints دقیق (Callable[..., Awaitable[Any]])
 """
 from __future__ import annotations
-
+import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -120,23 +120,13 @@ def clear_registry() -> int:
 # notify_admins
 # ═══════════════════════════════════════════
 async def notify_admins(text: str) -> bool:
-    """ارسال پیام به همهٔ مدیران روی پلتفرمِ مدیریت (پیش‌فرض بله).
-
-    در صورت نبود sender یا admin — لاگ می‌کند و False برمی‌گرداند.
-
-    Args:
-        text: متن پیام.
-
-    Returns:
-        True اگه حداقل به یک admin ارسال موفق شد.
-    """
+    """ارسال پیام به همهٔ مدیران روی پلتفرمِ مدیریت (پیش‌فرض بله)."""
     t_all = time.monotonic()
 
     if not text:
         log_warning("⚠️ [MSGR:notify] متن خالی — رد شد")
         return False
 
-    # ─── خواندن config ───
     try:
         from config import PLUGINS_CONFIG
     except Exception as e:
@@ -157,14 +147,12 @@ async def notify_admins(text: str) -> bool:
         )
         return False
 
-    # ─── بررسی admin_ids ───
     if not ids:
         log_warning(
             "⚠️ [MSGR:notify] هیچ admin_ids تنظیم نشده — ارسال نشد"
         )
         return False
 
-    # ─── بررسی sender ───
     sender = get_sender(platform)
     if not sender:
         log_warning(
@@ -173,7 +161,8 @@ async def notify_admins(text: str) -> bool:
         )
         return False
 
-    # ─── ارسال به هر admin ───
+    # ─── ارسال به هر admin (با timeout per-admin) ───
+    _PER_ADMIN_TIMEOUT_S = 15
     sent = 0
     failed = 0
     total = len(ids)
@@ -181,7 +170,10 @@ async def notify_admins(text: str) -> bool:
     for aid in ids:
         t0 = time.monotonic()
         try:
-            await sender(aid, "private", text)
+            await asyncio.wait_for(
+                sender(aid, "private", text),
+                timeout=_PER_ADMIN_TIMEOUT_S,
+            )
             sent += 1
             elapsed_ms = (time.monotonic() - t0) * 1000
             if elapsed_ms > _SLOW_SEND_MS:
@@ -189,6 +181,13 @@ async def notify_admins(text: str) -> bool:
                     f"🐌 [MSGR:notify] → {aid} کند | "
                     f"{elapsed_ms:.0f}ms"
                 )
+        except TimeoutError:
+            failed += 1
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            log_warning(
+                f"⏰ [MSGR:notify] → {aid} timeout "
+                f"({_PER_ADMIN_TIMEOUT_S}s) | {elapsed_ms:.0f}ms"
+            )
         except Exception as e:
             failed += 1
             elapsed_ms = (time.monotonic() - t0) * 1000

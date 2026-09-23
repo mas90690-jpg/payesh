@@ -1,18 +1,5 @@
 [
   {
-    "name": "ai_learned_1789904642",
-    "triggers": [
-      "wmic OS get TotalVisibleMemorySize,FreePhysicalMemory"
-    ],
-    "action": {
-      "type": "text",
-      "text": "⏳ مغز در حال انجام کار دیگری است..."
-    },
-    "learned": true,
-    "source": "ai",
-    "created_at": "2026-09-20T15:14:02.427444"
-  },
-  {
     "name": "ai_learned_1790058123",
     "triggers": [
       "راهنما"

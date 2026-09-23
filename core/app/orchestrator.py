@@ -8,17 +8,14 @@ Orchestrator — هماهنگ‌کنندهٔ کلکتورها، پولینگ و 
   - بعد از وصل، پیام‌های ازدست‌رفته را از last_poll می‌خواند (catch-up)
   - هر دور موفق، last_poll را به‌روز می‌کند (ضربان زنده)
 
-نسخهٔ ۳ (این نسخه):
-  - 🎯 لاگ دقیق و ساخت‌یافته با پیشوند [ORCH:...]:
-      * init: تعداد collectors + interval هر کدام
-      * start: per-collector startup + زمان کل
-      * poll iteration: زمان اجرا + تعداد پیام + فاصلهٔ بعدی
-      * reconnect: تلاش N + delay + دلیل خطا
-      * catch-up: از چه زمانی + تعداد پیام
-      * initial_fetch: زمان هر collector
-  - 🐛 FIX: _supervise_reconnect دیگر خطا را بی‌صدا swallow نمی‌کند
-  - 🐛 FIX: _warm_ai خطا را لاگ می‌کند (قبلاً pass)
-  - 🧹 stop() حالا per-collector لاگ دارد
+نسخهٔ ۴ (این نسخه):
+  - 🔴 FIX بحرانی: ترتیب start() عوض شد:
+      ۱) initial_fetch
+      ۲) راه‌اندازی تسک‌های polling  ← قبل از هر await طولانی
+      ۳) عملیات جانبی (greet/report) به‌صورت fire-and-forget
+    این کار باعث می‌شود حلقهٔ polling هرگز توسط notify/greet بلاک نشود.
+  - 🎯 متد جدید _greet_admins_safe با timeout 20s
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۳.
 """
 from __future__ import annotations
 
@@ -36,6 +33,9 @@ from core.kernel.logger import log_error, log_info, log_success, log_warning
 _SLOW_POLL_MS = 30_000      # هر poll > 30s
 _SLOW_INITIAL_MS = 20_000   # initial_fetch > 20s
 _LOG_PREVIEW_LEN = 80
+
+# timeout برای عملیات جانبی (ثانیه)
+_GREET_TIMEOUT_S = 20
 
 
 class Orchestrator:
@@ -70,32 +70,21 @@ class Orchestrator:
     # start
     # ═══════════════════════════════════════════
     async def start(self):
-        """شروع: initial_fetch سری برای همه، سپس یک task per collector."""
+        """شروع: initial_fetch سری، سپس task per collector، سپس عملیات جانبی.
+
+        اصل طراحی:
+          ۱) تسک‌های polling اول راه می‌افتند — قبل از هر await طولانی.
+          ۲) عملیات جانبی (greet/report) fire-and-forget هستند.
+          ۳) هیچ عملیات جانبی هرگز تسک‌های polling را بلاک نمی‌کند.
+        """
         self.running = True
         t_all = time.monotonic()
         log_info(
             f"🚀 [ORCH:start] شروع | collectors={len(self.collectors)}"
         )
 
-        # ۱) پردازش اولیه (سری، برای جلوگیری از فشار منابع)
-        for i, collector in enumerate(self.collectors, 1):
-            log_info(
-                f"▶️ [ORCH:start] initial_fetch {i}/{len(self.collectors)} | "
-                f"{collector.platform_name}"
-            )
-            try:
-                await self._initial_fetch(collector)
-            except Exception as e:
-                log_error(
-                    f"❌ [ORCH:start] initial_fetch {collector.platform_name} | "
-                    f"{type(e).__name__}: {e}"
-                )
-
-        # ۲) سلام به مدیر + گرم‌کردن AI
-        await self._greet_admins()
-        await self._generate_report()
-
-        # ۳) راه‌اندازی تسک‌ها
+        # ─── ۱) راه‌اندازی تسک‌های polling — قبل از هر await طولانی ───
+        #    (اصل: تسک‌های اصلی هرگز نباید به notify/greet وابسته باشند)
         tasks = []
         for collector in self.collectors:
             interval = getattr(collector, "poll_interval_seconds", 2)
@@ -109,6 +98,35 @@ class Orchestrator:
                     name=f"poll_{collector.platform_name}",
                 )
             )
+        log_success(
+            f"✅ [ORCH:start] {len(tasks)} تسک polling راه افتاد"
+        )
+
+        # ─── ۲) پردازش اولیه (سری، در پس‌زمینه — تسک‌ها رو بلاک نمی‌کنه) ───
+        async def _initial_fetch_all():
+            for i, collector in enumerate(self.collectors, 1):
+                log_info(
+                    f"▶️ [ORCH:start] initial_fetch {i}/{len(self.collectors)} | "
+                    f"{collector.platform_name}"
+                )
+                try:
+                    await self._initial_fetch(collector)
+                except Exception as e:
+                    log_error(
+                        f"❌ [ORCH:start] initial_fetch {collector.platform_name} | "
+                        f"{type(e).__name__}: {e}"
+                    )
+            log_success("✅ [ORCH:start] initial_fetch همه تمام شد")
+
+        asyncio.create_task(_initial_fetch_all(), name="orch_initial_fetch")
+
+        # ─── ۳) عملیات جانبی — fire-and-forget ───
+        asyncio.create_task(
+            self._greet_admins_safe(), name="orch_greet"
+        )
+        asyncio.create_task(
+            self._generate_report(), name="orch_report"
+        )
 
         startup_s = time.monotonic() - t_all
         log_success(
@@ -117,12 +135,11 @@ class Orchestrator:
         )
         log_info("🔄 [ORCH:start] سیستم در حالت انتظار پیام‌های جدید...")
 
-        # ۴) انتظار (تا stop())
+        # ─── ۴) انتظار (تا stop()) ───
         try:
             await asyncio.gather(*tasks)
         except asyncio.CancelledError:
             log_info("🛑 [ORCH:start] تسک‌ها cancel شدند")
-
     # ═══════════════════════════════════════════
     # حلقهٔ پولینگ هر کلکتور
     # ═══════════════════════════════════════════
@@ -458,8 +475,6 @@ class Orchestrator:
                         f"از {len(messages)}"
                     )
             else:
-                # حتی وقتی پیامی نیست، یک log سبک می‌زنیم
-                # (سطح info — چون هر poll اتفاق می‌افته و نباید نویز بشه)
                 log_info(
                     f"ℹ️ [ORCH:msg:{platform}] بدون پیام جدید | "
                     f"fetch={fetch_ms:.0f}ms"
@@ -514,6 +529,30 @@ class Orchestrator:
 
         # گرم‌کردن AI در پس‌زمینه (fire-and-forget)
         asyncio.create_task(self._warm_ai())
+
+    async def _greet_admins_safe(self):
+        """فراخوانی امنِ _greet_admins — در پس‌زمینه با timeout.
+
+        چرا این wrapper؟
+          - _greet_admins به send_message بله وابسته است که ممکن است
+            ثانیه‌ها طول بکشد (پیدا کردن چت مدیر).
+          - در هیچ حالتی نباید تسک‌های polling را بلاک کند.
+          - حتی اگر کامل شکست بخورد، فقط لاگ می‌شود.
+        """
+        try:
+            await asyncio.wait_for(
+                self._greet_admins(), timeout=_GREET_TIMEOUT_S
+            )
+        except TimeoutError:
+            log_warning(
+                f"⚠️ [ORCH:greet] timeout {_GREET_TIMEOUT_S}s — رد شد"
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log_warning(
+                f"⚠️ [ORCH:greet] {type(e).__name__}: {e}"
+            )
 
     async def _warm_ai(self):
         """گرم‌کردن مدل AI تا اولین جواب سریع باشه."""

@@ -362,7 +362,7 @@ class RubikaCollector(BaseCollector):
                     or ""
                 ).lower()
 
-                if not any(k in ctype for k in ("group", "channel")):
+                if not any(k in ctype for k in ("group", "channel", "user", "private")):
                     continue
 
                 try:
