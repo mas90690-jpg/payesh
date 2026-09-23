@@ -2,28 +2,28 @@
 """
 کلکتور ایتا (Eitaa) در حالت «کاربر عادی» با اتوماسیون مرورگر روی web.eitaa.com
 
-نسخهٔ ۷ (کامل + بهینه + چت خصوصی):
+نسخهٔ ۸ (برگشت به منطق v3 + سازگاری کامل با ساختار جدید):
+  - 🔄 منطق اصلی = نسخهٔ قدیم (v3) که کار می‌کرد
   - 🔴 FIX import paths به ساختار جدید:
       core.base_collector → core.contracts.base_collector
       core.logger         → core.kernel.logger
       core.web_media      → core.adapters.web_media
-  - 🎯 NEW: پشتیبانی از چت خصوصی + گروه + کانال
-      * تشخیص خودکار chat_type از URL
-      * چت خصوصی هم اسکرپ می‌شه (سرنخ ذخیره)
-      * گارد گروه هدف فقط برای گروه‌ها اعمال می‌شه
-  - ⚡ بهینه‌سازی سرعت:
-      * _extract_sender_from_bubble فقط برای گروه/کانال
-      * _extract_chat_meta فقط یک‌بار در ابتدای چت
-      * import download_dom_image به بالای فایل
-  - ✅ حفظ sender_name + chat_username + chat_link
-  - ✅ حفظ ضدتکراری ماندگار روی دیسک
-  - ✅ حفظ backfill scroll (catch-up)
+  - 🎯 NEW: import download_dom_image به بالای فایل (نه داخل تابع)
+  - ✅ حفظ: ضدتکراری ماندگار روی دیسک
+  - ✅ حفظ: backfill scroll (catch-up)
+  - ✅ حفظ: گارد گروه هدف (با پارامتر platform="eitaa")
+  - ✅ حفظ: md5 برای id پایدار (نه hash تصادفی)
+  - ⚡ بهینه: sender extraction فقط برای گروه (اختیاری)
+
+چرا مرورگر؟ ایتا هیچ کتابخانه‌ی userbot بومیِ سالمی ندارد.
+تنها راه واقعی «به‌عنوان کاربر» = ورود به web.eitaa.com با شماره.
+
+ورود یک‌بار و دستی: `python login.py` (گزینه ایتا).
 """
 import asyncio
 import hashlib
 import json
 import os
-import re
 from datetime import datetime
 from typing import Any
 
@@ -43,7 +43,6 @@ except ImportError:
 _MAX_SEEN = 8000
 EITAA_WEB_URL = "https://web.eitaa.com/"
 _PLATFORM = "eitaa"
-_DEFAULT_CHAT_NAME = "ایتا"
 
 # ─── انتخابگرهای DOM ───
 LOGIN_MARKERS = [
@@ -58,30 +57,6 @@ CHATLIST_MARKERS = [
     ".chatlist-container",
     ".sidebar-left",
     ".im_dialogs_col",
-]
-SENDER_NAME_SELECTORS = [
-    ".peer-title",
-    ".message-title",
-    ".sender-title",
-    ".sender-name",
-    ".user-title",
-]
-MSG_SELECTORS = [
-    ".bubbles .bubble",
-    "#column-center .bubble",
-    ".bubble",
-    "[data-mid]",
-    ".im_history_message_wrap",
-    ".message-list .message",
-    ".user-last-message",
-]
-TITLE_SELECTORS = [
-    ".peer-title",
-    ".dialog-title .peer-title",
-    ".user-title .peer-title",
-    ".chat-info .title",
-    ".topbar .user-title",
-    ".im_header_peer_name",
 ]
 
 
@@ -114,6 +89,7 @@ class EitaaCollector(BaseCollector):
         self._connected = False
         self._messages_queue: list[dict[str, Any]] = []
         self._seen_ids = set()
+        self._processed_chats = set()
         self._targets = get_target_groups()
         self._kw = get_keyword_finder()
 
@@ -153,7 +129,7 @@ class EitaaCollector(BaseCollector):
         return False
 
     # ═══════════════════════════════════════════════════
-    # ضدتکراری ماندگار
+    # ضدتکراری ماندگار (روی دیسک)
     # ═══════════════════════════════════════════════════
     def _load_seen(self):
         try:
@@ -231,21 +207,22 @@ class EitaaCollector(BaseCollector):
             return False
 
     async def _launch_context(self, use_headless: bool):
+        """مرورگر را با اولویت مرورگر نصب‌شده‌ی سیستم باز می‌کند."""
         from config import get_browser_proxy
 
         last_err = None
         for channel in ("chrome", "msedge", None):
             try:
-                kwargs = {
-                    "user_data_dir": self._user_data_dir,
-                    "headless": use_headless,
-                    "viewport": {"width": 1366, "height": 768},
-                    "user_agent": (
+                kwargs = dict(
+                    user_data_dir=self._user_data_dir,
+                    headless=use_headless,
+                    viewport={"width": 1366, "height": 768},
+                    user_agent=(
                         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                         "AppleWebKit/537.36 (KHTML, like Gecko) "
                         "Chrome/126.0.0.0 Safari/537.36"
                     ),
-                    "args": [
+                    args=[
                         "--disable-blink-features=AutomationControlled",
                         "--disable-features=IsolateOrigins,site-per-process",
                         "--disable-site-isolation-trials",
@@ -266,7 +243,7 @@ class EitaaCollector(BaseCollector):
                         "--no-first-run",
                         "--safebrowsing-disable-auto-update",
                     ],
-                }
+                )
                 if channel:
                     kwargs["channel"] = channel
                 kwargs.update(get_browser_proxy())
@@ -297,128 +274,6 @@ class EitaaCollector(BaseCollector):
         return False
 
     # ═══════════════════════════════════════════════════
-    # 🎯 NEW: تشخیص نوع چت
-    # ═══════════════════════════════════════════════════
-    async def _detect_chat_type(self) -> str:
-        """تشخیص نوع چت از URL یا DOM.
-
-        Returns:
-            "group" | "private" | "channel"
-        """
-        try:
-            url = (self._page.url or "").lower()
-
-            # ─── گروه: #/g/... ───
-            if "#/g/" in url or "/group" in url:
-                return "group"
-
-            # ─── کانال: #/c/... ───
-            if "#/c/" in url or "/channel" in url:
-                return "channel"
-
-            # ─── خصوصی: #/@username یا #/chat/... ───
-            if "#/@" in url or "/chat/" in url:
-                return "private"
-
-            # ─── fallback: از DOM ───
-            # اگه composer پیدا شد، احتمالاً چت بازه
-            for sel in [
-                ".bubbles",
-                "#column-center",
-                ".chat-info",
-            ]:
-                if await self._page.query_selector(sel):
-                    # چک کن آیا دکمهٔ «اطلاعات گروه» هست
-                    group_indicators = await self._page.query_selector(
-                        ".chat-info .group-info, "
-                        ".group-header, "
-                        "[class*='group-info']"
-                    )
-                    if group_indicators:
-                        return "group"
-        except Exception:
-            pass
-
-        return "group"  # پیش‌فرض
-
-    # ═══════════════════════════════════════════════════
-    # ابزار کمکی
-    # ═══════════════════════════════════════════════════
-    async def _extract_sender_from_bubble(
-        self, msg
-    ) -> tuple[str, str]:
-        """در چت گروهی/کانال: (sender_id, sender_name) از داخل bubble."""
-        sender_id = ""
-        sender_name = ""
-
-        for attr in (
-            "data-peer-id",
-            "data-user-id",
-            "data-sender-id",
-            "data-author",
-            "data-from-id",
-        ):
-            try:
-                v = await msg.get_attribute(attr)
-                if v and str(v).strip():
-                    sender_id = str(v).strip()
-                    break
-            except Exception:
-                continue
-
-        for sel in SENDER_NAME_SELECTORS:
-            try:
-                el = await msg.query_selector(sel)
-                if el:
-                    t = (await el.inner_text() or "").strip()
-                    if t:
-                        first = t.split("\n")[0].strip()
-                        if first and len(first) < 60:
-                            sender_name = first
-                            break
-            except Exception:
-                continue
-
-        return sender_id, sender_name
-
-    async def _extract_chat_meta(
-        self,
-    ) -> tuple[str | None, str | None]:
-        """استخراج (chat_username, chat_link) از URL."""
-        try:
-            url = self._page.url or ""
-
-            # ─── گروه: #/g/username ───
-            m = re.search(r"#/g/([A-Za-z0-9_]+)", url)
-            if m:
-                uname = m.group(1)
-                return (
-                    uname,
-                    f"https://web.eitaa.com/#/g/{uname}",
-                )
-
-            # ─── کانال: #/c/username ───
-            m = re.search(r"#/c/([A-Za-z0-9_]+)", url)
-            if m:
-                uname = m.group(1)
-                return (
-                    uname,
-                    f"https://web.eitaa.com/#/c/{uname}",
-                )
-
-            # ─── کاربر: #/@username ───
-            m = re.search(r"#/@([A-Za-z0-9_]+)", url)
-            if m:
-                uname = m.group(1)
-                return (
-                    uname,
-                    f"https://web.eitaa.com/#/@{uname}",
-                )
-        except Exception:
-            pass
-        return None, None
-
-    # ═══════════════════════════════════════════════════
     # دریافت پیام‌ها
     # ═══════════════════════════════════════════════════
     async def fetch_messages(
@@ -440,6 +295,7 @@ class EitaaCollector(BaseCollector):
         return new_msgs
 
     async def _backfill_scroll(self):
+        """در اولین اسکرپ بعد از اتصال، چت را به بالا اسکرول می‌کند (catch-up)."""
         if not (
             self._needs_backfill and self._backfill_scrolls > 0
         ):
@@ -457,29 +313,33 @@ class EitaaCollector(BaseCollector):
             await asyncio.sleep(0.8)
 
     # ═══════════════════════════════════════════════════
-    # اسکرپ همه چت‌ها
+    # اسکرپ همه چت‌ها (منطق v3 — کار می‌کرد)
     # ═══════════════════════════════════════════════════
     async def _scrape_all_chats(self):
-        """اسکرپ پیام‌های همه چت‌ها (گروه + خصوصی + کانال)."""
+        """اسکرپ پیام‌های همه چت‌های موجود در لیست."""
         page = self._page
 
+        # انتخابگر دقیق چت‌ها از DOM ایتا
         chat_selectors = [
             ".chatlist-chat",
             ".rp.chatlist-chat",
             "li.chatlist-chat",
         ]
 
-        chat_items = []
+        used_sel = None
+        total_chats = 0
         for sel in chat_selectors:
-            chat_items = await page.query_selector_all(sel)
-            if chat_items:
+            items = await page.query_selector_all(sel)
+            if items:
+                used_sel = sel
+                total_chats = len(items)
                 log_info(
                     f"✅ انتخابگر {sel} کار کرد و "
-                    f"{len(chat_items)} چت پیدا شد"
+                    f"{total_chats} چت پیدا شد"
                 )
                 break
 
-        if not chat_items:
+        if not used_sel or not total_chats:
             log_warning("هیچ چتی در لیست پیدا نشد")
             try:
                 await self.dump_dom()
@@ -488,21 +348,42 @@ class EitaaCollector(BaseCollector):
             await self._scrape_current_chat()
             return
 
-        log_info(f"🔍 {len(chat_items)} چت برای اسکرپ پیدا شد")
+        limit = min(total_chats, self._max_chats)
+        log_info(f"🔍 {limit} چت برای اسکرپ پیدا شد")
 
-        processed = 0
-        skipped_target = 0
-        failed = 0
-
-        for idx, chat in enumerate(chat_items[: self._max_chats]):
+        for idx in range(limit):
             try:
-                chat_name = await self._extract_item_title(chat)
+                # 🎯 هر بار locator جدید (نه element قدیمی)
+                # چون صفحهٔ ایتا SPA است و لیست re-render می‌شود
+                locator = page.locator(used_sel).nth(idx)
 
-                # ─── 🎯 کلیک روی چت اول (تا نوعش معلوم بشه) ───
+                # ─── نام چت ───
                 try:
-                    await page.evaluate("(el) => el.click()", chat)
+                    chat_name = await locator.locator(
+                        ".peer-title, .user-title, .dialog-title"
+                    ).first.inner_text()
+                    chat_name = (chat_name or "").strip()
+                    if not chat_name:
+                        chat_name = "ایتا"
+                except Exception:
+                    chat_name = "ایتا"
+
+                # ─── گارد گروه هدف ───
+                if (
+                    self._targets.enabled(_PLATFORM)
+                    and not self._targets.is_target(
+                        chat_name, platform=_PLATFORM
+                    )
+                ):
+                    log_info(
+                        f"   ⏭️ [{idx+1}] غیرهدف: «{chat_name}»"
+                    )
+                    continue
+
+                # ─── کلیک با locator (خودش re-find می‌کند) ───
+                try:
+                    await locator.click(timeout=5000)
                 except Exception as e:
-                    failed += 1
                     log_warning(
                         f"خطا در کلیک چت {idx} «{chat_name}»: {e}"
                     )
@@ -510,37 +391,13 @@ class EitaaCollector(BaseCollector):
 
                 await asyncio.sleep(self._chat_open_delay)
 
-                # ─── تشخیص نوع چت ───
-                chat_type = await self._detect_chat_type()
-
-                # ─── 🎯 گارد گروه هدف — فقط برای گروه‌ها ───
-                if chat_type == "group":
-                    if (
-                        self._targets.enabled(_PLATFORM)
-                        and not self._targets.is_target(
-                            chat_name, platform=_PLATFORM
-                        )
-                    ):
-                        skipped_target += 1
-                        log_info(
-                            f"   ⏭️ [{idx+1}] گروه غیرهدف: «{chat_name}»"
-                        )
-                        continue
-
                 # ─── اسکرپ چت ───
                 await self._scrape_current_chat(chat_name)
-                processed += 1
 
             except Exception as e:
-                failed += 1
                 log_warning(f"خطا در اسکرپ چت {idx}: {e}")
                 continue
-
-        log_success(
-            f"🏁 [eitaa:scrape] کامل | پردازش={processed} | "
-            f"غیرهدف={skipped_target} | خطا={failed}"
-        )
-
+                
     async def _extract_item_title(self, chat_item) -> str:
         """نام چت را از خودِ آیتمِ لیست استخراج می‌کند."""
         for sel in [".peer-title", ".user-title", ".dialog-title"]:
@@ -554,49 +411,49 @@ class EitaaCollector(BaseCollector):
                 continue
         try:
             t = (await chat_item.inner_text() or "").strip()
-            return (
-                t.split("\n")[0]
-                if t
-                else _DEFAULT_CHAT_NAME
-            )
+            return t.split("\n")[0] if t else "ایتا"
         except Exception:
-            return _DEFAULT_CHAT_NAME
+            return "ایتا"
 
     # ═══════════════════════════════════════════════════
-    # اسکرپ چت باز فعلی
+    # اسکرپ چت باز فعلی (منطق v3)
     # ═══════════════════════════════════════════════════
     async def _scrape_current_chat(self, chat_name: str = None):
-        """اسکرپ پیام‌های چت باز فعلی (گروه / خصوصی / کانال)."""
+        """اسکرپ پیام‌های چت باز فعلی."""
         page = self._page
         if not chat_name:
             chat_name = await self._get_open_chat_title()
 
-        if chat_name == _DEFAULT_CHAT_NAME or not chat_name:
+        if chat_name == "ایتا" or not chat_name:
             log_warning(f"نام چت نامشخص: {chat_name}")
             return
 
-        # ─── تشخیص نوع چت ───
-        chat_type = await self._detect_chat_type()
-
-        log_info(
-            f"📖 اسکرپ چت: {chat_name} (نوع: {chat_type})"
-        )
-
-        # ⚡ متادیتای چت فقط یک‌بار
-        chat_username, chat_link = await self._extract_chat_meta()
+        log_info(f"📖 اسکرپ چت: {chat_name}")
 
         # catch-up
         await self._backfill_scroll()
 
-        # ─── پیدا کردن پیام‌ها ───
+        # ⚠️ پیام‌های «چتِ باز» را بخوان، نه پیش‌نمایشِ لیست کناری.
+        msg_selectors = [
+            ".bubbles .bubble",
+            "#column-center .bubble",
+            ".bubble",
+            "[data-mid]",
+            ".im_history_message_wrap",
+            ".message-list .message",
+            ".user-last-message",  # fallback آخر
+        ]
+
         messages = []
-        for sel in MSG_SELECTORS:
+        used_selector = None
+        for sel in msg_selectors:
             try:
                 messages = await page.query_selector_all(sel)
                 if messages:
+                    used_selector = sel
                     log_info(
-                        f"✅ پیام‌ها با انتخابگر {sel} "
-                        f"پیدا شدند ({len(messages)} پیام)"
+                        f"✅ پیام‌ها با انتخابگر {sel} پیدا شدند "
+                        f"({len(messages)} پیام)"
                     )
                     break
             except Exception:
@@ -613,13 +470,13 @@ class EitaaCollector(BaseCollector):
                 pass
             return
 
+        # هنگام catch-up پیام‌های بیشتری بخوان
         limit = (
             max(self._messages_per_chat, 200)
             if self._needs_backfill
             else self._messages_per_chat
         )
         msg_count = 0
-
         for msg in messages[-limit:]:
             try:
                 mid = (
@@ -629,7 +486,7 @@ class EitaaCollector(BaseCollector):
                 )
                 text = (await msg.inner_text() or "").strip()
 
-                # ─── شناسهٔ پایدار ───
+                # شناسهٔ پایدار با md5
                 if not mid and text:
                     mid = hashlib.md5(
                         text.encode("utf-8")
@@ -638,33 +495,17 @@ class EitaaCollector(BaseCollector):
                 if not mid or not text:
                     continue
 
-                # ─── ضدتکراری (کلید شامل نوع چت) ───
-                uniq = f"{chat_type}:{chat_name}:{mid}"
+                uniq = f"{chat_name}:{mid}"
                 if uniq in self._seen_ids:
                     continue
+
                 self._seen_ids.add(uniq)
 
-                # ─── فیلتر کلیدواژه ───
-                # برای هر سه نوع چت اعمال می‌شه
+                # فیلتر کلیدواژه
                 if not self._kw.has_match(text):
                     continue
 
-                # ─── استخراج sender ───
-                sender_id, sender_name = "", ""
-                if chat_type in ("group", "channel"):
-                    # ⚡ فقط برای گروه/کانال
-                    sender_id, sender_name = (
-                        await self._extract_sender_from_bubble(msg)
-                    )
-                # در چت خصوصی:
-                # sender_id = chat_username or chat_name
-                # sender_name = chat_name
-                if not sender_id:
-                    sender_id = chat_username or chat_name
-                if not sender_name:
-                    sender_name = chat_name
-
-                # ─── دانلود عکس ───
+                # دانلود عکس پیام (این پیام کلیدواژه دارد)
                 media_type, local_file_path = "text", None
                 try:
                     mt, lp = await download_dom_image(
@@ -675,18 +516,17 @@ class EitaaCollector(BaseCollector):
                 except Exception:
                     pass
 
-                # ─── صف ───
                 self._messages_queue.append({
                     "id": str(mid),
                     "platform": _PLATFORM,
                     "text": text,
-                    "chat_id": chat_username or chat_name,
+                    "chat_id": chat_name,
                     "chat_name": chat_name,
-                    "chat_type": chat_type,  # ← گروه/خصوصی/کانال
-                    "chat_username": chat_username,
-                    "chat_link": chat_link,
-                    "user_id": sender_id,
-                    "sender_name": sender_name,
+                    "chat_type": "group",  # ← طبق v3 (هاردکد)
+                    "chat_username": None,
+                    "chat_link": None,
+                    "user_id": "",
+                    "sender_name": "",
                     "timestamp": datetime.now(),
                     "media_type": media_type,
                     "file_id": None,
@@ -695,8 +535,8 @@ class EitaaCollector(BaseCollector):
                 })
                 msg_count += 1
                 log_info(
-                    f"📩 پیام {msg_count} از {chat_name} "
-                    f"({chat_type}): {text[:50]}..."
+                    f"📩 پیام {msg_count} از {chat_name}: "
+                    f"{text[:50]}..."
                 )
             except Exception as e:
                 log_warning(f"خطا در پردازش پیام: {e}")
@@ -704,8 +544,7 @@ class EitaaCollector(BaseCollector):
 
         if msg_count > 0:
             log_success(
-                f"📩 از چت {chat_name} ({chat_type}): "
-                f"{msg_count} پیام جدید"
+                f"📩 از چت {chat_name}: {msg_count} پیام جدید"
             )
         else:
             log_warning(
@@ -716,7 +555,15 @@ class EitaaCollector(BaseCollector):
     # دریافت نام چت باز
     # ═══════════════════════════════════════════════════
     async def _get_open_chat_title(self) -> str:
-        for sel in TITLE_SELECTORS:
+        """دریافت نام چت باز فعلی با انتخابگرهای دقیق ایتا."""
+        for sel in [
+            ".peer-title",
+            ".dialog-title .peer-title",
+            ".user-title .peer-title",
+            ".chat-info .title",
+            ".topbar .user-title",
+            ".im_header_peer_name",
+        ]:
             try:
                 el = await self._page.query_selector(sel)
                 if el:
@@ -725,7 +572,7 @@ class EitaaCollector(BaseCollector):
                         return t
             except Exception:
                 continue
-        return _DEFAULT_CHAT_NAME
+        return "ایتا"
 
     # ═══════════════════════════════════════════════════
     # ابزار عیب‌یابی
