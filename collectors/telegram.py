@@ -2,14 +2,19 @@
 """
 ماژول جمع‌آوری پیام از تلگرام (Telegram)
 پشتیبانی از WebSocket و Polling
+
+نسخهٔ ۳:
+- پشتیبانی از TELEGRAM_POLL_SECONDS (از config می‌آید، پیش‌فرض ۵ ثانیه).
+  قبلاً از مقدار پیش‌فرض BaseCollector (۲ ثانیه) استفاده می‌کرد.
 """
 
 import asyncio
 import os
 from datetime import datetime
-from typing import List, Dict, Any, Optional
-from core.base_collector import BaseCollector, ConnectionStatus
-from core.logger import log_info, log_success, log_error, log_warning
+from typing import Any
+
+from core.contracts.base_collector import BaseCollector, ConnectionStatus
+from core.kernel.logger import log_error, log_info, log_success, log_warning
 
 # ایمپورتِ telethon در سطح ماژول با محافظ (قابل patch در تست، graceful اگر نصب نبود)
 try:
@@ -28,6 +33,7 @@ class TelegramCollector(BaseCollector):
         api_hash: str = None,
         phone: str = None,
         db=None,
+        poll_seconds: int = 5,
         **kwargs,
     ):
         super().__init__()
@@ -35,6 +41,7 @@ class TelegramCollector(BaseCollector):
         self.api_hash = api_hash
         self.phone = phone
         self.db = db  # تزریق‌شده توسط plugin_loader؛ برای checkpointِ per-chat
+        self._poll_seconds = int(poll_seconds)
         self._client = None
         self._messages_queue = []
         self._listen_task = None
@@ -62,6 +69,15 @@ class TelegramCollector(BaseCollector):
     def supports_websocket(self) -> bool:
         return True
 
+    @property
+    def poll_interval_seconds(self) -> float:
+        """فاصله بین دو دور دریافت پیام از صف.
+
+        تلگرام WebSocket هست (پیام‌ها لحظه‌ای به صف اضافه می‌شن، poll فقط
+        صف رو تخلیه می‌کنه)، پس مقدار ۵ ثانیه کافیه.
+        """
+        return float(self._poll_seconds)
+
     async def connect(self) -> bool:
         """اتصال به تلگرام"""
         try:
@@ -77,8 +93,11 @@ class TelegramCollector(BaseCollector):
                 )
                 return False
 
+            from config import get_proxy
+
+            proxy = get_proxy()
             self._client = TelegramClient(
-                self._session_path, self.api_id, self.api_hash
+                self._session_path, self.api_id, self.api_hash, proxy=proxy or None
             )
 
             @self._client.on(events.NewMessage)
@@ -93,7 +112,11 @@ class TelegramCollector(BaseCollector):
                 except Exception as e:
                     log_error(f"خطا در پردازش پیام تلگرام: {e}")
 
-            await self._client.start(phone=self.phone)
+            # ⚠️ از مهلت زمانی استفاده کن تا اگر نشست منقضی شده/اعتبار سنجی لازم است،
+            # به‌جای قفل شدنِ کل event loop، سریع خطا بدهد و reconnect خودکار شروع شود.
+            # (قبلاً client.start() با placeholder credentials مثل api_id=123456
+            #  بی‌نهایت منتظر ورود کد می‌ماند و کل ربات می‌خوابید.)
+            await asyncio.wait_for(self._client.start(phone=self.phone), timeout=45)
             self._connected = True
             self._set_status(ConnectionStatus.CONNECTED)
             log_success("✅ اتصال به تلگرام با موفقیت انجام شد")
@@ -104,7 +127,7 @@ class TelegramCollector(BaseCollector):
             self._set_error(str(e))
             return False
 
-    async def _process_message(self, message) -> Dict[str, Any]:
+    async def _process_message(self, message) -> dict[str, Any]:
         """پردازش پیام خام تلگرام به فرمت استاندارد"""
         try:
             msg_id = str(message.id)
@@ -215,7 +238,7 @@ class TelegramCollector(BaseCollector):
                 "reply_to": None,
             }
 
-    async def fetch_messages(self, since: datetime = None) -> List[Dict[str, Any]]:
+    async def fetch_messages(self, since: datetime = None) -> list[dict[str, Any]]:
         """دریافت پیام‌های جدید از صف"""
         if not self._connected:
             return []
@@ -247,7 +270,7 @@ class TelegramCollector(BaseCollector):
         except Exception:
             pass
 
-    async def fetch_history(self, since: datetime) -> List[Dict[str, Any]]:
+    async def fetch_history(self, since: datetime) -> list[dict[str, Any]]:
         """پیام‌های عقب‌افتادهٔ همهٔ گروه‌ها/کانال‌ها را می‌خواند — **دقیق و بومی**:
         برای هر چت اگر نشانگرِ آخرین پیامِ دیده‌شده را داریم، با `min_id` فقط پیام‌های
         بعد از آن گرفته می‌شود (مثل «۵۰ پیام جدید از همان‌جا که خواندی»). اگر نداریم
@@ -280,7 +303,7 @@ class TelegramCollector(BaseCollector):
                         offset_id = await self.db.get_chat_offset("telegram", chat_id)
                     except Exception:
                         offset_id = None
-                kwargs = dict(reverse=True, limit=hist_limit)
+                kwargs = {"reverse": True, "limit": hist_limit}
                 if offset_id:
                     kwargs["min_id"] = int(
                         offset_id

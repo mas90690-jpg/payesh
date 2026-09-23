@@ -1,19 +1,19 @@
 # tests/conftest.py
+import asyncio
 import os
 import sys
 import tempfile
-import pytest
-import asyncio
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
 
-from core.database import SQLiteDatabase
 from analyzers.keyword_finder import get_keyword_finder
+from core.database import SQLiteDatabase
 
 
 @pytest.fixture(scope="session")

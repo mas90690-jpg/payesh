@@ -1,0 +1,12 @@
+{
+  "version": "1.0.0",
+  "platforms": {
+    "eitaa": ["ایتا", "ایتاوب", "eitaa"],
+    "bale": ["بله", "بله‌وب", "bale"],
+    "rubika": ["روبیکا", "rubika"],
+    "telegram": ["تلگرام", "telegram", "tg"],
+    "whatsapp": ["واتساپ", "واتس‌اپ", "whatsapp", "wa"],
+    "web": ["وب", "سایت", "web", "site"],
+    "linkedin": ["لینکدین", "linkedin", "li"]
+  }
+}

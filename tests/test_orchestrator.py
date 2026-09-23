@@ -1,9 +1,11 @@
 # tests/test_orchestrator.py
-import pytest
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
-from datetime import datetime, timedelta
-from core.orchestrator import Orchestrator
-from core.event_bus import EventBus
+
+import pytest
+
+from core.app.orchestrator import Orchestrator
+from core.kernel.event_bus import EventBus
 
 
 @pytest.mark.asyncio

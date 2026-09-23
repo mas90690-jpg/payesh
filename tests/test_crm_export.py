@@ -1,8 +1,10 @@
 # tests/test_crm_export.py
 import os
 from datetime import datetime
+
 import pytest
-import core.crm_export as crm
+
+import core.services.crm_export as crm
 
 
 @pytest.mark.asyncio

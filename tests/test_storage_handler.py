@@ -1,7 +1,9 @@
 # tests/test_storage_handler.py
-import pytest
 from datetime import datetime
-from core.event_bus import Event
+
+import pytest
+
+from core.kernel.event_bus import Event
 from handlers.storage_handler import StorageHandler
 
 

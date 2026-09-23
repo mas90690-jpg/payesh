@@ -1,0 +1,4064 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+core/brain.py — مغز هوشمند امن ربات پایش سرنخ.
+
+ترکیبی از:
+- Agent پیشرفته (۴۲ ابزار، Extended Thinking، Self-Healing)
+- زیرساخت امن پروژه (event_bus, database, config, logger)
+- یکپارچگی با admin_handler از طریق process_admin_command
+- امنیت چندلایه: whitelist, sandbox, safe_path
+
+نسخهٔ ۵ (این نسخه — تمیز، حرفه‌ای، مستقل):
+  - 🐛 FIX: _query_database — حذف چک بیهودهٔ `if not rows` (چون
+    _QueryResult همیشه truthy است). حالا فقط روی fetchall تصمیم می‌گیرد.
+  - 🐛 FIX: _execute_python حالا SAFE_PREAMBLE دارد (مثل manual_brain):
+    sandbox با builtins.open patch + محدود به storage/reports/.
+  - 🐛 FIX: _execute_command — حذف SAFE_PREFIXES بلااستفاده.
+    whitelist فقط از access_manager.
+  - 🐛 FIX: _get_recent_logs حالا پارامتر limit می‌گیرد.
+  - 🧹 حذف import shlex (بلااستفاده)
+  - 🧹 حذف import random (بلااستفاده)
+  - 🧹 حذف PersianBrainHandler.is_persian (هیچ‌جا صدا زده نمی‌شود)
+  - 🧹 حذف SAFE_PREFIXES از _execute_command (بلااستفاده)
+  - 🧹 حذف MAX_COMMAND_TIMEOUT ثابت و استفاده از _DEFAULT_TIMEOUT_S
+  - 🎯 تکمیل analyze_logs: حالا واقعاً لاگ را می‌خواند و دسته‌بندی می‌کند
+  - 🎯 تکمیل build_from_map: حالا پلن چندمرحله‌ای از task می‌سازد
+  - 🎯 تکمیل self_upgrade: حالا agent را روی کد خودش اجرا می‌کند
+  - 🎯 بهبود generate_report: شامل learning + cache + memory stats
+  - 🎯 لاگ ساخت‌یافته [BRAIN:...] در همه نقاط تصمیم
+  - 🎯 docstring دقیق برای هر tool
+"""
+from __future__ import annotations
+
+import os
+import sys
+import json
+import time
+import asyncio
+import threading
+import subprocess
+import shutil
+import hashlib
+import re
+import ast
+import glob
+import zipfile
+import sqlite3
+import tempfile
+import difflib
+import locale
+import platform
+from pathlib import Path
+from datetime import datetime, timedelta
+from typing import (
+    List, Dict, Optional, Any, Tuple, Callable,
+)
+
+from core.logger import log_info, log_success, log_warning, log_error, get_logger
+from core.event_bus import EventBus, Event, EventPriority
+from core.access_manager import get_access_manager
+
+# ─── تنظیمات پروژه ───
+try:
+    from config import (
+        BASE_DIR as PROJECT_BASE,
+        STORAGE_DIR,
+        DB_DIR,
+        BACKUPS_DIR,
+        LOGS_DIR,
+        AI,
+        AI_ENABLED,
+        PLUGINS_CONFIG,
+    )
+except ImportError as _cfg_err:
+    log_warning(
+        f"⚠️ [BRAIN:init] import config ناموفق — fallback | {_cfg_err}"
+    )
+    PROJECT_BASE = Path(__file__).parent.parent.resolve()
+    STORAGE_DIR = PROJECT_BASE / "storage"
+    DB_DIR = STORAGE_DIR / "database"
+    BACKUPS_DIR = STORAGE_DIR / "backups"
+    LOGS_DIR = STORAGE_DIR / "logs"
+    AI = {
+        "enabled": True,
+        "model": "deepseek-chat",
+        "url": "https://api.deepseek.com/v1",
+        "timeout": 120,
+        "priority": "auto",
+    }
+    AI_ENABLED = True
+    PLUGINS_CONFIG = {}
+
+
+# ═══════════════════════════════════════════
+# ثابت‌های مغز
+# ═══════════════════════════════════════════
+BRAIN_DIR = Path(STORAGE_DIR) / "brain"
+MEMORY_DIR = BRAIN_DIR / "memory"
+CACHE_DIR = BRAIN_DIR / "cache"
+BACKUP_DIR = BRAIN_DIR / "backups"
+HOOKS_DIR = BRAIN_DIR / "hooks"
+for _d in [BRAIN_DIR, MEMORY_DIR, CACHE_DIR, BACKUP_DIR, HOOKS_DIR]:
+    _d.mkdir(parents=True, exist_ok=True)
+
+MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024   # 5 MB
+MAX_CONTENT_LENGTH = 100_000
+MAX_AGENT_STEPS = 30
+MAX_CONTEXT_TOKENS = 16384
+CACHE_TTL_DAYS = 14
+DEFAULT_MODEL = "deepseek-chat"
+
+# ─── سقف‌های داخلی ───
+_LOG_TAIL_BYTES = 256 * 1024            # seek از انتهای لاگ
+_CACHE_SAVE_INTERVAL_S = 2.0            # throttle SmartCache
+_DEFAULT_TIMEOUT_S = 300                # timeout پیش‌فرض دستور سیستمی
+_PY_EXEC_TIMEOUT_S = 30                 # timeout اجرای پایتون
+_TESTS_TIMEOUT_S = 120                  # timeout اجرای تست‌ها
+_PYTEST_COVERAGE_TIMEOUT_S = 120        # timeout پوشش تست
+_BANDIT_TIMEOUT_S = 60                  # timeout bandit
+
+# ─── آستانه‌های هشدار (میلی‌ثانیه) ───
+_SLOW_STEP_MS = 5000        # هر گام agent > 5s
+_SLOW_TOOL_MS = 3000        # هر ابزار > 3s
+_SLOW_THINK_MS = 8000       # _think > 8s
+_SLOW_ACTION_MS = 3000      # _handle_action per-action
+_LOG_PREVIEW_LEN = 100      # طول پیش‌نمایش در لاگ
+
+
+# ═══════════════════════════════════════════
+# Sandbox برای _execute_python
+# (مثل manual_brain — نوشتن فقط در storage/reports/)
+# ═══════════════════════════════════════════
+_SAFE_PREAMBLE = (
+    "import builtins, os, io, sys\n"
+    "from pathlib import Path as _P\n"
+    "_ALLOWED = [\n"
+    "    os.path.abspath('storage/reports'),\n"
+    "]\n"
+    "def _ok(p):\n"
+    "    ap = os.path.abspath(str(p))\n"
+    "    for d in _ALLOWED:\n"
+    "        if ap == d or ap.startswith(d + os.sep): return True\n"
+    "    return False\n"
+    "def _deny(p):\n"
+    "    raise PermissionError(\n"
+    "        '\\u26d4 ONLY READ (or write in storage/reports/) — blocked: '\n"
+    "        + str(p)\n"
+    "    )\n"
+    "_ro = builtins.open\n"
+    "def _so(f, m='r', *a, **k):\n"
+    "    if any(c in str(m) for c in 'wax+'):\n"
+    "        if not _ok(f): _deny(f)\n"
+    "        try:\n"
+    "            os.makedirs(os.path.dirname(os.path.abspath(str(f))), exist_ok=True)\n"
+    "        except Exception: pass\n"
+    "    return _ro(f, m, *a, **k)\n"
+    "builtins.open = _so\n"
+    "io.open = _so\n"
+    "_wt = _P.write_text\n"
+    "def _swt(self, *a, **k):\n"
+    "    if not _ok(self): _deny(self)\n"
+    "    self.parent.mkdir(parents=True, exist_ok=True)\n"
+    "    return _wt(self, *a, **k)\n"
+    "_P.write_text = _swt\n"
+    "_wb = _P.write_bytes\n"
+    "def _swb(self, *a, **k):\n"
+    "    if not _ok(self): _deny(self)\n"
+    "    self.parent.mkdir(parents=True, exist_ok=True)\n"
+    "    return _wb(self, *a, **k)\n"
+    "_P.write_bytes = _swb\n"
+    "_t = _P.touch\n"
+    "def _st(self, *a, **k):\n"
+    "    if not _ok(self): _deny(self)\n"
+    "    return _t(self, *a, **k)\n"
+    "_P.touch = _st\n"
+    "_u = _P.unlink\n"
+    "def _su(self, *a, **k):\n"
+    "    if not _ok(self): _deny(self)\n"
+    "    return _u(self, *a, **k)\n"
+    "_P.unlink = _su\n"
+    "_r = _P.rmdir\n"
+    "def _sr(self, *a, **k):\n"
+    "    if not _ok(self): _deny(self)\n"
+    "    return _r(self, *a, **k)\n"
+    "_P.rmdir = _sr\n"
+    "_mk = _P.mkdir\n"
+    "def _smk(self, *a, **k):\n"
+    "    if not _ok(self): _deny(self)\n"
+    "    return _mk(self, *a, **k)\n"
+    "_P.mkdir = _smk\n"
+)
+
+
+# ═══════════════════════════════════════════
+# لودر دسترسی‌ها (mtime-aware)
+# ═══════════════════════════════════════════
+from data import paths as data_paths
+_ACCESS_FILE = data_paths.ACCESS_CONTROL
+
+_ACCESS_CACHE: Optional[dict] = None
+_ACCESS_CACHE_MTIME: float = 0.0
+_ACCESS_LOCK = threading.Lock()
+
+
+def _load_access() -> dict:
+    """دسترسی‌ها را از فایل می‌خواند — با cache mtime-aware (hot-reload)."""
+    global _ACCESS_CACHE, _ACCESS_CACHE_MTIME
+
+    try:
+        mtime = _ACCESS_FILE.stat().st_mtime if _ACCESS_FILE.exists() else 0.0
+    except OSError:
+        mtime = 0.0
+
+    with _ACCESS_LOCK:
+        if _ACCESS_CACHE is not None and mtime == _ACCESS_CACHE_MTIME:
+            return _ACCESS_CACHE
+
+    defaults = {
+        "full_access": False,
+        "read": {"allow": ["**/*"], "deny": [".env", "storage/sessions/**"]},
+        "write": {"allow": ["data/**", "storage/reports/**"], "deny": []},
+        "execute": {"allow": ["git status", "git diff"], "deny": ["rm -rf"]},
+        "safety": {"backup_before_write": True, "require_confirmation": []},
+    }
+
+    new_data = defaults
+    try:
+        if _ACCESS_FILE.exists():
+            with open(_ACCESS_FILE, "r", encoding="utf-8") as f:
+                new_data = json.load(f)
+            log_info(
+                f"🔐 [BRAIN:access] بارگذاری شد | "
+                f"file={_ACCESS_FILE.name} | "
+                f"keys={list(new_data.keys())} | mtime={mtime:.0f}"
+            )
+        else:
+            log_warning(
+                f"⚠️ [BRAIN:access] فایل نبود: {_ACCESS_FILE} — پیش‌فرض امن"
+            )
+    except json.JSONDecodeError as e:
+        log_error(
+            f"❌ [BRAIN:access] JSON نامعتبر | {_ACCESS_FILE.name} | "
+            f"line={e.lineno} col={e.colno} | {e.msg}"
+        )
+    except Exception as e:
+        log_error(
+            f"❌ [BRAIN:access] بارگذاری ناموفق | "
+            f"{type(e).__name__}: {e}"
+        )
+
+    with _ACCESS_LOCK:
+        _ACCESS_CACHE = new_data
+        _ACCESS_CACHE_MTIME = mtime
+    return new_data
+
+
+def _invalidate_access_cache() -> None:
+    """cache دسترسی‌ها را پاک می‌کند (برای تست)."""
+    global _ACCESS_CACHE, _ACCESS_CACHE_MTIME
+    with _ACCESS_LOCK:
+        _ACCESS_CACHE = None
+        _ACCESS_CACHE_MTIME = 0.0
+
+
+# ═══════════════════════════════════════════
+# کلاس‌های کمکی
+# ═══════════════════════════════════════════
+class PersianBrainHandler:
+    """تنظیم محیط فارسی برای subprocess و console."""
+
+    REVERSE_MAP = {
+        "ي": "ی",
+        "ك": "ک",
+        "ة": "ه",
+        "ۀ": "ه",
+        "ھ": "ه",
+        "ے": "ی",
+        "ۓ": "ی",
+    }
+
+    @staticmethod
+    def setup_environment():
+        try:
+            if hasattr(sys.stdout, "reconfigure"):
+                sys.stdout.reconfigure(encoding="utf-8")
+                sys.stderr.reconfigure(encoding="utf-8")
+            try:
+                locale.setlocale(locale.LC_ALL, "fa_IR.UTF-8")
+            except Exception:
+                try:
+                    locale.setlocale(locale.LC_ALL, "Persian_Iran.1256")
+                except Exception:
+                    locale.setlocale(locale.LC_ALL, "")
+            if platform.system() == "Windows":
+                os.system("color")
+                os.system("chcp 65001 > nul 2>&1")
+            os.environ["PYTHONIOENCODING"] = "utf-8"
+            os.environ["LANG"] = "fa_IR.UTF-8"
+            log_info("🌐 [BRAIN:env] محیط فارسی تنظیم شد")
+        except Exception as e:
+            log_warning(
+                f"⚠️ [BRAIN:env] تنظیم ناموفق | "
+                f"{type(e).__name__}: {e}"
+            )
+
+    @staticmethod
+    def fix(text: str) -> str:
+        """اصلاح کاراکترهای عربی به فارسی."""
+        if not text:
+            return text
+        for wrong, correct in PersianBrainHandler.REVERSE_MAP.items():
+            text = text.replace(wrong, correct)
+        text = (
+            text.replace("\u200e", "")
+            .replace("\u200f", "")
+            .replace("\u202b", "")
+            .replace("\u202e", "")
+        )
+        return text
+
+
+def human_bytes(n: int) -> str:
+    """تبدیل بایت به فرمت خوانا."""
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024.0:
+            return f"{n:.1f} {unit}"
+        n /= 1024.0
+    return f"{n:.1f} PB"
+
+
+def safe_path(path_str: str, base: Optional[Path] = None) -> Path:
+    """مسیر امن — جلوگیری از escape از پروژه."""
+    base = (base or Path(PROJECT_BASE)).resolve()
+    full = (base / path_str).resolve()
+    try:
+        full.relative_to(base)
+    except ValueError:
+        log_warning(
+            f"⛔ [BRAIN:path] escape blocked | "
+            f"base={base} | requested={path_str!r}"
+        )
+        raise ValueError("⛔ دسترسی به خارج از پروژه ممنوع!")
+    return full
+
+
+def _sanitize_console_output(text: str) -> str:
+    """پاک‌سازی ANSI escape codes و کنترل کاراکترها."""
+    if not text:
+        return text
+    text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
+    return text
+
+
+# ═══════════════════════════════════════════
+# SmartCache (با throttle save)
+# ═══════════════════════════════════════════
+class SmartCache:
+    """کش با TTL، throttle save، و atomic write."""
+
+    def __init__(
+        self,
+        name: str,
+        ttl_days: int = CACHE_TTL_DAYS,
+        max_size: int = 5000,
+    ):
+        self.filepath = CACHE_DIR / f"{name}.json"
+        self.ttl = timedelta(days=ttl_days)
+        self.max_size = max_size
+        self.cache: Dict[str, Dict] = {}
+        self._lock = threading.Lock()
+        self._hits = 0
+        self._misses = 0
+        self._last_save = 0.0
+        self._dirty = False
+        self.load()
+
+    def _key(self, text: str, model: str = "") -> str:
+        return hashlib.sha256(f"{text}|{model}".encode()).hexdigest()
+
+    def get(self, text: str, model: str = "") -> Optional[str]:
+        key = self._key(text, model)
+        with self._lock:
+            entry = self.cache.get(key)
+        if (
+            entry
+            and (datetime.now() - datetime.fromtimestamp(entry["timestamp"]))
+            < self.ttl
+        ):
+            self._hits += 1
+            return entry["answer"]
+        self._misses += 1
+        return None
+
+    def set(self, text: str, answer: str, model: str = ""):
+        """ذخیره + throttle save (جلوگیری از disk thrash)."""
+        key = self._key(text, model)
+        with self._lock:
+            self.cache[key] = {"answer": answer, "timestamp": time.time()}
+            if len(self.cache) > self.max_size:
+                sorted_items = sorted(
+                    self.cache.items(), key=lambda x: x[1]["timestamp"]
+                )
+                self.cache = dict(sorted_items[-int(self.max_size * 0.8):])
+            self._dirty = True
+
+        now = time.time()
+        if now - self._last_save >= _CACHE_SAVE_INTERVAL_S:
+            self.save()
+
+    def flush(self):
+        """ذخیره فوری اگر dirty."""
+        with self._lock:
+            dirty = self._dirty
+        if dirty:
+            self.save()
+
+    def load(self):
+        if not self.filepath.exists():
+            return
+        try:
+            with self._lock:
+                self.cache = json.loads(
+                    self.filepath.read_text(encoding="utf-8")
+                )
+            log_info(
+                f"💾 [BRAIN:cache:{self.filepath.stem}] "
+                f"{len(self.cache)} مدخل بارگذاری شد"
+            )
+        except json.JSONDecodeError as e:
+            log_warning(
+                f"⚠️ [BRAIN:cache:{self.filepath.stem}] JSON نامعتبر | "
+                f"line={e.lineno} — کش خالی شد"
+            )
+            self.cache = {}
+        except Exception as e:
+            log_warning(
+                f"⚠️ [BRAIN:cache:{self.filepath.stem}] "
+                f"{type(e).__name__}: {e}"
+            )
+            self.cache = {}
+
+    def save(self):
+        try:
+            with self._lock:
+                data = json.dumps(self.cache, ensure_ascii=False, indent=2)
+                self._last_save = time.time()
+                self._dirty = False
+            tmp = self.filepath.with_suffix(".tmp")
+            tmp.write_text(data, encoding="utf-8")
+            tmp.replace(self.filepath)
+        except Exception as e:
+            log_warning(
+                f"⚠️ [BRAIN:cache:{self.filepath.stem}] ذخیره ناموفق | "
+                f"{type(e).__name__}: {e}"
+            )
+
+    def clear(self):
+        with self._lock:
+            self.cache = {}
+            self._hits = 0
+            self._misses = 0
+            self._dirty = True
+        self.save()
+        log_info(f"🗑️ [BRAIN:cache:{self.filepath.stem}] پاک شد")
+
+    def stats(self) -> Dict:
+        with self._lock:
+            total = self._hits + self._misses
+            return {
+                "entries": len(self.cache),
+                "file": str(self.filepath),
+                "hits": self._hits,
+                "misses": self._misses,
+                "hit_rate": round(self._hits / total, 3) if total else 0.0,
+            }
+
+
+# ═══════════════════════════════════════════
+# APIMemory
+# ═══════════════════════════════════════════
+class APIMemory:
+    """پیاده‌سازی حافظه از طریق API (جایگزین ChromaDB)."""
+
+    def __init__(self, api_url: str, api_key: str = "", timeout: int = 30):
+        self.api_url = api_url.rstrip("/")
+        self.api_key = api_key
+        self.timeout = timeout
+        self._session = None
+        log_info(
+            f"🧠 [BRAIN:apimem] آماده | url={self.api_url} | "
+            f"key={'✅' if api_key else '❌'}"
+        )
+
+    async def _ensure_session(self):
+        if self._session is None:
+            import aiohttp
+
+            headers = {"Content-Type": "application/json"}
+            if self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
+            self._session = aiohttp.ClientSession(
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=self.timeout),
+            )
+
+    async def _post(self, endpoint: str, data: dict) -> dict:
+        await self._ensure_session()
+        t0 = time.monotonic()
+        try:
+            async with self._session.post(
+                f"{self.api_url}/{endpoint}", json=data
+            ) as resp:
+                elapsed_ms = (time.monotonic() - t0) * 1000
+                if resp.status >= 400:
+                    body = (await resp.text())[:_LOG_PREVIEW_LEN]
+                    log_warning(
+                        f"⚠️ [BRAIN:apimem] {endpoint} | "
+                        f"HTTP {resp.status} | {elapsed_ms:.0f}ms | "
+                        f"body={body!r}"
+                    )
+                    return {"error": f"HTTP {resp.status}"}
+                return await resp.json()
+        except asyncio.TimeoutError:
+            log_error(
+                f"⏰ [BRAIN:apimem] {endpoint} | Timeout {self.timeout}s"
+            )
+            return {"error": "timeout"}
+        except Exception as e:
+            log_warning(
+                f"⚠️ [BRAIN:apimem] {endpoint} | "
+                f"{type(e).__name__}: {e}"
+            )
+            return {"error": str(e)}
+
+    async def add(self, role: str, content: str, metadata: Dict = None):
+        return await self._post(
+            "add",
+            {"role": role, "content": content, "metadata": metadata or {}},
+        )
+
+    async def search(self, query: str, n: int = 5) -> List[Dict]:
+        result = await self._post("search", {"query": query, "n": n})
+        if isinstance(result, list):
+            return result
+        if isinstance(result, dict) and "results" in result:
+            return result["results"]
+        return []
+
+    async def get_context(self, query: str = "", n: int = 5) -> List[Dict]:
+        result = await self._post("context", {"query": query, "n": n})
+        if isinstance(result, list):
+            return result
+        if isinstance(result, dict) and "context" in result:
+            return result["context"]
+        return []
+
+    async def clear(self):
+        await self._post("clear", {})
+
+    async def close(self):
+        if self._session:
+            await self._session.close()
+            self._session = None
+
+
+# ═══════════════════════════════════════════
+# BrainMemory
+# ═══════════════════════════════════════════
+class BrainMemory:
+    """حافظهٔ هوشمند: کوتاه‌مدت + خلاصه + ChromaDB یا API."""
+
+    def __init__(
+        self,
+        max_tokens: int = MAX_CONTEXT_TOKENS,
+        use_api: bool = False,
+        api_url: str = "",
+        api_key: str = "",
+    ):
+        self.max_tokens = max_tokens
+        self.short_term: List[Dict] = []
+        self.summaries: List[str] = []
+        self.use_api = use_api
+        self.api_url = api_url
+        self.api_key = api_key
+        self.api_memory = None
+        self.chroma_client = None
+        self.collection = None
+        self._pending_tasks: List[asyncio.Task] = []
+
+        if use_api and api_url:
+            self.api_memory = APIMemory(api_url, api_key)
+            log_success("✅ [BRAIN:mem] حالت API فعال")
+        else:
+            self._init_chromadb()
+
+    def _init_chromadb(self):
+        try:
+            import chromadb
+
+            self.chroma_client = chromadb.PersistentClient(
+                path=str(MEMORY_DIR)
+            )
+            self.collection = self.chroma_client.get_or_create_collection(
+                name="brain_memory", metadata={"hnsw:space": "cosine"}
+            )
+            try:
+                items = self.collection.count()
+            except Exception:
+                items = "?"
+            log_success(f"✅ [BRAIN:mem] ChromaDB آماده | items={items}")
+        except ImportError as e:
+            log_warning(
+                f"⚠️ [BRAIN:mem] ChromaDB نصب نیست — "
+                f"حافظهٔ معنایی غیرفعال | {e}"
+            )
+        except Exception as e:
+            log_warning(
+                f"⚠️ [BRAIN:mem] ChromaDB خطا — غیرفعال | "
+                f"{type(e).__name__}: {e}"
+            )
+
+    def _spawn_task(self, coro) -> None:
+        """اجرای coroutine در پس‌زمینه با نگه‌داشتن reference."""
+        try:
+            task = asyncio.create_task(coro)
+            self._pending_tasks.append(task)
+            task.add_done_callback(self._on_task_done)
+        except RuntimeError:
+            log_warning("⚠️ [BRAIN:mem] task رها شد (loop بسته)")
+
+    def _on_task_done(self, task: asyncio.Task) -> None:
+        try:
+            self._pending_tasks.remove(task)
+        except ValueError:
+            pass
+        try:
+            exc = task.exception()
+            if exc:
+                log_warning(
+                    f"⚠️ [BRAIN:mem:task] {type(exc).__name__}: {exc}"
+                )
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    def add(self, role: str, content: str):
+        self.short_term.append(
+            {"role": role, "content": content, "timestamp": time.time()}
+        )
+
+        if self.api_memory:
+            self._spawn_task(self.api_memory.add(role, content))
+
+        if self.collection:
+            try:
+                doc_id = hashlib.md5(
+                    f"{role}{content}{time.time()}".encode()
+                ).hexdigest()
+                self.collection.add(
+                    documents=[content],
+                    metadatas=[{"role": role, "timestamp": time.time()}],
+                    ids=[doc_id],
+                )
+            except Exception as e:
+                log_warning(f"⚠️ [BRAIN:mem:chroma] add ناموفق | {e}")
+
+        if len(self.short_term) > 20:
+            self._compress()
+
+    def _compress(self):
+        if len(self.short_term) < 10:
+            return
+        to_summarize = self.short_term[:15]
+        text = "\n".join(
+            [f"{m['role']}: {m['content'][:300]}" for m in to_summarize]
+        )
+        summary = f"[خلاصه‌ی {len(to_summarize)} پیام قبلی] {text[:600]}..."
+        self.summaries.append(summary)
+        self.short_term = self.short_term[15:]
+        log_info(
+            f"📦 [BRAIN:mem] خلاصه‌سازی | "
+            f"{len(to_summarize)} پیام → ۱ خلاصه | "
+            f"short={len(self.short_term)} summaries={len(self.summaries)}"
+        )
+
+    async def get_context(self, query: str = "") -> List[Dict]:
+        context: List[Dict] = []
+        tokens = 0
+
+        for msg in self.short_term[-5:]:
+            context.append(msg)
+            tokens += len(msg.get("content", "")) // 4
+
+        for summary in reversed(self.summaries):
+            if tokens + len(summary) // 4 > self.max_tokens:
+                break
+            context.append({"role": "system", "content": summary})
+            tokens += len(summary) // 4
+
+        if self.api_memory and query:
+            try:
+                results = await self.api_memory.get_context(query, n=3)
+                for item in results:
+                    if isinstance(item, dict):
+                        doc = item.get("content", str(item))
+                        if tokens + len(doc) // 4 > self.max_tokens:
+                            break
+                        context.append(
+                            {"role": "system", "content": f"[حافظه API] {doc}"}
+                        )
+                        tokens += len(doc) // 4
+            except Exception as e:
+                log_warning(f"⚠️ [BRAIN:mem:api] search ناموفق | {e}")
+
+        if query and self.collection:
+            try:
+                results = self.collection.query(
+                    query_texts=[query], n_results=3
+                )
+                if results.get("documents"):
+                    for doc in results["documents"][0]:
+                        if tokens + len(doc) // 4 > self.max_tokens:
+                            break
+                        context.append(
+                            {"role": "system", "content": f"[حافظه مرتبط] {doc}"}
+                        )
+                        tokens += len(doc) // 4
+            except Exception as e:
+                log_warning(f"⚠️ [BRAIN:mem:chroma] search ناموفق | {e}")
+
+        log_info(
+            f"📊 [BRAIN:mem] context آماده | "
+            f"msgs={len(context)} ~tokens={tokens}"
+        )
+        return context
+
+    def clear(self):
+        self.short_term = []
+        self.summaries = []
+        if self.api_memory:
+            self._spawn_task(self.api_memory.clear())
+        if self.collection:
+            try:
+                self.collection.delete(ids=self.collection.get()["ids"])
+            except Exception:
+                pass
+        log_info("🗑️ [BRAIN:mem] حافظه پاک شد")
+
+    async def search(self, query: str, n: int = 5) -> List[Dict]:
+        if self.api_memory:
+            try:
+                results = await self.api_memory.search(query, n)
+                if results:
+                    return results
+            except Exception as e:
+                log_warning(f"⚠️ [BRAIN:mem:api] search ناموفق | {e}")
+
+        if not self.collection:
+            return []
+        try:
+            results = self.collection.query(query_texts=[query], n_results=n)
+            if not results or not results.get("documents"):
+                return []
+            return [
+                {"role": m.get("role", "unknown"), "content": d[:300]}
+                for d, m in zip(
+                    results["documents"][0], results["metadatas"][0]
+                )
+            ]
+        except Exception as e:
+            log_warning(f"⚠️ [BRAIN:mem:chroma] search ناموفق | {e}")
+            return []
+
+    async def close(self):
+        if self.api_memory:
+            await self.api_memory.close()
+
+
+# ═══════════════════════════════════════════
+# ProjectSemanticSearch
+# ═══════════════════════════════════════════
+class ProjectSemanticSearch:
+    """جستجوی معنایی در کدبیس با ChromaDB."""
+
+    def __init__(self):
+        self.client = None
+        self.collection = None
+        self._init()
+
+    def _init(self):
+        try:
+            import chromadb
+            from chromadb.utils import embedding_functions
+
+            self.client = chromadb.PersistentClient(
+                path=str(MEMORY_DIR / "codebase")
+            )
+            self.embedding_fn = (
+                embedding_functions.SentenceTransformerEmbeddingFunction(
+                    model_name="all-MiniLM-L6-v2"
+                )
+            )
+            self.collection = self.client.get_or_create_collection(
+                name="code_embeddings", embedding_function=self.embedding_fn
+            )
+            log_success("✅ [BRAIN:sem] Semantic Search فعال شد")
+        except ImportError as e:
+            log_warning(
+                f"⚠️ [BRAIN:sem] غیرفعال (chromadb نصب نیست) | {e}"
+            )
+        except Exception as e:
+            log_warning(
+                f"⚠️ [BRAIN:sem] غیرفعال | {type(e).__name__}: {e}"
+            )
+
+    def index_files(self, patterns: Optional[List[str]] = None) -> int:
+        if not self.collection:
+            log_warning("⚠️ [BRAIN:sem] ایندکس‌سازی رد شد (collection نیست)")
+            return 0
+        if patterns is None:
+            patterns = [
+                "**/*.py", "**/*.txt", "**/*.md",
+                "**/*.json", "**/*.yaml", "**/*.yml",
+            ]
+        total = 0
+        failed = 0
+        t0 = time.monotonic()
+        project = Path(PROJECT_BASE)
+        for pattern in patterns:
+            for fpath in glob.glob(
+                pattern, root_dir=str(project), recursive=True
+            ):
+                try:
+                    full = project / fpath
+                    if (
+                        full.is_file()
+                        and full.stat().st_size < MAX_FILE_SIZE_BYTES
+                    ):
+                        content = full.read_text(
+                            encoding="utf-8", errors="ignore"
+                        )
+                        self.collection.add(
+                            documents=[content],
+                            metadatas=[{"path": str(fpath)}],
+                            ids=[
+                                f"file_{hashlib.md5(fpath.encode()).hexdigest()}"
+                            ],
+                        )
+                        total += 1
+                except Exception as e:
+                    failed += 1
+                    if failed <= 3:
+                        log_warning(
+                            f"⚠️ [BRAIN:sem] index fail | {fpath} | "
+                            f"{type(e).__name__}: {e}"
+                        )
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        log_success(
+            f"✅ [BRAIN:sem] {total} فایل ایندکس شد | "
+            f"failed={failed} | {elapsed_ms:.0f}ms"
+        )
+        return total
+
+    def search(self, query: str, n: int = 5) -> List[Dict]:
+        if not self.collection:
+            return []
+        try:
+            results = self.collection.query(query_texts=[query], n_results=n)
+            if not results or not results.get("documents"):
+                return []
+            return [
+                {
+                    "path": m.get("path", "?"),
+                    "content": d[:500] + ("..." if len(d) > 500 else ""),
+                }
+                for d, m in zip(
+                    results["documents"][0], results["metadatas"][0]
+                )
+            ]
+        except Exception as e:
+            log_warning(
+                f"⚠️ [BRAIN:sem] search ناموفق | {type(e).__name__}: {e}"
+            )
+            return []
+
+
+# ═══════════════════════════════════════════
+# LearningEngine
+# ═══════════════════════════════════════════
+class LearningEngine:
+    """یادگیری از تعاملات: patterns + suggest tool."""
+
+    def __init__(self, agent):
+        self.agent = agent
+        self.learned_patterns: Dict = {}
+        self.successful_interactions: List[Dict] = []
+        self.failed_interactions: List[Dict] = []
+        self._load_learned_data()
+
+    def _load_learned_data(self):
+        learn_file = BRAIN_DIR / "learned_patterns.json"
+        if not learn_file.exists():
+            return
+        try:
+            data = json.loads(learn_file.read_text(encoding="utf-8"))
+            self.learned_patterns = data.get("patterns", {})
+            self.successful_interactions = data.get("successful", [])
+            self.failed_interactions = data.get("failed", [])
+            log_info(
+                f"📚 [BRAIN:learn] بارگذاری | "
+                f"patterns={len(self.learned_patterns)} "
+                f"success={len(self.successful_interactions)} "
+                f"failed={len(self.failed_interactions)}"
+            )
+        except json.JSONDecodeError as e:
+            log_warning(
+                f"⚠️ [BRAIN:learn] JSON نامعتبر | line={e.lineno} — ریست"
+            )
+        except Exception as e:
+            log_warning(
+                f"⚠️ [BRAIN:learn] بارگذاری ناموفق | "
+                f"{type(e).__name__}: {e}"
+            )
+
+    def _save_learned_data(self):
+        learn_file = BRAIN_DIR / "learned_patterns.json"
+        try:
+            tmp = learn_file.with_suffix(".tmp")
+            tmp.write_text(
+                json.dumps(
+                    {
+                        "patterns": self.learned_patterns,
+                        "successful": self.successful_interactions[-200:],
+                        "failed": self.failed_interactions[-200:],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            tmp.replace(learn_file)
+        except Exception as e:
+            log_warning(
+                f"⚠️ [BRAIN:learn] ذخیره ناموفق | {type(e).__name__}: {e}"
+            )
+
+    def record_interaction(
+        self,
+        user_input: str,
+        response: str,
+        success: bool,
+        details: Dict = None,
+    ):
+        interaction = {
+            "timestamp": datetime.now().isoformat(),
+            "user_input": user_input,
+            "response": response[:500],
+            "success": success,
+            "details": details or {},
+            "tools_used": details.get("tools_used", []) if details else [],
+        }
+        if success:
+            self.successful_interactions.append(interaction)
+            self._extract_patterns(interaction)
+        else:
+            self.failed_interactions.append(interaction)
+        self._save_learned_data()
+        log_info(
+            f"📝 [BRAIN:learn] ثبت | success={success} | "
+            f"total_ok={len(self.successful_interactions)} "
+            f"total_fail={len(self.failed_interactions)}"
+        )
+
+    def _extract_patterns(self, interaction: Dict):
+        user_input = interaction.get("user_input", "").lower()
+        tools = interaction.get("tools_used", [])
+        for tool in tools:
+            key = f"tool_{tool}"
+            if key not in self.learned_patterns:
+                self.learned_patterns[key] = {"count": 0, "keywords": []}
+            self.learned_patterns[key]["count"] += 1
+            words = [w for w in user_input.split() if len(w) > 3]
+            for word in words[:5]:
+                if word not in self.learned_patterns[key]["keywords"]:
+                    self.learned_patterns[key]["keywords"].append(word)
+
+        task_type = None
+        if "ساخت" in user_input or "create" in user_input or "build" in user_input:
+            task_type = "task_type_build"
+        elif "رفع" in user_input or "fix" in user_input or "bug" in user_input:
+            task_type = "task_type_fix"
+        elif "تست" in user_input or "test" in user_input:
+            task_type = "task_type_test"
+        if task_type:
+            if task_type not in self.learned_patterns:
+                self.learned_patterns[task_type] = {"count": 0, "keywords": []}
+            self.learned_patterns[task_type]["count"] += 1
+            words = [w for w in user_input.split() if len(w) > 3]
+            for word in words[:5]:
+                if word not in self.learned_patterns[task_type]["keywords"]:
+                    self.learned_patterns[task_type]["keywords"].append(word)
+
+    def suggest_tool_for_task(self, task: str) -> Optional[str]:
+        task_lower = task.lower()
+        best_tool = None
+        best_score = 0
+        for pattern_key, data in self.learned_patterns.items():
+            if not pattern_key.startswith("tool_"):
+                continue
+            tool_name = pattern_key.replace("tool_", "")
+            keywords = data.get("keywords", [])
+            score = sum(1 for kw in keywords if kw in task_lower)
+            if score > best_score:
+                best_score = score
+                best_tool = tool_name
+        if best_score >= 2:
+            log_info(
+                f"🧠 [BRAIN:learn] پیشنهاد ابزار | {best_tool} | "
+                f"score={best_score}"
+            )
+            return best_tool
+        return None
+
+
+# ═══════════════════════════════════════════
+# TaskPlanner
+# ═══════════════════════════════════════════
+class TaskPlanner:
+    """برنامه‌ریزی چندمرحله‌ای با AI."""
+
+    def __init__(self, agent):
+        self.agent = agent
+        self.plans: Dict[str, List[Dict]] = {}
+        self.filepath = BRAIN_DIR / "plans.json"
+        self.load()
+
+    def load(self):
+        if not self.filepath.exists():
+            return
+        try:
+            self.plans = json.loads(self.filepath.read_text(encoding="utf-8"))
+            log_info(f"📋 [BRAIN:plan] {len(self.plans)} پلن بارگذاری شد")
+        except Exception as e:
+            log_warning(
+                f"⚠️ [BRAIN:plan] load ناموفق | {type(e).__name__}: {e}"
+            )
+            self.plans = {}
+
+    def save(self):
+        try:
+            tmp = self.filepath.with_suffix(".tmp")
+            tmp.write_text(
+                json.dumps(self.plans, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            tmp.replace(self.filepath)
+        except Exception as e:
+            log_warning(
+                f"⚠️ [BRAIN:plan] save ناموفق | {type(e).__name__}: {e}"
+            )
+
+    async def plan_task(self, task: str) -> List[Dict]:
+        if not self.agent.client:
+            log_info("📋 [BRAIN:plan] آفلاین — پلن ساده")
+            return [{"step": 1, "action": "execute", "description": task}]
+        prompt = f"""
+You are a world-class project manager. Given the task: "{task}",
+create a detailed step-by-step plan.
+Each step must have:
+- Step number
+- Action (e.g., "analyze", "modify", "test", "verify", "search")
+- Description
+- Dependencies (list of step numbers that must be completed first)
+- Estimated time (low/medium/high)
+
+Return the plan as a JSON array of objects with keys:
+step, action, description, dependencies, time.
+"""
+        try:
+            t0 = time.monotonic()
+            response = await self.agent.client.chat.completions.create(
+                model=self.agent.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                max_tokens=1500,
+            )
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            plan_text = response.choices[0].message.content.strip()
+            json_match = re.search(r"\[.*\]", plan_text, re.DOTALL)
+            if json_match:
+                plan = json.loads(json_match.group())
+                self.plans[task] = plan
+                self.save()
+                log_success(
+                    f"✅ [BRAIN:plan] پلن ساخته شد | "
+                    f"steps={len(plan)} | {elapsed_ms:.0f}ms"
+                )
+                return plan
+            log_warning(
+                f"⚠️ [BRAIN:plan] JSON در پاسخ نبود | "
+                f"response_len={len(plan_text)}"
+            )
+            return [{"step": 1, "action": "execute", "description": task}]
+        except Exception as e:
+            log_error(
+                f"❌ [BRAIN:plan] خطا | {type(e).__name__}: {e}"
+            )
+            return [{"step": 1, "action": "execute", "description": task}]
+
+    async def execute_plan(self, task: str) -> str:
+        plan = await self.plan_task(task)
+        if not plan:
+            return "❌ برنامه‌ای تولید نشد."
+        results = {}
+        for step in sorted(plan, key=lambda x: x.get("step", 0)):
+            step_num = step.get("step", 0)
+            log_info(
+                f"📋 [BRAIN:plan] مرحله {step_num} | "
+                f"{step.get('action', '?')} | "
+                f"{str(step.get('description', ''))[:_LOG_PREVIEW_LEN]}"
+            )
+            deps = step.get("dependencies", [])
+            for dep in deps:
+                if dep not in results:
+                    return (
+                        f"❌ وابستگی {dep} برای مرحله {step_num} "
+                        f"برآورده نشد."
+                    )
+            subtask = step.get("description", "")
+            result = await self.agent.agent(subtask, mode="precise")
+            results[step_num] = result
+            log_success(f"✅ [BRAIN:plan] مرحله {step_num} کامل")
+        final = "\n\n".join(
+            [f"مرحله {k}: {v}" for k, v in sorted(results.items())]
+        )
+        return f"📌 برنامه تکمیل شد:\n{final}"
+
+
+# ═══════════════════════════════════════════
+# SelfHealer
+# ═══════════════════════════════════════════
+class SelfHealer:
+    """رفع خودکار باگ با AI (چند تلاش)."""
+
+    def __init__(self, agent, max_attempts: int = 3):
+        self.agent = agent
+        self.max_attempts = max_attempts
+
+    async def fix_bug(self, file_path: str, error_message: str) -> str:
+        for attempt in range(1, self.max_attempts + 1):
+            log_info(
+                f"🔧 [BRAIN:heal] تلاش {attempt}/{self.max_attempts} | "
+                f"file={file_path}"
+            )
+            content = await self.agent._read_file(file_path)
+            if "⚠️" in content:
+                return f"❌ فایل {file_path} قابل خواندن نیست."
+            prompt = f"""
+I have a bug in the following code:
+{content}
+Error message:
+{error_message}
+Please fix the bug. Provide only the corrected code without extra text.
+"""
+            if not self.agent.client:
+                return "❌ حالت آفلاین - نمی‌توانم اصلاح کنم."
+            try:
+                t0 = time.monotonic()
+                response = await self.agent.client.chat.completions.create(
+                    model="deepseek-reasoner",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.1,
+                    max_tokens=2000,
+                )
+                elapsed_ms = (time.monotonic() - t0) * 1000
+                corrected = response.choices[0].message.content.strip()
+                code_blocks = re.findall(
+                    r"```python\n(.*?)```", corrected, re.DOTALL
+                )
+                new_code = code_blocks[0] if code_blocks else corrected
+                log_info(
+                    f"🔧 [BRAIN:heal] پاسخ AI | {elapsed_ms:.0f}ms | "
+                    f"code_len={len(new_code)}"
+                )
+                result = await self.agent._write_file(file_path, new_code)
+                if "✅" in result:
+                    test_result = await self.agent._run_tests(file_path)
+                    if "✅" in test_result or "passed" in test_result.lower():
+                        log_success(
+                            f"✅ [BRAIN:heal] رفع شد در تلاش {attempt}"
+                        )
+                        return (
+                            f"✅ باگ رفع شد در تلاش {attempt}.\n{test_result}"
+                        )
+                    error_message = test_result
+                    log_warning(
+                        f"⚠️ [BRAIN:heal] تست پس از اصلاح ناموفق | "
+                        f"{error_message[:_LOG_PREVIEW_LEN]}"
+                    )
+                else:
+                    return f"❌ خطا در نوشتن فایل: {result}"
+            except Exception as e:
+                log_error(
+                    f"❌ [BRAIN:heal] خطا در تلاش {attempt} | "
+                    f"{type(e).__name__}: {e}"
+                )
+        return f"❌ پس از {self.max_attempts} تلاش، باگ رفع نشد."
+
+
+# ═══════════════════════════════════════════
+# TestGenerator
+# ═══════════════════════════════════════════
+class TestGenerator:
+    """تولید تست خودکار با AI."""
+
+    def __init__(self, agent):
+        self.agent = agent
+
+    async def generate_tests(self, file_path: str) -> str:
+        content = await self.agent._read_file(file_path)
+        if "⚠️" in content:
+            return f"❌ فایل {file_path} قابل خواندن نیست."
+        prompt = f"""
+Given the following Python code:
+{content}
+Generate a comprehensive unit test suite using pytest or unittest.
+Include: Edge cases, Normal cases, Error cases, Mocking if needed.
+Return only the test code.
+"""
+        if not self.agent.client:
+            return "❌ حالت آفلاین - نمی‌توانم تست تولید کنم."
+        try:
+            t0 = time.monotonic()
+            response = await self.agent.client.chat.completions.create(
+                model="deepseek-reasoner",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                max_tokens=2000,
+            )
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            test_code = response.choices[0].message.content.strip()
+            code_blocks = re.findall(
+                r"```python\n(.*?)```", test_code, re.DOTALL
+            )
+            if code_blocks:
+                test_code = code_blocks[0]
+            test_file = (
+                Path(file_path).parent / f"test_{Path(file_path).name}"
+            )
+            result = await self.agent._write_file(str(test_file), test_code)
+            log_info(
+                f"🧪 [BRAIN:test] تولید شد | {elapsed_ms:.0f}ms | "
+                f"len={len(test_code)}"
+            )
+            if "✅" in result:
+                test_result = await self.agent._run_tests(str(test_file))
+                return (
+                    f"✅ تست‌ها در {test_file} ذخیره شدند.\n"
+                    f"نتیجه: {test_result}"
+                )
+            else:
+                return f"❌ خطا در ذخیره‌ی تست: {result}"
+        except Exception as e:
+            log_error(f"❌ [BRAIN:test] {type(e).__name__}: {e}")
+            return f"❌ خطا در تولید تست: {e}"
+
+
+# ═══════════════════════════════════════════
+# WebSearch
+# ═══════════════════════════════════════════
+class WebSearch:
+    """جستجوی وب با DuckDuckGo."""
+
+    def __init__(self):
+        self.session = None
+        self._init_session()
+
+    def _init_session(self):
+        try:
+            import requests
+
+            self.session = requests.Session()
+            self.session.headers.update(
+                {
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36"
+                    )
+                }
+            )
+        except ImportError:
+            self.session = None
+
+    async def search(self, query: str, num_results: int = 5) -> str:
+        if not self.session:
+            return "❌ کتابخانه requests نصب نیست."
+        try:
+            import asyncio as _a
+
+            url = "https://html.duckduckgo.com/html/"
+            params = {"q": query}
+            t0 = time.monotonic()
+            resp = await _a.to_thread(
+                self.session.get, url, params=params, timeout=10
+            )
+            resp.raise_for_status()
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            try:
+                from bs4 import BeautifulSoup
+
+                soup = BeautifulSoup(resp.text, "html.parser")
+                results = []
+                for result in soup.select(".result"):
+                    title_elem = result.select_one(".result__a")
+                    snippet_elem = result.select_one(".result__snippet")
+                    if title_elem and snippet_elem:
+                        title = title_elem.get_text(strip=True)
+                        snippet = snippet_elem.get_text(strip=True)
+                        results.append(
+                            f"🔹 {title}\n   {snippet[:200]}..."
+                        )
+                        if len(results) >= num_results:
+                            break
+                log_info(
+                    f"🌐 [BRAIN:web] search | "
+                    f"q={query[:_LOG_PREVIEW_LEN]!r} | "
+                    f"results={len(results)} | {elapsed_ms:.0f}ms"
+                )
+                if results:
+                    return "\n\n".join(results)
+                return "🔍 نتیجه‌ای یافت نشد."
+            except ImportError:
+                return "❌ BeautifulSoup نصب نیست."
+        except Exception as e:
+            log_warning(f"⚠️ [BRAIN:web] {type(e).__name__}: {e}")
+            return f"❌ خطا در جستجو: {e}"
+
+
+# ═══════════════════════════════════════════
+# CodeReviewer
+# ═══════════════════════════════════════════
+class CodeReviewer:
+    """بازبینی کد با AI."""
+
+    def __init__(self, agent):
+        self.agent = agent
+
+    async def review(self, file_path: str) -> str:
+        content = await self.agent._read_file(file_path)
+        if "⚠️" in content:
+            return f"❌ فایل {file_path} قابل خواندن نیست."
+        prompt = f"""
+You are a senior code reviewer. Analyze the following code and provide:
+- Potential bugs
+- Security vulnerabilities
+- Code smells (anti-patterns)
+- Performance issues
+- Suggestions for improvement
+Code:
+{content}
+Return the review in a structured format with sections.
+"""
+        if not self.agent.client:
+            return "❌ حالت آفلاین - امکان بازبینی وجود ندارد."
+        try:
+            t0 = time.monotonic()
+            response = await self.agent.client.chat.completions.create(
+                model="deepseek-reasoner",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                max_tokens=2000,
+            )
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            log_success(
+                f"✅ [BRAIN:review] {file_path} | {elapsed_ms:.0f}ms"
+            )
+            return (
+                f"📋 بازبینی کد {file_path}:\n"
+                f"{response.choices[0].message.content.strip()}"
+            )
+        except Exception as e:
+            log_error(f"❌ [BRAIN:review] {type(e).__name__}: {e}")
+            return f"❌ خطا در بازبینی: {e}"
+
+
+# ═══════════════════════════════════════════
+# کلاس اصلی مغز
+# ═══════════════════════════════════════════
+class Brain:
+    """مغز هوشمند امن ربات پایش سرنخ."""
+
+    ALLOWED_TOOLS = {
+        "read_file": {"risk": "low", "require_confirm": False},
+        "list_directory": {"risk": "low", "require_confirm": False},
+        "git_status": {"risk": "low", "require_confirm": False},
+        "git_diff": {"risk": "low", "require_confirm": False},
+        "git_log": {"risk": "low", "require_confirm": False},
+        "get_system_info": {"risk": "low", "require_confirm": False},
+        "list_processes": {"risk": "low", "require_confirm": False},
+        "ping_host": {"risk": "low", "require_confirm": False},
+        "analyze_code": {"risk": "low", "require_confirm": False},
+        "semantic_search": {"risk": "low", "require_confirm": False},
+        "grep_search": {"risk": "low", "require_confirm": False},
+        "query_database": {"risk": "low", "require_confirm": False},
+        "run_tests": {"risk": "low", "require_confirm": False},
+        "clipboard_get": {"risk": "low", "require_confirm": False},
+        "browse_web": {"risk": "low", "require_confirm": False},
+        "web_search": {"risk": "low", "require_confirm": False},
+        "get_project_context": {"risk": "low", "require_confirm": False},
+        "system_dashboard": {"risk": "low", "require_confirm": False},
+        "zip_archive": {"risk": "low", "require_confirm": False},
+        "write_file": {"risk": "medium", "require_confirm": True},
+        "edit_file": {"risk": "medium", "require_confirm": True},
+        "delete_file": {"risk": "high", "require_confirm": True},
+        "move_file": {"risk": "medium", "require_confirm": True},
+        "git_commit": {"risk": "medium", "require_confirm": True},
+        "git_branch": {"risk": "medium", "require_confirm": True},
+        "kill_process": {"risk": "high", "require_confirm": True},
+        "run_tests_coverage": {"risk": "low", "require_confirm": False},
+        "analyze_security": {"risk": "low", "require_confirm": False},
+        "backup_project": {"risk": "low", "require_confirm": False},
+        "execute_command": {"risk": "high", "require_confirm": True},
+        "execute_python": {"risk": "high", "require_confirm": True},
+        "fix_bug": {"risk": "medium", "require_confirm": True},
+        "generate_tests": {"risk": "low", "require_confirm": False},
+        "code_review": {"risk": "low", "require_confirm": False},
+        "plan_task": {"risk": "low", "require_confirm": False},
+        "get_setting": {"risk": "low", "require_confirm": False},
+        "set_setting": {"risk": "medium", "require_confirm": True},
+        "toggle_platform": {"risk": "medium", "require_confirm": True},
+        "platform_status": {"risk": "low", "require_confirm": False},
+        "change_poll_interval": {"risk": "medium", "require_confirm": True},
+        "get_access_summary": {"risk": "low", "require_confirm": False},
+    }
+
+    ALLOWED_DIRECT_COMMANDS = {
+        "سلام": "greeting",
+        "خوبی": "greeting",
+        "وضعیت": "status",
+        "گزارش": "report",
+        "help": "help",
+        "راهنما": "help",
+        "کمک": "help",
+    }
+
+    # ═══════════════════════════════════════════
+    # __init__
+    # ═══════════════════════════════════════════
+    def __init__(
+        self,
+        event_bus: Optional[EventBus] = None,
+        db: Optional[Any] = None,
+        read_only: bool = False,
+        api_key: Optional[str] = None,
+        model: str = DEFAULT_MODEL,
+        full_access: bool = False,
+        use_api_memory: bool = False,
+        memory_api_url: str = "",
+        memory_api_key: str = "",
+    ):
+        log_info(
+            f"🧠 [BRAIN:init] شروع | model={model} read_only={read_only} "
+            f"full_access={full_access} api_memory={use_api_memory}"
+        )
+        t0 = time.monotonic()
+
+        PersianBrainHandler.setup_environment()
+        self.event_bus = event_bus
+        self.db = db
+        self.read_only = read_only
+        self.full_access = full_access
+        self.api_key = api_key or os.environ.get("DEEPSEEK_API_KEY")
+        self._ai_priority = (AI.get("priority") or "auto").strip().lower()
+
+        if not self.api_key:
+            log_warning(
+                "⚠️ [BRAIN:init] DEEPSEEK_API_KEY تنظیم نشده — "
+                "حالت آفلاین/Ollama"
+            )
+
+        self.model = model
+        self.client = None
+        self._init_client()
+
+        self.cache = SmartCache("brain_cache")
+        self.agent_cache = SmartCache("agent_cache")
+
+        self.memory = BrainMemory(
+            max_tokens=MAX_CONTEXT_TOKENS,
+            use_api=use_api_memory,
+            api_url=memory_api_url,
+            api_key=memory_api_key,
+        )
+
+        self.semantic_search = ProjectSemanticSearch()
+        self.learning_engine = LearningEngine(self)
+        self.planner = TaskPlanner(self)
+        self.healer = SelfHealer(self)
+        self.test_gen = TestGenerator(self)
+        self.web_search = WebSearch()
+        self.reviewer = CodeReviewer(self)
+
+        self.busy = False
+        self.current_mode = "precise"
+        self.last_read_file: Optional[str] = None
+        self.tools_definition = self._build_tools()
+        self.stats: Dict[str, Any] = {
+            "commands_processed": 0,
+            "agents_run": 0,
+            "errors": 0,
+            "started_at": datetime.now().isoformat(),
+        }
+
+        if self.semantic_search.collection:
+            threading.Thread(
+                target=self._background_index, daemon=True
+            ).start()
+            log_info("📚 [BRAIN:init] thread ایندکس پس‌زمینه راه افتاد")
+
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        log_success(
+            f"✅ [BRAIN:init] کامل | {elapsed_ms:.0f}ms | "
+            f"tools={len(self.tools_definition)} | "
+            f"client={'✅' if self.client else '❌'}"
+        )
+
+    # ═══════════════════════════════════════════
+    # EventBus / DB
+    # ═══════════════════════════════════════════
+    def set_event_bus(self, event_bus: EventBus):
+        self.event_bus = event_bus
+        log_info("🔗 [BRAIN:eventbus] اتصال شد")
+
+    def set_database(self, db: Any):
+        self.db = db
+        log_info("🔗 [BRAIN:db] اتصال شد")
+
+    async def _emit(self, event_name: str, data: Any):
+        if self.event_bus:
+            await self.event_bus.emit(
+                f"brain.{event_name}", data, source="brain"
+            )
+
+    # ═══════════════════════════════════════════
+    # _init_client
+    # ═══════════════════════════════════════════
+    def _init_client(self):
+        """ساخت کلاینت AsyncOpenAI بر اساس AI_PRIORITY."""
+        priority = self._ai_priority
+        has_key = bool(self.api_key)
+
+        if self.model.startswith("ollama"):
+            priority = "ollama"
+
+        log_info(
+            f"🔌 [BRAIN:client] آماده‌سازی | priority={priority} | "
+            f"has_key={'✅' if has_key else '❌'} | model={self.model}"
+        )
+
+        if priority == "deepseek":
+            if not has_key:
+                log_warning(
+                    "⚠️ [BRAIN:client] priority=deepseek ولی کلید نیست — "
+                    "آفلاین"
+                )
+                self.client = None
+                return
+            use_ollama = False
+        elif priority == "ollama":
+            use_ollama = True
+        else:  # auto
+            use_ollama = not has_key
+
+        try:
+            try:
+                from openai import AsyncOpenAI
+            except Exception as e:
+                log_error(
+                    f"❌ [BRAIN:client] import openai ناموفق | "
+                    f"{type(e).__name__}: {e}"
+                )
+                self.client = None
+                return
+
+            if use_ollama:
+                base_url = (
+                    AI.get("url", "http://localhost:11434").rstrip("/")
+                    + "/v1"
+                )
+                self.model = AI.get("model", "qwen2.5:3b")
+
+                self.client = AsyncOpenAI(
+                    api_key="ollama",
+                    base_url=base_url,
+                    timeout=AI.get("timeout", 120),
+                    max_retries=3,
+                )
+                log_success(
+                    f"✅ [BRAIN:client] Ollama آماده | url={base_url} | "
+                    f"model={self.model}"
+                )
+                return
+
+            base_url = "https://api.deepseek.com/v1"
+            if self.model.startswith("claude"):
+                base_url = "http://localhost:4000"
+            elif self.model.startswith("gpt"):
+                base_url = "https://api.openai.com/v1"
+
+            self.client = AsyncOpenAI(
+                api_key=self.api_key,
+                base_url=base_url,
+                timeout=AI.get("timeout", 120),
+                max_retries=3,
+            )
+            log_success(
+                f"✅ [BRAIN:client] AsyncOpenAI آماده | url={base_url} | "
+                f"priority={priority}"
+            )
+        except Exception as e:
+            log_error(
+                f"❌ [BRAIN:client] خطا | {type(e).__name__}: {e}"
+            )
+            self.client = None
+
+    def set_api_key(self, key: str):
+        self.api_key = key
+        log_info("🔑 [BRAIN:client] api_key تنظیم شد — بازسازی کلاینت")
+        self._init_client()
+
+    # ═══════════════════════════════════════════
+    # پس‌زمینه
+    # ═══════════════════════════════════════════
+    def _background_index(self):
+        try:
+            log_info("📚 [BRAIN:bg] ایندکس پس‌زمینه شروع")
+            self.semantic_search.index_files()
+        except Exception as e:
+            log_warning(
+                f"⚠️ [BRAIN:bg] ایندکس ناموفق | {type(e).__name__}: {e}"
+            )
+
+    # ═══════════════════════════════════════════
+    # ساخت ابزارها
+    # ═══════════════════════════════════════════
+    def _build_tools(self) -> List[Dict]:
+        """ساخت لیست تعریف ابزارها (۴۲ tool) برای OpenAI function calling."""
+        tools = [
+            self._tool_def(
+                "read_file", "خواندن کامل یک فایل (تا ۵ مگ)",
+                {"path": {"type": "string"}}, ["path"],
+            ),
+            self._tool_def(
+                "write_file",
+                "نوشتن یا بازنویسی یک فایل (نیاز به تأیید)",
+                {"path": {"type": "string"}, "content": {"type": "string"}},
+                ["path", "content"],
+            ),
+            self._tool_def(
+                "edit_file",
+                "ویرایش جراحی در یک فایل (نیاز به تأیید)",
+                {
+                    "path": {"type": "string"},
+                    "old_text": {"type": "string"},
+                    "new_text": {"type": "string"},
+                },
+                ["path", "old_text", "new_text"],
+            ),
+            self._tool_def(
+                "list_directory", "لیست محتویات یک پوشه",
+                {"path": {"type": "string", "default": "."}}, [],
+            ),
+            self._tool_def(
+                "delete_file",
+                "حذف امن یک فایل با بکاپ (نیاز به تأیید)",
+                {"path": {"type": "string"}}, ["path"],
+            ),
+            self._tool_def(
+                "move_file", "جابجایی/تغییر نام (نیاز به تأیید)",
+                {
+                    "source": {"type": "string"},
+                    "destination": {"type": "string"},
+                },
+                ["source", "destination"],
+            ),
+            self._tool_def("git_status", "نمایش وضعیت مخزن Git", {}, []),
+            self._tool_def(
+                "git_diff", "نمایش تغییرات Git",
+                {"path": {"type": "string"}}, [],
+            ),
+            self._tool_def(
+                "git_commit", "ثبت commit (نیاز به تأیید)",
+                {"message": {"type": "string"}}, ["message"],
+            ),
+            self._tool_def(
+                "git_log", "نمایش تاریخچه",
+                {"n": {"type": "integer", "default": 10}}, [],
+            ),
+            self._tool_def(
+                "git_branch", "ایجاد/تغییر برنچ (نیاز به تأیید)",
+                {
+                    "name": {"type": "string"},
+                    "action": {
+                        "type": "string",
+                        "enum": ["create", "switch"],
+                    },
+                },
+                ["name"],
+            ),
+            self._tool_def(
+                "execute_command",
+                "اجرای دستور سیستمی (نیاز به تأیید)",
+                {"command": {"type": "string"}}, ["command"],
+            ),
+            self._tool_def(
+                "get_system_info", "اطلاعات سیستم (CPU/RAM/Disk)", {}, []
+            ),
+            self._tool_def(
+                "list_processes", "لیست پردازه‌ها",
+                {"limit": {"type": "integer", "default": 20}}, [],
+            ),
+            self._tool_def(
+                "kill_process",
+                "پایان دادن به پردازه (نیاز به تأیید)",
+                {"pid": {"type": "integer"}}, ["pid"],
+            ),
+            self._tool_def(
+                "ping_host", "تست اتصال به هاست",
+                {"host": {"type": "string"}}, ["host"],
+            ),
+            self._tool_def(
+                "run_tests", "اجرای تست‌ها",
+                {"path": {"type": "string"}}, [],
+            ),
+            self._tool_def(
+                "execute_python",
+                "اجرای کد پایتون در sandbox (نیاز به تأیید)",
+                {"code": {"type": "string"}}, ["code"],
+            ),
+            self._tool_def(
+                "analyze_code", "تحلیل استاتیک با AST",
+                {"path": {"type": "string"}}, ["path"],
+            ),
+            self._tool_def(
+                "semantic_search", "جستجوی معنایی در کد",
+                {
+                    "query": {"type": "string"},
+                    "n_results": {"type": "integer", "default": 5},
+                },
+                ["query"],
+            ),
+            self._tool_def(
+                "grep_search", "جستجو با regex در فایل‌ها",
+                {
+                    "pattern": {"type": "string"},
+                    "file_pattern": {"type": "string", "default": "*.py"},
+                },
+                ["pattern"],
+            ),
+            self._tool_def(
+                "query_database", "کوئری SELECT روی دیتابیس",
+                {
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer", "default": 50},
+                },
+                ["query"],
+            ),
+            self._tool_def(
+                "browse_web", "خواندن متن یک صفحه وب",
+                {"url": {"type": "string"}}, ["url"],
+            ),
+            self._tool_def("clipboard_get", "خواندن کلیپ‌بورد", {}, []),
+            self._tool_def(
+                "zip_archive", "فشرده‌سازی یا باز کردن ZIP",
+                {
+                    "source": {"type": "string"},
+                    "dest": {"type": "string"},
+                    "action": {
+                        "type": "string",
+                        "enum": ["compress", "extract"],
+                        "default": "compress",
+                    },
+                },
+                ["source"],
+            ),
+            self._tool_def(
+                "web_search", "جستجوی وب",
+                {
+                    "query": {"type": "string"},
+                    "num_results": {"type": "integer", "default": 5},
+                },
+                ["query"],
+            ),
+            self._tool_def(
+                "generate_tests", "تولید تست خودکار برای یک فایل",
+                {"path": {"type": "string"}}, ["path"],
+            ),
+            self._tool_def(
+                "code_review", "بازبینی کد",
+                {"path": {"type": "string"}}, ["path"],
+            ),
+            self._tool_def(
+                "fix_bug", "رفع خودکار باگ با پیام خطا",
+                {
+                    "path": {"type": "string"},
+                    "error": {"type": "string"},
+                },
+                ["path", "error"],
+            ),
+            self._tool_def(
+                "plan_task", "برنامه‌ریزی چندمرحله‌ای",
+                {"task": {"type": "string"}}, ["task"],
+            ),
+            self._tool_def(
+                "get_project_context", "اطلاعات زمینهٔ پروژه", {}, []
+            ),
+            self._tool_def("system_dashboard", "داشبورد سیستم", {}, []),
+            self._tool_def(
+                "run_tests_coverage", "تست با پوشش کد",
+                {"path": {"type": "string"}}, ["path"],
+            ),
+            self._tool_def(
+                "analyze_security", "بررسی امنیت با bandit",
+                {"path": {"type": "string"}}, ["path"],
+            ),
+            self._tool_def(
+                "backup_project", "بکاپ کامل پروژه",
+                {
+                    "destination": {
+                        "type": "string",
+                        "description": "نام فایل خروجی (اختیاری)",
+                    }
+                },
+                [],
+            ),
+            self._tool_def(
+                "get_setting", "خواندن تنظیمات از .env",
+                {"key": {"type": "string"}}, ["key"],
+            ),
+            self._tool_def(
+                "set_setting", "تغییر تنظیمات",
+                {
+                    "key": {"type": "string"},
+                    "value": {"type": "string"},
+                },
+                ["key", "value"],
+            ),
+            self._tool_def(
+                "toggle_platform", "روشن/خاموش کردن پلتفرم",
+                {
+                    "platform": {"type": "string"},
+                    "enabled": {"type": "boolean"},
+                },
+                ["platform", "enabled"],
+            ),
+            self._tool_def(
+                "platform_status", "وضعیت پلتفرم",
+                {"platform": {"type": "string", "default": "all"}}, [],
+            ),
+            self._tool_def(
+                "change_poll_interval", "تغییر فاصلهٔ poll",
+                {
+                    "platform": {"type": "string"},
+                    "seconds": {"type": "integer"},
+                },
+                ["platform", "seconds"],
+            ),
+            self._tool_def("get_access_summary", "خلاصهٔ دسترسی‌ها", {}, []),
+        ]
+        return tools
+
+    @staticmethod
+    def _tool_def(
+        name: str, desc: str, props: Dict, required: List[str]
+    ) -> Dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": desc,
+                "parameters": {
+                    "type": "object",
+                    "properties": props,
+                    "required": required,
+                },
+            },
+        }
+
+    # ═══════════════════════════════════════════
+    # ابزار کمکی مسیر/دسترسی
+    # ═══════════════════════════════════════════
+    def _safepath(self, p: str) -> Path:
+        return safe_path(p, Path(PROJECT_BASE))
+
+    def _is_safe_write_path(self, path_str: str) -> bool:
+        ok, reason = get_access_manager().can_write(path_str)
+        if not ok:
+            log_warning(
+                f"⛔ [BRAIN:safe] نوشتن ممنوع | "
+                f"path={path_str} | {reason}"
+            )
+        return ok
+
+    # ═══════════════════════════════════════════
+    # ابزار: read_file
+    # ═══════════════════════════════════════════
+    async def _read_file(self, path: str) -> str:
+        ok, reason = get_access_manager().can_read(path)
+        if not ok:
+            log_warning(
+                f"⛔ [BRAIN:file:read] ممنوع | {path} | {reason}"
+            )
+            return f"⛔ خواندن ممنوع: {reason}"
+        p = self._safepath(path)
+        if not p.exists():
+            log_warning(f"⚠️ [BRAIN:file:read] نبود | {path}")
+            return f"⚠️ فایل '{path}' وجود ندارد."
+        size = p.stat().st_size
+        if size > MAX_FILE_SIZE_BYTES:
+            log_warning(
+                f"⚠️ [BRAIN:file:read] بزرگ | {path} | "
+                f"{human_bytes(size)} > {human_bytes(MAX_FILE_SIZE_BYTES)}"
+            )
+            return (
+                f"⚠️ فایل بزرگتر از "
+                f"{human_bytes(MAX_FILE_SIZE_BYTES)} است."
+            )
+        try:
+            content = p.read_text(encoding="utf-8")
+            self.last_read_file = path
+            log_info(
+                f"📄 [BRAIN:file:read] ✅ {path} | "
+                f"{len(content)}ch | {human_bytes(size)}"
+            )
+            if len(content) > MAX_CONTENT_LENGTH:
+                return (
+                    f"📄 {path} ({len(content)} کاراکتر)\n"
+                    f"{content[:MAX_CONTENT_LENGTH]}\n"
+                    f"... [ادامه در فایل اصلی]"
+                )
+            return f"📄 {path} ({len(content)} کاراکتر)\n{content}"
+        except UnicodeDecodeError:
+            log_warning(f"⚠️ [BRAIN:file:read] باینری | {path}")
+            return f"⚠️ فایل باینری: {path} ({human_bytes(size)})"
+        except Exception as e:
+            log_error(
+                f"❌ [BRAIN:file:read] {path} | "
+                f"{type(e).__name__}: {e}"
+            )
+            return f"❌ خطا: {e}"
+
+    # ═══════════════════════════════════════════
+    # ابزار: write_file
+    # ═══════════════════════════════════════════
+    async def _write_file(self, path: str, content: str) -> str:
+        if self.read_only:
+            log_warning(f"⛔ [BRAIN:file:write] read_only | {path}")
+            return "⛔ حالت فقط‌خواندنی"
+        if len(content) > MAX_CONTENT_LENGTH * 5:
+            log_warning(
+                f"⚠️ [BRAIN:file:write] محتوا بزرگ | {path} | "
+                f"{len(content)}ch"
+            )
+            return "⚠️ محتوا خیلی بزرگ است."
+
+        p = self._safepath(path)
+        backup = None
+        if p.exists():
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup = BACKUP_DIR / f"{p.stem}_{ts}{p.suffix}"
+            try:
+                shutil.copy2(p, backup)
+            except Exception as e:
+                log_error(
+                    f"❌ [BRAIN:file:write] بکاپ ناموفق | "
+                    f"{path} | {e}"
+                )
+                return f"❌ بکاپ ناموفق: {e}"
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content, encoding="utf-8")
+            msg = f"✅ فایل '{path}' نوشته شد ({len(content)} کاراکتر)"
+            if backup:
+                msg += f"\n📦 بکاپ: {backup.name}"
+            log_success(
+                f"✅ [BRAIN:file:write] {path} | {len(content)}ch | "
+                f"backup={'✅' if backup else '—'}"
+            )
+            return msg
+        except Exception as e:
+            if backup and backup.exists():
+                try:
+                    shutil.copy2(backup, p)
+                    log_info(
+                        f"♻️ [BRAIN:file:write] rollback از "
+                        f"{backup.name}"
+                    )
+                except Exception as e2:
+                    log_error(
+                        f"❌ [BRAIN:file:write] rollback ناموفق | "
+                        f"{type(e2).__name__}: {e2}"
+                    )
+            log_error(
+                f"❌ [BRAIN:file:write] {path} | "
+                f"{type(e).__name__}: {e}"
+            )
+            return f"❌ خطا (بازیابی شد): {e}"
+
+    # ═══════════════════════════════════════════
+    # ابزار: edit_file
+    # ═══════════════════════════════════════════
+    async def _edit_file(
+        self, path: str, old_text: str, new_text: str
+    ) -> str:
+        if self.read_only:
+            return "⛔ حالت فقط‌خواندنی"
+        p = self._safepath(path)
+        if not p.exists():
+            log_warning(f"⚠️ [BRAIN:file:edit] نبود | {path}")
+            return f"⚠️ فایل '{path}' وجود ندارد."
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup = BACKUP_DIR / f"{p.stem}_{ts}{p.suffix}"
+        try:
+            shutil.copy2(p, backup)
+            content = p.read_text(encoding="utf-8")
+            if old_text not in content:
+                log_warning(
+                    f"⚠️ [BRAIN:file:edit] متن قدیمی نیافتم | {path}"
+                )
+                return "⚠️ متن قدیمی در فایل یافت نشد."
+            new_content = content.replace(old_text, new_text, 1)
+            p.write_text(new_content, encoding="utf-8")
+            diff = "".join(
+                list(
+                    difflib.unified_diff(
+                        content.splitlines(keepends=True),
+                        new_content.splitlines(keepends=True),
+                        fromfile=f"a/{path}",
+                        tofile=f"b/{path}",
+                        lineterm="",
+                    )
+                )[:30]
+            )
+            log_success(
+                f"✏️ [BRAIN:file:edit] {path} | "
+                f"Δ={len(new_content) - len(content):+d}ch | "
+                f"backup={backup.name}"
+            )
+            return (
+                f"✅ ویرایش شد.\n"
+                f"📦 بکاپ: {backup.name}\n"
+                f"📊 {diff[:2000]}"
+            )
+        except Exception as e:
+            if backup.exists():
+                try:
+                    shutil.copy2(backup, p)
+                except Exception as e2:
+                    log_error(
+                        f"❌ [BRAIN:file:edit] rollback | {e2}"
+                    )
+            log_error(
+                f"❌ [BRAIN:file:edit] {path} | "
+                f"{type(e).__name__}: {e}"
+            )
+            return f"❌ خطا (بازیابی شد): {e}"
+
+    # ═══════════════════════════════════════════
+    # ابزار: list_directory
+    # ═══════════════════════════════════════════
+    async def _list_directory(self, path: str = ".") -> str:
+        p = self._safepath(path)
+        if not p.exists():
+            log_warning(f"⚠️ [BRAIN:file:list] نبود | {path}")
+            return f"⚠️ مسیر '{path}' وجود ندارد."
+        items = []
+        for item in sorted(p.iterdir()):
+            try:
+                st = item.stat()
+                icon = "📁" if item.is_dir() else "📄"
+                size = (
+                    "<DIR>" if item.is_dir() else human_bytes(st.st_size)
+                )
+                mtime = datetime.fromtimestamp(st.st_mtime).strftime(
+                    "%Y-%m-%d %H:%M"
+                )
+                items.append(
+                    f"{icon} {item.name:<30} {size:>12}  {mtime}"
+                )
+            except Exception:
+                continue
+        log_info(f"📂 [BRAIN:file:list] {path} | items={len(items)}")
+        return "\n".join(items) or "📭 پوشه خالی است."
+
+    # ═══════════════════════════════════════════
+    # ابزار: delete_file
+    # ═══════════════════════════════════════════
+    async def _delete_file(self, path: str) -> str:
+        if self.read_only:
+            return "⛔ حالت فقط‌خواندنی"
+        p = self._safepath(path)
+        if not p.exists():
+            return f"⚠️ فایل '{path}' وجود ندارد."
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup = BACKUP_DIR / f"{p.stem}_{ts}{p.suffix}"
+        try:
+            shutil.copy2(p, backup)
+            os.remove(p)
+            log_success(
+                f"🗑️ [BRAIN:file:delete] {path} | backup={backup.name}"
+            )
+            return f"✅ حذف شد. 📦 بکاپ: {backup.name}"
+        except Exception as e:
+            log_error(
+                f"❌ [BRAIN:file:delete] {path} | "
+                f"{type(e).__name__}: {e}"
+            )
+            return f"❌ خطا: {e}"
+
+    # ═══════════════════════════════════════════
+    # ابزار: move_file
+    # ═══════════════════════════════════════════
+    async def _move_file(self, source: str, destination: str) -> str:
+        if self.read_only:
+            return "⛔ حالت فقط‌خواندنی"
+        src = self._safepath(source)
+        dst = self._safepath(destination)
+        if not src.exists():
+            return f"⚠️ '{source}' وجود ندارد."
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(src, dst)
+            log_success(
+                f"📦 [BRAIN:file:move] {source} → {destination}"
+            )
+            return f"✅ {source} → {destination}"
+        except Exception as e:
+            log_error(
+                f"❌ [BRAIN:file:move] {source} → {destination} | "
+                f"{type(e).__name__}: {e}"
+            )
+            return f"❌ خطا: {e}"
+
+    # ═══════════════════════════════════════════
+    # Git
+    # ═══════════════════════════════════════════
+    async def _git_status(self) -> str:
+        try:
+            r = subprocess.run(
+                ["git", "status", "--porcelain"],
+                capture_output=True, text=True, cwd=PROJECT_BASE,
+            )
+            log_info("🔀 [BRAIN:git:status] ok")
+            return r.stdout or "✅ Working tree clean"
+        except Exception as e:
+            log_error(f"❌ [BRAIN:git:status] {type(e).__name__}: {e}")
+            return f"❌ خطا: {e}"
+
+    async def _git_diff(self, path: str = "") -> str:
+        try:
+            cmd = ["git", "diff"] + (["--", path] if path else [])
+            r = subprocess.run(
+                cmd, capture_output=True, text=True, cwd=PROJECT_BASE
+            )
+            log_info(
+                f"🔀 [BRAIN:git:diff] path={path or '—'} | "
+                f"lines={len(r.stdout.splitlines())}"
+            )
+            return r.stdout[:MAX_CONTENT_LENGTH] or "✅ بدون تغییر"
+        except Exception as e:
+            log_error(f"❌ [BRAIN:git:diff] {type(e).__name__}: {e}")
+            return f"❌ خطا: {e}"
+
+    async def _git_commit(self, message: str) -> str:
+        if self.read_only:
+            return "⛔ حالت فقط‌خواندنی"
+        try:
+            subprocess.run(
+                ["git", "add", "."], cwd=PROJECT_BASE, check=True,
+                capture_output=True,
+            )
+            r = subprocess.run(
+                ["git", "commit", "-m", message],
+                capture_output=True, text=True, cwd=PROJECT_BASE,
+            )
+            log_success(
+                f"✅ [BRAIN:git:commit] "
+                f"{message[:_LOG_PREVIEW_LEN]!r}"
+            )
+            return r.stdout[:2000] or "✅ Commit انجام شد."
+        except Exception as e:
+            log_error(
+                f"❌ [BRAIN:git:commit] {type(e).__name__}: {e}"
+            )
+            return f"❌ خطا: {e}"
+
+    async def _git_log(self, n: int = 10) -> str:
+        try:
+            r = subprocess.run(
+                ["git", "log", f"-{n}", "--oneline", "--decorate"],
+                capture_output=True, text=True, cwd=PROJECT_BASE,
+            )
+            log_info(f"🔀 [BRAIN:git:log] n={n}")
+            return r.stdout or "📭 هیچ کامیتی یافت نشد."
+        except Exception as e:
+            log_error(f"❌ [BRAIN:git:log] {type(e).__name__}: {e}")
+            return f"❌ خطا: {e}"
+
+    async def _git_branch(self, name: str, action: str = "create") -> str:
+        if self.read_only:
+            return "⛔ حالت فقط‌خواندنی"
+        try:
+            cmd = (
+                ["git", "checkout", "-b", name]
+                if action == "create"
+                else ["git", "checkout", name]
+            )
+            r = subprocess.run(
+                cmd, capture_output=True, text=True, cwd=PROJECT_BASE
+            )
+            log_success(f"✅ [BRAIN:git:branch] {action} → {name}")
+            return r.stdout[:2000] or f"✅ برنچ {name}"
+        except Exception as e:
+            log_error(
+                f"❌ [BRAIN:git:branch] {type(e).__name__}: {e}"
+            )
+            return f"❌ خطا: {e}"
+
+    # ═══════════════════════════════════════════
+    # execute_command
+    # ═══════════════════════════════════════════
+    async def _execute_command(self, command: str) -> str:
+        if self.read_only:
+            return "⛔ حالت فقط‌خواندنی"
+        ok, reason = get_access_manager().can_run_command(command)
+        if not ok:
+            log_warning(
+                f"⛔ [BRAIN:exec] ممنوع | cmd={command[:80]!r} | {reason}"
+            )
+            return f"⛔ دستور ممنوع: {reason}"
+
+        access = _load_access()
+        cmd = command.strip()
+        cmd_lower = cmd.lower()
+
+        for denied in access.get("execute", {}).get("deny", []):
+            if denied.lower() in cmd_lower:
+                log_warning(f"⛔ [BRAIN:exec] deny | {denied!r}")
+                return f"⛔ دستور ممنوعه: {denied}"
+
+        allowed = access.get("execute", {}).get("allow", [])
+        if allowed and not any(
+            cmd_lower.startswith(a.lower()) for a in allowed
+        ):
+            log_warning(
+                f"⛔ [BRAIN:exec] not whitelisted | {cmd[:40]!r}"
+            )
+            return f"⛔ دستور '{cmd[:40]}' در whitelist نیست."
+
+        try:
+            timeout = access.get("safety", {}).get(
+                "max_command_timeout_sec", _DEFAULT_TIMEOUT_S
+            )
+            t0 = time.monotonic()
+            r = subprocess.run(
+                cmd, shell=True, capture_output=True, text=True,
+                timeout=timeout, encoding="utf-8", errors="replace",
+                cwd=PROJECT_BASE,
+            )
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            out = (r.stdout or "") + (r.stderr or "")
+            out = _sanitize_console_output(out)
+            log_info(
+                f"⚡ [BRAIN:exec] {cmd[:_LOG_PREVIEW_LEN]!r} | "
+                f"rc={r.returncode} | {elapsed_ms:.0f}ms | "
+                f"out={len(out)}ch"
+            )
+            return out[:MAX_CONTENT_LENGTH] or "(اجرا شد - بدون خروجی)"
+        except subprocess.TimeoutExpired:
+            log_warning(f"⏰ [BRAIN:exec] timeout | {cmd[:80]!r}")
+            return "⏰ زمان اجرا به پایان رسید."
+        except Exception as e:
+            log_error(f"❌ [BRAIN:exec] {type(e).__name__}: {e}")
+            return f"❌ خطا: {e}"
+
+    # ═══════════════════════════════════════════
+    # System / processes / ping
+    # ═══════════════════════════════════════════
+    async def _get_system_info(self) -> str:
+        try:
+            import psutil
+            cpu = psutil.cpu_percent(interval=0.3)
+            ram = psutil.virtual_memory()
+            disk_path = "C:\\" if os.name == "nt" else "/"
+            disk = psutil.disk_usage(disk_path)
+            boot = datetime.fromtimestamp(psutil.boot_time())
+            log_info(
+                f"💻 [BRAIN:sys] cpu={cpu}% ram={ram.percent}% "
+                f"disk={disk.percent}%"
+            )
+            return (
+                f"🔹 CPU: {cpu}%\n"
+                f"🔹 RAM: {ram.percent}% "
+                f"({human_bytes(ram.used)} / {human_bytes(ram.total)})\n"
+                f"🔹 دیسک: {disk.percent}% "
+                f"({human_bytes(disk.used)} / {human_bytes(disk.total)})\n"
+                f"🔹 پردازه‌ها: {len(psutil.pids())}\n"
+                f"🔹 روشن از: {boot.strftime('%Y-%m-%d %H:%M')}\n"
+                f"🔹 سیستم: {platform.system()} {platform.release()}"
+            )
+        except ImportError:
+            log_warning("⚠️ [BRAIN:sys] psutil نصب نیست")
+            return (
+                f"🔹 سیستم: {platform.system()} {platform.release()}\n"
+                f"🔹 (psutil نصب نیست)"
+            )
+        except Exception as e:
+            log_error(f"❌ [BRAIN:sys] {type(e).__name__}: {e}")
+            return f"❌ خطا: {e}"
+
+    async def _list_processes(self, limit: int = 20) -> str:
+        try:
+            import psutil
+            procs = []
+            for p in psutil.process_iter(
+                ["pid", "name", "cpu_percent", "memory_percent"]
+            ):
+                try:
+                    procs.append(p.info)
+                except Exception:
+                    continue
+            procs.sort(
+                key=lambda x: x.get("cpu_percent", 0), reverse=True
+            )
+            lines = [
+                f"{p['pid']:>6}  {p['name'][:25]:<25} "
+                f"CPU:{p.get('cpu_percent',0):>5.1f}% "
+                f"MEM:{p.get('memory_percent',0):>5.1f}%"
+                for p in procs[:limit]
+            ]
+            log_info(
+                f"🔍 [BRAIN:proc] {len(procs)} پروسه | limit={limit}"
+            )
+            return "\n".join(lines) or "📭 پردازه‌ای نیست."
+        except ImportError:
+            return "⚠️ psutil نصب نیست."
+        except Exception as e:
+            log_error(f"❌ [BRAIN:proc] {type(e).__name__}: {e}")
+            return f"❌ خطا: {e}"
+
+    async def _kill_process(self, pid: int) -> str:
+        if self.read_only:
+            return "⛔ حالت فقط‌خواندنی"
+        try:
+            import psutil
+            p = psutil.Process(pid)
+            name = p.name()
+            p.terminate()
+            time.sleep(1)
+            if p.is_running():
+                p.kill()
+            log_success(f"✅ [BRAIN:kill] pid={pid} name={name}")
+            return f"✅ پردازه {pid} ({name}) کشته شد."
+        except ImportError:
+            return "⚠️ psutil نصب نیست."
+        except Exception as e:
+            log_error(
+                f"❌ [BRAIN:kill] pid={pid} | "
+                f"{type(e).__name__}: {e}"
+            )
+            return f"❌ خطا: {e}"
+
+    async def _ping_host(self, host: str) -> str:
+        try:
+            param = "-n" if os.name == "nt" else "-c"
+            r = subprocess.run(
+                ["ping", param, "2", host],
+                capture_output=True, text=True, timeout=10,
+            )
+            log_info(f"📡 [BRAIN:ping] host={host}")
+            return r.stdout[:3000] or f"✅ {host} پاسخ داد."
+        except Exception as e:
+            log_error(
+                f"❌ [BRAIN:ping] {host} | {type(e).__name__}: {e}"
+            )
+            return f"❌ خطا: {e}"
+
+    # ═══════════════════════════════════════════
+    # Tests
+    # ═══════════════════════════════════════════
+    async def _run_tests(self, path: str = "") -> str:
+        try:
+            cmd = (
+                f"python -m pytest {path} -v --tb=short -x"
+                if path
+                else "python -m pytest -v --tb=short -x"
+            )
+            t0 = time.monotonic()
+            r = subprocess.run(
+                cmd, shell=True, capture_output=True, text=True,
+                timeout=_TESTS_TIMEOUT_S, cwd=PROJECT_BASE,
+            )
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            log_info(
+                f"🧪 [BRAIN:test] path={path or 'all'} | "
+                f"rc={r.returncode} | {elapsed_ms:.0f}ms"
+            )
+            return (
+                r.stdout[:4000]
+                or r.stderr[:4000]
+                or "✅ تست‌ها اجرا شدند."
+            )
+        except subprocess.TimeoutExpired:
+            log_warning("⏰ [BRAIN:test] timeout")
+            return "⏰ زمان تست به پایان رسید."
+        except Exception as e:
+            log_error(f"❌ [BRAIN:test] {type(e).__name__}: {e}")
+            return f"❌ خطا: {e}"
+
+    async def _run_tests_with_coverage(self, path: str) -> str:
+        try:
+            cmd = f"pytest {path} --cov=. --cov-report=html"
+            r = subprocess.run(
+                cmd, shell=True, capture_output=True, text=True,
+                timeout=_PYTEST_COVERAGE_TIMEOUT_S, cwd=PROJECT_BASE,
+            )
+            log_success(
+                f"✅ [BRAIN:test:cov] {path} | گزارش در htmlcov/"
+            )
+            return (
+                f"✅ گزارش پوشش کد در htmlcov/ ذخیره شد.\n"
+                f"{r.stdout[:4000]}"
+            )
+        except Exception as e:
+            log_error(
+                f"❌ [BRAIN:test:cov] {type(e).__name__}: {e}"
+            )
+            return f"❌ خطا: {e}"
+
+    async def _analyze_security(self, path: str) -> str:
+        try:
+            r = subprocess.run(
+                ["bandit", "-r", path, "-f", "txt"],
+                capture_output=True, text=True,
+                timeout=_BANDIT_TIMEOUT_S,
+            )
+            log_info(f"🔒 [BRAIN:security] {path}")
+            return (
+                r.stdout
+                or "✅ هیچ آسیب‌پذیری با ریسک بالا یافت نشد."
+            )
+        except FileNotFoundError:
+            log_warning("⚠️ [BRAIN:security] bandit نصب نیست")
+            return "⚠️ bandit نصب نیست. برای نصب: pip install bandit"
+        except subprocess.TimeoutExpired:
+            return "⏰ زمان بررسی امنیت به پایان رسید."
+        except Exception as e:
+            log_error(
+                f"❌ [BRAIN:security] {type(e).__name__}: {e}"
+            )
+            return f"❌ خطا: {e}"
+
+    # ═══════════════════════════════════════════
+    # Backup / execute_python / analyze_code
+    # ═══════════════════════════════════════════
+    async def _backup_project(self, destination: str = None) -> str:
+        if self.read_only:
+            return "⛔ حالت فقط‌خواندنی فعال است"
+        if not destination:
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            destination = f"Project_Backup_{ts}.zip"
+        try:
+            dest_path = self._safepath(destination)
+            t0 = time.monotonic()
+            shutil.make_archive(
+                str(dest_path).replace(".zip", ""), "zip", PROJECT_BASE
+            )
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            size = os.path.getsize(dest_path) if dest_path.exists() else 0
+            log_success(
+                f"💾 [BRAIN:backup] {dest_path.name} | "
+                f"{human_bytes(size)} | {elapsed_ms:.0f}ms"
+            )
+            return f"✅ بکاپ کامل پروژه در {dest_path} ذخیره شد."
+        except Exception as e:
+            log_error(f"❌ [BRAIN:backup] {type(e).__name__}: {e}")
+            return f"❌ خطا در بکاپ‌گیری: {e}"
+
+    async def _execute_python(self, code: str) -> str:
+        """اجرای کد پایتون در sandbox.
+
+        دو لایه امنیتی:
+          ۱) regex: الگوهای خطرناک (شبکه، subprocess، eval، ...)
+          ۲) SAFE_PREAMBLE: patch کردن builtins.open + pathlib محدود به
+             storage/reports/ (مثل manual_brain._handle_python_command)
+        """
+        # ─── لایه ۱: regex ───
+        dangerous_patterns = [
+            # سیستم
+            r"\bos\.(system|popen|fork|exec|spawn|remove|unlink"
+            r"|rmdir|rename|chmod|chown|makedirs|mkdir)\b",
+            r"\bsubprocess\b",
+            r"\bpty\.spawn\b",
+            r"\bmultiprocessing\b",
+            # eval/exec
+            r"\b__import__\b",
+            r"\beval\b",
+            r"\bexec\b",
+            r"\bcompile\b",
+            # shutil
+            r"\bshutil\.(rmtree|remove|move|copy|copy2|copyfile"
+            r"|disk_usage)\b",
+            # pathlib write (لایه ۲ هم دارد)
+            r"\.write_text\b",
+            r"\.write_bytes\b",
+            r"\.touch\b",
+            r"\.unlink\b",
+            r"\.rmdir\b",
+            r"\.mkdir\b",
+            # file system
+            r"\bopen\s*\(",
+            r"\bio\.open\b",
+            r"\bpathlib\b",
+            # import dynamic
+            r"\bimportlib\b",
+            r"\bsys\.modules\b",
+            # network
+            r"\bsocket\b",
+            r"\brequests\b",
+            r"\burllib\b",
+            r"\bhttpx\b",
+            # env
+            r"\bos\.environ\b",
+            r"\bos\.putenv\b",
+        ]
+        for pat in dangerous_patterns:
+            if re.search(pat, code, re.IGNORECASE):
+                log_warning(
+                    f"⛔ [BRAIN:py] الگوی خطرناک | {pat} | "
+                    f"code={code[:60]!r}"
+                )
+                return f"⛔ کد شامل عملیات خطرناک است: {pat}"
+
+        # ─── لایه ۲: sandbox با SAFE_PREAMBLE ───
+        full_code = _SAFE_PREAMBLE + "\n" + code
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(full_code)
+            tmp = f.name
+        try:
+            t0 = time.monotonic()
+            r = subprocess.run(
+                [sys.executable, tmp],
+                capture_output=True, text=True,
+                timeout=_PY_EXEC_TIMEOUT_S,
+                cwd=PROJECT_BASE,
+            )
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            out = (r.stdout or "") + (r.stderr or "")
+            out = _sanitize_console_output(out)
+            log_info(
+                f"🐍 [BRAIN:py] rc={r.returncode} | "
+                f"{elapsed_ms:.0f}ms"
+            )
+            return out[:MAX_CONTENT_LENGTH] or "(اجرا شد - بدون خروجی)"
+        except subprocess.TimeoutExpired:
+            log_warning("⏰ [BRAIN:py] timeout")
+            return "⏰ زمان اجرا به پایان رسید."
+        except Exception as e:
+            log_error(f"❌ [BRAIN:py] {type(e).__name__}: {e}")
+            return f"❌ خطا: {e}"
+        finally:
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
+
+    async def _analyze_code(self, path: str) -> str:
+        p = self._safepath(path)
+        try:
+            tree = ast.parse(p.read_text(encoding="utf-8"))
+            funcs = [
+                n.name for n in ast.walk(tree)
+                if isinstance(n, ast.FunctionDef)
+            ]
+            classes = [
+                n.name for n in ast.walk(tree)
+                if isinstance(n, ast.ClassDef)
+            ]
+            imports = [
+                n.names[0].name for n in ast.walk(tree)
+                if isinstance(n, ast.Import)
+            ]
+            imports_from = []
+            for n in ast.walk(tree):
+                if isinstance(n, ast.ImportFrom) and n.module:
+                    imports_from.append(n.module)
+            log_info(
+                f"🔬 [BRAIN:analyze] {path} | "
+                f"funcs={len(funcs)} classes={len(classes)} "
+                f"imports={len(imports)}"
+            )
+            return (
+                f"📊 تحلیل کد {path}:\n"
+                f"🔹 توابع ({len(funcs)}): "
+                f"{', '.join(funcs[:15]) or 'ندارد'}\n"
+                f"🔹 کلاس‌ها ({len(classes)}): "
+                f"{', '.join(classes[:10]) or 'ندارد'}\n"
+                f"🔹 ایمپورت‌ها ({len(imports)+len(imports_from)}): "
+                f"{', '.join(imports[:10] + imports_from[:10]) or 'ندارد'}"
+            )
+        except SyntaxError as e:
+            log_warning(f"⚠️ [BRAIN:analyze] نحوی | {path} | {e}")
+            return f"❌ خطای نحوی: {e}"
+        except Exception as e:
+            log_error(
+                f"❌ [BRAIN:analyze] {path} | "
+                f"{type(e).__name__}: {e}"
+            )
+            return f"❌ خطا: {e}"
+
+    # ═══════════════════════════════════════════
+    # Semantic / grep / db
+    # ═══════════════════════════════════════════
+    async def _semantic_search(
+        self, query: str, n_results: int = 5
+    ) -> str:
+        res = self.semantic_search.search(query, n_results)
+        log_info(f"🔍 [BRAIN:sem] q={query[:60]!r} | hits={len(res)}")
+        if not res:
+            return "🔍 نتیجه‌ای یافت نشد."
+        lines = []
+        for r in res:
+            lines.append(f"📄 {r['path']}")
+            lines.append(f"   {r['content'][:200]}...")
+        return "\n".join(lines)
+
+    async def _grep_search(
+        self, pattern: str, file_pattern: str = "*.py"
+    ) -> str:
+        results = []
+        for fpath in glob.glob(
+            f"**/{file_pattern}", root_dir=PROJECT_BASE, recursive=True
+        ):
+            try:
+                full = Path(PROJECT_BASE) / fpath
+                with open(full, "r", encoding="utf-8") as f:
+                    for i, line in enumerate(f, 1):
+                        if re.search(pattern, line, re.IGNORECASE):
+                            results.append(
+                                f"{fpath}:{i}: {line.strip()[:80]}"
+                            )
+                            if len(results) >= 30:
+                                break
+            except Exception:
+                continue
+        log_info(
+            f"🔎 [BRAIN:grep] pattern={pattern[:60]!r} | "
+            f"file_pattern={file_pattern} | hits={len(results)}"
+        )
+        return "\n".join(results) or "🔍 چیزی یافت نشد."
+
+    async def _query_database(
+        self, query: str, limit: int = 50
+    ) -> str:
+        """اجرای کوئری SELECT روی دیتابیس."""
+        ok, reason = get_access_manager().can_query_db(query)
+        if not ok:
+            log_warning(f"⛔ [BRAIN:db] ممنوع | {reason}")
+            return f"⛔ کوئری ممنوع: {reason}"
+        q_upper = query.strip().upper()
+        if not q_upper.startswith("SELECT"):
+            return "⛔ فقط کوئری SELECT مجاز است."
+        if not self.db:
+            return "⚠️ دیتابیس متصل نیست."
+        try:
+            t0 = time.monotonic()
+            rows = await self.db.execute(query)
+            # 🐛 FIX: حذف چک بیهودهٔ `if not rows` چون _QueryResult
+            # همیشه truthy است — مستقیم fetchall.
+            all_rows = await rows.fetchall()
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            if not all_rows:
+                log_info(f"📊 [BRAIN:db] {query[:60]!r} | خالی")
+                return "📭 نتیجه‌ای یافت نشد."
+            log_info(
+                f"📊 [BRAIN:db] {query[:60]!r} | "
+                f"rows={len(all_rows)} | {elapsed_ms:.0f}ms"
+            )
+            lines = ["📊 نتایج کوئری:"]
+            for row in all_rows[:limit]:
+                lines.append(" | ".join(str(c) for c in row))
+            if len(all_rows) > limit:
+                lines.append(
+                    f"... و {len(all_rows) - limit} نتیجه دیگر"
+                )
+            return "\n".join(lines)
+        except Exception as e:
+            log_error(f"❌ [BRAIN:db] {type(e).__name__}: {e}")
+            return f"❌ خطا در کوئری: {e}"
+
+    # ═══════════════════════════════════════════
+    # Web / clipboard / zip
+    # ═══════════════════════════════════════════
+    async def _browse_web(self, url: str) -> str:
+        try:
+            import requests
+            from bs4 import BeautifulSoup
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36"
+                )
+            }
+            t0 = time.monotonic()
+            r = requests.get(url, headers=headers, timeout=15)
+            r.raise_for_status()
+            soup = BeautifulSoup(r.text, "html.parser")
+            for tag in soup(
+                ["script", "style", "nav", "footer", "header", "noscript"]
+            ):
+                tag.decompose()
+            text = soup.get_text(separator="\n", strip=True)
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            log_info(
+                f"🌐 [BRAIN:web:browse] {url} | "
+                f"{len(text)}ch | {elapsed_ms:.0f}ms"
+            )
+            return text[:5000] or "📄 محتوای خالی"
+        except ImportError:
+            return "⚠️ کتابخانه requests/bs4 نصب نیست."
+        except Exception as e:
+            log_error(
+                f"❌ [BRAIN:web:browse] {url} | "
+                f"{type(e).__name__}: {e}"
+            )
+            return f"❌ خطا: {e}"
+
+    async def _clipboard_get(self) -> str:
+        try:
+            import pyperclip
+            content = pyperclip.paste()[:2000]
+            log_info(f"📋 [BRAIN:clipboard] {len(content)}ch")
+            return f"📋 کلیپ‌بورد:\n{content}"
+        except ImportError:
+            return "⚠️ pyperclip نصب نیست."
+        except Exception as e:
+            log_error(
+                f"❌ [BRAIN:clipboard] {type(e).__name__}: {e}"
+            )
+            return f"❌ خطا: {e}"
+
+    async def _zip_archive(
+        self, source: str, dest: str = "", action: str = "compress"
+    ) -> str:
+        src = self._safepath(source)
+        if not src.exists():
+            return f"⚠️ '{source}' وجود ندارد."
+        if action == "compress":
+            if not dest:
+                dest = f"{src.name}.zip"
+            dst = self._safepath(dest)
+            try:
+                shutil.make_archive(
+                    str(dst).replace(".zip", ""), "zip", src
+                )
+                log_success(f"✅ [BRAIN:zip] فشرده → {dest}")
+                return f"✅ آرشیو {dest} ایجاد شد."
+            except Exception as e:
+                log_error(f"❌ [BRAIN:zip] {type(e).__name__}: {e}")
+                return f"❌ خطا: {e}"
+        else:
+            if not dest:
+                dest = str(src.parent / src.stem)
+            dst = self._safepath(dest)
+            try:
+                with zipfile.ZipFile(src, "r") as z:
+                    z.extractall(dst)
+                log_success(f"✅ [BRAIN:zip] باز → {dest}")
+                return f"✅ آرشیو در {dest} باز شد."
+            except Exception as e:
+                log_error(f"❌ [BRAIN:zip] {type(e).__name__}: {e}")
+                return f"❌ خطا: {e}"
+
+    # ═══════════════════════════════════════════
+    # Delegate wrappers
+    # ═══════════════════════════════════════════
+    async def _web_search(
+        self, query: str, num_results: int = 5
+    ) -> str:
+        if self.web_search:
+            return await self.web_search.search(query, num_results)
+        return "❌ جستجوی وب غیرفعال است."
+
+    async def _generate_tests(self, path: str) -> str:
+        if self.test_gen:
+            return await self.test_gen.generate_tests(path)
+        return "❌ تولید تست غیرفعال است."
+
+    async def _code_review(self, path: str) -> str:
+        if self.reviewer:
+            return await self.reviewer.review(path)
+        return "❌ بازبینی کد غیرفعال است."
+
+    async def _fix_bug(self, path: str, error: str) -> str:
+        if self.healer:
+            return await self.healer.fix_bug(path, error)
+        return "❌ خودترمیمی غیرفعال است."
+
+    async def _plan_task(self, task: str) -> str:
+        if self.planner:
+            return await self.planner.execute_plan(task)
+        return "❌ برنامه‌ریزی غیرفعال است."
+
+    async def _get_project_context(self) -> str:
+        project = Path(PROJECT_BASE)
+        info = f"📂 پروژه: {project}\n"
+        try:
+            if self.semantic_search.collection:
+                items = len(
+                    self.semantic_search.collection.get().get("ids", [])
+                )
+                info += f"🔹 تعداد فایل‌های پایتون: {items}\n"
+                info += "🔹 حافظه معنایی: فعال\n"
+            else:
+                info += "🔹 تعداد فایل‌های پایتون: ?\n"
+                info += "🔹 حافظه معنایی: غیرفعال\n"
+        except Exception as e:
+            log_warning(
+                f"⚠️ [BRAIN:ctx] semantic | {type(e).__name__}: {e}"
+            )
+            info += "🔹 حافظه معنایی: خطا در خواندن\n"
+        return info
+
+    async def _system_dashboard(self) -> str:
+        try:
+            import psutil
+            cpu = psutil.cpu_percent(interval=0.3)
+            ram = psutil.virtual_memory()
+            disk_path = "C:\\" if os.name == "nt" else "/"
+            disk = psutil.disk_usage(disk_path)
+            uptime = time.time() - psutil.boot_time()
+            return f"""
+📊 داشبورد:
+─────────────────
+CPU: {cpu}%
+RAM: {ram.used / (1024**3):.1f}GB / {ram.total / (1024**3):.1f}GB ({ram.percent}%)
+دیسک: {disk.used / (1024**3):.1f}GB / {disk.total / (1024**3):.1f}GB ({disk.percent}%)
+پردازه: {len(psutil.pids())}
+آپ‌تایم: {int(uptime // 3600)} ساعت {int((uptime % 3600) // 60)} دقیقه
+"""
+        except ImportError:
+            return "⚠️ psutil نصب نیست."
+        except Exception as e:
+            log_error(
+                f"❌ [BRAIN:dashboard] {type(e).__name__}: {e}"
+            )
+            return f"❌ خطا: {e}"
+
+    # ═══════════════════════════════════════════
+    # Settings / platform
+    # ═══════════════════════════════════════════
+    async def _get_setting(self, key: str) -> str:
+        ok, reason = get_access_manager().can_read_setting(key.upper())
+        if not ok:
+            return f"⛔ {reason}"
+        val = os.getenv(key.upper(), "(تنظیم‌نشده)")
+        log_info(f"⚙️ [BRAIN:setting:get] {key.upper()}")
+        return f"⚙️ {key.upper()} = {val}"
+
+    async def _set_setting(self, key: str, value: str) -> str:
+        key_u = key.upper()
+        ok, reason = get_access_manager().can_write_setting(key_u)
+        if not ok:
+            return f"⛔ {reason}"
+        tmp_path = ""
+        try:
+            env_path = os.path.join(PROJECT_BASE, ".env")
+            tmp_path = env_path + ".tmp"
+            lines = []
+            if os.path.exists(env_path):
+                with open(env_path, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+            found = False
+            for i, ln in enumerate(lines):
+                if ln.strip().startswith(f"{key_u}="):
+                    lines[i] = f"{key_u}={value}\n"
+                    found = True
+                    break
+            if not found:
+                if lines and not lines[-1].endswith("\n"):
+                    lines[-1] += "\n"
+                lines.append(f"{key_u}={value}\n")
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.writelines(lines)
+            os.replace(tmp_path, env_path)
+            log_success(f"✅ [BRAIN:setting:set] {key_u}={value}")
+            return (
+                f"✅ {key_u}={value} ذخیره شد.\n"
+                f"(برای اعمالِ کامل، ری‌استارت کن.)"
+            )
+        except Exception as e:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+            log_error(
+                f"❌ [BRAIN:setting:set] {type(e).__name__}: {e}"
+            )
+            return f"❌ خطا: {e}"
+
+    async def _toggle_platform(
+        self, platform: str, enabled: bool
+    ) -> str:
+        ok, reason = get_access_manager().can_toggle_platform(platform)
+        if not ok:
+            return f"⛔ {reason}"
+        key = f"{platform.upper()}_ENABLED"
+        val = "true" if enabled else "false"
+        r = await self._set_setting(key, val)
+        if "✅" in r:
+            log_success(
+                f"📱 [BRAIN:platform] {platform} → "
+                f"{'روشن' if enabled else 'خاموش'}"
+            )
+            return (
+                f"📱 پلتفرم {platform} → "
+                f"{'روشن' if enabled else 'خاموش'}\n"
+                f"(بعد از ری‌استارت اعمال می‌شه.)"
+            )
+        return r
+
+    async def _platform_status(self, platform: str = "all") -> str:
+        try:
+            from config import PLUGINS_CONFIG as _PC
+            platforms = (
+                "eitaa", "bale", "rubika", "telegram",
+                "whatsapp", "web", "linkedin",
+            )
+            targets = (
+                [platform] if platform != "all" else list(platforms)
+            )
+            lines = ["📊 وضعیت پلتفرم‌ها:"]
+            for p in targets:
+                if p not in platforms:
+                    continue
+                cfg = _PC.get(f"{p}collector", {})
+                enabled = cfg.get("enabled", False)
+                poll = cfg.get("poll_seconds", "-")
+                status = "✅ روشن" if enabled else "❌ خاموش"
+                lines.append(f"   • {p}: {status} | poll: {poll}s")
+            return "\n".join(lines)
+        except Exception as e:
+            log_error(
+                f"❌ [BRAIN:platform:status] {type(e).__name__}: {e}"
+            )
+            return f"❌ خطا: {e}"
+
+    async def _change_poll_interval(
+        self, platform: str, seconds: int
+    ) -> str:
+        ok, reason = get_access_manager().can_toggle_platform(platform)
+        if not ok:
+            return f"⛔ {reason}"
+        if seconds < 10 or seconds > 86400:
+            return "⛔ مقدار باید بین ۱۰ تا ۸۶۴۰۰ ثانیه باشد."
+        key = f"{platform.upper()}_POLL_SECONDS"
+        r = await self._set_setting(key, str(seconds))
+        if "✅" in r:
+            log_success(f"⏱️ [BRAIN:poll] {platform} → {seconds}s")
+            return (
+                f"⏱️ فاصلهٔ poll برای {platform} → {seconds} ثانیه."
+            )
+        return r
+
+    async def _get_access_summary(self) -> str:
+        return get_access_manager().get_summary()
+
+    # ═══════════════════════════════════════════
+    # نقشهٔ ابزارها
+    # ═══════════════════════════════════════════
+    TOOL_MAP = {
+        "read_file": _read_file,
+        "write_file": _write_file,
+        "edit_file": _edit_file,
+        "list_directory": _list_directory,
+        "delete_file": _delete_file,
+        "move_file": _move_file,
+        "git_status": _git_status,
+        "git_diff": _git_diff,
+        "git_commit": _git_commit,
+        "git_log": _git_log,
+        "git_branch": _git_branch,
+        "execute_command": _execute_command,
+        "get_system_info": _get_system_info,
+        "list_processes": _list_processes,
+        "kill_process": _kill_process,
+        "ping_host": _ping_host,
+        "run_tests": _run_tests,
+        "execute_python": _execute_python,
+        "analyze_code": _analyze_code,
+        "semantic_search": _semantic_search,
+        "grep_search": _grep_search,
+        "query_database": _query_database,
+        "browse_web": _browse_web,
+        "clipboard_get": _clipboard_get,
+        "zip_archive": _zip_archive,
+        "web_search": _web_search,
+        "generate_tests": _generate_tests,
+        "code_review": _code_review,
+        "fix_bug": _fix_bug,
+        "plan_task": _plan_task,
+        "get_project_context": _get_project_context,
+        "system_dashboard": _system_dashboard,
+        "run_tests_coverage": _run_tests_with_coverage,
+        "analyze_security": _analyze_security,
+        "backup_project": _backup_project,
+        "get_setting": _get_setting,
+        "set_setting": _set_setting,
+        "toggle_platform": _toggle_platform,
+        "platform_status": _platform_status,
+        "change_poll_interval": _change_poll_interval,
+        "get_access_summary": _get_access_summary,
+    }
+
+    # ═══════════════════════════════════════════
+    # اجرای ابزار
+    # ═══════════════════════════════════════════
+    async def _execute_tool(self, name: str, args: Dict) -> str:
+        t0 = time.monotonic()
+        tool_info = self.ALLOWED_TOOLS.get(name)
+        if not tool_info:
+            log_warning(f"⛔ [BRAIN:tool] ناشناخته | {name}")
+            return f"⛔ ابزار '{name}' مجاز نیست."
+        if self.read_only and tool_info["risk"] != "low":
+            log_warning(f"⛔ [BRAIN:tool] read_only | {name}")
+            return "⛔ حالت فقط‌خواندنی فعال است."
+
+        write_tools = {
+            "write_file", "edit_file", "delete_file", "move_file",
+        }
+        if name in write_tools:
+            path = (
+                args.get("path")
+                or args.get("source")
+                or args.get("dest")
+            )
+            if not path:
+                return "❌ مسیر مشخص نشده است."
+            if not self.full_access and not self._is_safe_write_path(path):
+                return (
+                    f"⛔ دسترسی نوشتن در این مسیر مجاز نیست: {path}\n"
+                    f"فقط می‌توانید در پوشه‌های data/ و reports/ "
+                    f"تغییر ایجاد کنید."
+                )
+        func = self.TOOL_MAP.get(name)
+        if not func:
+            log_warning(f"⛔ [BRAIN:tool] پیاده‌نشده | {name}")
+            return f"⛔ ابزار '{name}' پیاده‌سازی نشده."
+        try:
+            result = await func(self, **args)
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            if elapsed_ms > _SLOW_TOOL_MS:
+                log_warning(
+                    f"🐌 [BRAIN:tool] {name} کند | "
+                    f"{elapsed_ms:.0f}ms | "
+                    f"args={list(args.keys())}"
+                )
+            else:
+                log_info(
+                    f"🔧 [BRAIN:tool] {name} | {elapsed_ms:.0f}ms | "
+                    f"result={len(str(result))}ch"
+                )
+            return str(result)
+        except TypeError as e:
+            log_error(f"❌ [BRAIN:tool] {name} پارامتر | {e}")
+            return f"❌ پارامترهای اشتباه: {e}"
+        except Exception as e:
+            log_error(
+                f"❌ [BRAIN:tool] {name} | {type(e).__name__}: {e}"
+            )
+            return f"❌ خطا در اجرای ابزار: {e}"
+
+    # ═══════════════════════════════════════════
+    # Extended Thinking
+    # ═══════════════════════════════════════════
+    async def _think(self, task: str, context: str = "") -> str:
+        if not self.client:
+            log_info("💭 [BRAIN:think] آفلاین")
+            return "🔍 (حالت آفلاین - تحلیل ساده)"
+        prompt = (
+            "You are a world-class software engineer. "
+            "Think about this:\n\n"
+            f"CONTEXT: {context}\n\nTASK: {task}\n\n"
+            "Analyze: 1) REAL goal? 2) Edge cases? 3) Dependencies? "
+            "4) Optimal solution? 5) Testing strategy?\n"
+            "Provide concise analysis then action plan."
+        )
+        try:
+            t0 = time.monotonic()
+            r = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                max_tokens=2048,
+            )
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            content = r.choices[0].message.content.strip()
+            if elapsed_ms > _SLOW_THINK_MS:
+                log_warning(
+                    f"🐌 [BRAIN:think] کند | {elapsed_ms:.0f}ms | "
+                    f"out={len(content)}ch"
+                )
+            else:
+                log_info(
+                    f"💭 [BRAIN:think] {elapsed_ms:.0f}ms | "
+                    f"out={len(content)}ch"
+                )
+            return content
+        except Exception as e:
+            log_warning(
+                f"⚠️ [BRAIN:think] {type(e).__name__}: {e}"
+            )
+            return ""
+
+    # ═══════════════════════════════════════════
+    # Model/Prompt selection
+    # ═══════════════════════════════════════════
+    def _select_model(self, task: str) -> str:
+        if self._ai_priority == "ollama" or not self.api_key:
+            return self.model
+        coding_pats = [
+            r"\b(کد|بنویس|develop|write|create|build|python"
+            r"|تابع|کلاس)\b",
+            r"\b(refactor|debug|fix|test|api|database|sql|query)\b",
+            r"\b(رفع|اشکال|خطا|error|bug|issue)\b",
+        ]
+        if (
+            any(re.search(p, task, re.I) for p in coding_pats)
+            or len(task) > 200
+        ):
+            log_info("🎯 [BRAIN:model] deepseek-reasoner انتخاب شد")
+            return "deepseek-reasoner"
+        return self.model
+
+    def _build_system_prompt(self, mode: str) -> str:
+        prompts = {
+            "code": (
+                "You are a SENIOR SOFTWARE ENGINEER. Write "
+                "PRODUCTION-READY code with type hints, docstrings, "
+                "error handling. Follow SOLID principles. Include tests."
+            ),
+            "chat": (
+                "You are a FRIENDLY AI ASSISTANT. Have natural "
+                "conversations. Be helpful and clear."
+            ),
+            "analyze": (
+                "You are a CODE ANALYST EXPERT. Find bugs, "
+                "vulnerabilities, code smells. Suggest improvements."
+            ),
+            "precise": (
+                "You are a world-class software engineer. Provide "
+                "COMPLETE, PRODUCTION-READY code with full "
+                "documentation. Consider all edge cases."
+            ),
+        }
+        return prompts.get(mode, prompts["precise"])
+
+    # ═══════════════════════════════════════════
+    # Agent loop
+    # ═══════════════════════════════════════════
+    async def agent(self, task: str, mode: str = "precise") -> str:
+        if self.busy:
+            log_warning("⚠️ [BRAIN:agent] busy — رد شد")
+            return "⏳ مغز در حال انجام کار دیگری است..."
+        self.busy = True
+        self.stats["agents_run"] += 1
+        t_start = time.monotonic()
+
+        log_info(
+            f"🚀 [BRAIN:agent] شروع | mode={mode} | "
+            f"task={task[:_LOG_PREVIEW_LEN]!r} | "
+            f"run#{self.stats['agents_run']}"
+        )
+        try:
+            cached = self.agent_cache.get(task, self.model)
+            if cached:
+                log_success(
+                    f"💡 [BRAIN:agent] از کش | "
+                    f"{time.monotonic() - t_start:.2f}s"
+                )
+                return cached
+
+            self.memory.add("user", task)
+            await self._emit("command", {"task": task, "mode": mode})
+
+            thinking = await self._think(task)
+            if thinking:
+                log_info(
+                    f"💭 [BRAIN:agent] تحلیل: "
+                    f"{thinking[:_LOG_PREVIEW_LEN]}..."
+                )
+
+            selected_model = self._select_model(task)
+            system_prompt = self._build_system_prompt(mode)
+            context_history = await self.memory.get_context(task)
+            messages: List[Dict] = (
+                [{"role": "system", "content": system_prompt}]
+                + context_history
+                + [{"role": "user", "content": task}]
+            )
+
+            if any(
+                kw in task
+                for kw in ["فایل", "کد", "خطا", "پروژه", "کلاس", "تابع"]
+            ):
+                search_res = self.semantic_search.search(
+                    task, n_results=3
+                )
+                if search_res:
+                    ctx = "فایل‌های مرتبط:\n" + "\n".join(
+                        [
+                            f"- {r['path']}: {r['content'][:200]}"
+                            for r in search_res
+                        ]
+                    )
+                    messages.insert(
+                        1, {"role": "system", "content": ctx}
+                    )
+
+            step = 0
+            final_answer = ""
+            tools_used: List[str] = []
+            fallback_count = 0
+            max_fallback = 1
+
+            while step < MAX_AGENT_STEPS:
+                step += 1
+                step_t0 = time.monotonic()
+                log_info(
+                    f"  ⚙️ [BRAIN:agent] گام {step}/{MAX_AGENT_STEPS}"
+                )
+
+                if not self.client:
+                    final_answer = self._offline_agent(task)
+                    break
+
+                try:
+                    response = await self.client.chat.completions.create(
+                        model=selected_model,
+                        messages=messages,
+                        tools=self.tools_definition,
+                        temperature=0.1,
+                        max_tokens=4096,
+                    )
+                except Exception as e:
+                    log_error(
+                        f"❌ [BRAIN:agent] API گام {step} | "
+                        f"{type(e).__name__}: {e}"
+                    )
+                    if (
+                        self._ai_priority != "ollama"
+                        and selected_model != "deepseek-chat"
+                        and fallback_count < max_fallback
+                    ):
+                        fallback_count += 1
+                        log_warning(
+                            f"⚠️ [BRAIN:agent] fallback به "
+                            f"deepseek-chat "
+                            f"({fallback_count}/{max_fallback})"
+                        )
+                        selected_model = "deepseek-chat"
+                        continue
+                    final_answer = f"❌ خطای API: {e}"
+                    break
+
+                msg = response.choices[0].message
+                if not msg.tool_calls:
+                    final_answer = msg.content or "✅ عملیات تکمیل شد."
+                    messages.append(
+                        {"role": "assistant", "content": final_answer}
+                    )
+                    break
+
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": msg.content or "",
+                        "tool_calls": [
+                            {
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.function.name,
+                                    "arguments": tc.function.arguments,
+                                },
+                            }
+                            for tc in msg.tool_calls
+                        ],
+                    }
+                )
+
+                for tc in msg.tool_calls:
+                    name = tc.function.name
+                    tools_used.append(name)
+                    try:
+                        args = (
+                            json.loads(tc.function.arguments)
+                            if tc.function.arguments
+                            else {}
+                        )
+                    except json.JSONDecodeError as e:
+                        log_warning(
+                            f"⚠️ [BRAIN:agent] args JSON نامعتبر | "
+                            f"{name} | {e}"
+                        )
+                        args = {}
+                    log_info(
+                        f"     🔧 [BRAIN:agent] {name} | "
+                        f"args={str(args)[:_LOG_PREVIEW_LEN]}"
+                    )
+                    result = await self._execute_tool(name, args)
+                    log_info(
+                        f"     📤 [BRAIN:agent] {name} → "
+                        f"{result[:_LOG_PREVIEW_LEN]}"
+                    )
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": result[:MAX_CONTENT_LENGTH],
+                        }
+                    )
+                    if (
+                        name in ("write_file", "edit_file")
+                        and "✅" in result
+                        and "خطا" not in result
+                    ):
+                        test_res = await self._auto_run_tests(
+                            args.get("path", "")
+                        )
+                        if test_res:
+                            messages.append(
+                                {
+                                    "role": "system",
+                                    "content": f"🧪 تست خودکار:\n{test_res}",
+                                }
+                            )
+
+                step_elapsed_ms = (time.monotonic() - step_t0) * 1000
+                if step_elapsed_ms > _SLOW_STEP_MS:
+                    log_warning(
+                        f"🐌 [BRAIN:agent] گام {step} کند | "
+                        f"{step_elapsed_ms:.0f}ms"
+                    )
+
+            final_answer = (
+                final_answer
+                or f"⚠️ به سقف گام ({MAX_AGENT_STEPS}) رسید."
+            )
+            self.agent_cache.set(task, final_answer, self.model)
+            self.memory.add("assistant", final_answer)
+            await self._emit(
+                "response",
+                {"task": task[:100], "answer": final_answer[:200]},
+            )
+            self.cache.flush()
+            self.agent_cache.flush()
+
+            success = (
+                "❌" not in final_answer and "خطا" not in final_answer
+            )
+            self.learning_engine.record_interaction(
+                user_input=task,
+                response=final_answer,
+                success=success,
+                details={
+                    "tools_used": tools_used,
+                    "steps": step,
+                    "model": selected_model,
+                },
+            )
+
+            total_s = time.monotonic() - t_start
+            log_success(
+                f"✅ [BRAIN:agent] کامل | steps={step} | "
+                f"tools={len(tools_used)} | {total_s:.1f}s | "
+                f"success={success}"
+            )
+            return final_answer
+        except Exception as e:
+            self.stats["errors"] += 1
+            log_error(
+                f"❌ [BRAIN:agent] {type(e).__name__}: {e}"
+            )
+            return f"❌ خطای غیرمنتظره: {e}"
+        finally:
+            self.busy = False
+
+    def _offline_agent(self, task: str) -> str:
+        t = task.strip().lower()
+        for cmd, action in self.ALLOWED_DIRECT_COMMANDS.items():
+            if cmd in t:
+                if action == "greeting":
+                    return "سلام! مغز هوشمند ربات پایش سرنخ آماده است."
+                elif action == "status":
+                    return self.get_status()
+                elif action == "help":
+                    return self.get_help()
+        if "فایل" in t and ("خوان" in t or "باز" in t):
+            return (
+                "🔍 در حالت آفلاین، لطفاً از /agent یا دستورات "
+                "مستقیم استفاده کنید."
+            )
+        if "سیستم" in t or "وضعیت" in t:
+            return self.get_status()
+        return (
+            "🔍 در حالت آفلاین هستم. می‌توانم:\n"
+            "- /agent <task> : اجرای Agent (نیاز به API)\n"
+            "- /status : وضعیت سیستم\n"
+            "- /help : راهنما\n"
+        )
+
+    async def _auto_run_tests(self, file_path: str) -> str:
+        if not file_path:
+            return ""
+        p = Path(file_path)
+        candidates = [
+            p.parent / f"test_{p.name}",
+            Path("tests") / f"test_{p.name}",
+            Path("test") / f"test_{p.name}",
+        ]
+        for tf in candidates:
+            if tf.exists():
+                log_info(f"🧪 [BRAIN:auto-test] {tf}")
+                return await self._run_tests(str(tf))
+        return ""
+
+    # ═══════════════════════════════════════════
+    # process_admin_command
+    # ═══════════════════════════════════════════
+    async def process_admin_command(self, text: str) -> str:
+        self.stats["commands_processed"] += 1
+        t0 = time.monotonic()
+        log_info(
+            f"👤 [BRAIN:cmd] #{self.stats['commands_processed']} | "
+            f"{text[:_LOG_PREVIEW_LEN]!r}"
+        )
+
+        t = text.strip().lower()
+        if t in ["/status", "وضعیت", "status"]:
+            return self.get_status()
+        if t in ["/help", "راهنما", "help", "/راهنما"]:
+            return self.get_help()
+        if t in ["/clear", "پاک", "clear"]:
+            self.cache.clear()
+            self.agent_cache.clear()
+            self.memory.clear()
+            return "🗑️ کش و حافظه پاک شد."
+        if t in ["/stats", "آمار", "stats"]:
+            return self.get_stats()
+        if t.startswith("/mode ") or t.startswith("حالت "):
+            mode = t.split(maxsplit=1)[1]
+            self.set_mode(mode)
+            return f"✅ حالت '{mode}' فعال شد."
+
+        if AI_ENABLED:
+            try:
+                from core.ai_assistant import get_ai_assistant
+                ai = get_ai_assistant()
+                if await ai.available():
+                    intent = await ai.parse_intent(text)
+                    action = intent.get("action", "unknown")
+                    args = intent.get("args", {})
+                    log_info(
+                        f"🎯 [BRAIN:cmd] intent | action={action} | "
+                        f"args={list(args.keys())}"
+                    )
+                    result = await self._handle_action(
+                        action, args, text
+                    )
+                    if result:
+                        return result
+            except Exception as e:
+                log_warning(
+                    f"⚠️ [BRAIN:cmd] AI assistant | "
+                    f"{type(e).__name__}: {e}"
+                )
+
+        if self.client:
+            return await self.agent(text)
+        return self._offline_agent(text)
+
+    # ═══════════════════════════════════════════
+    # _handle_action
+    # ═══════════════════════════════════════════
+    async def _handle_action(
+        self, action: str, args: Dict, original_text: str
+    ) -> Optional[str]:
+        log_info(f"🎬 [BRAIN:action] {action} | args={list(args.keys())}")
+        t0 = time.monotonic()
+        try:
+            if action == "status":
+                result = self.get_status()
+            elif action == "health":
+                result = await self._get_health_report()
+            elif action == "help":
+                result = self.get_help()
+            elif action == "keywords":
+                result = await self._get_keywords_report()
+            elif action == "platform_status":
+                platform = args.get("value", "")
+                result = await self._get_platform_status(platform)
+            elif action == "report":
+                result = await self._get_report()
+            elif action == "crm":
+                log_info(
+                    "🔧 [BRAIN:action] crm → admin_handler مسئول است"
+                )
+                result = (
+                    "📊 خروجی CRM توسط admin_handler ساخته می‌شود.\n"
+                    "دستور «crm» یا «crm <platform>» "
+                    "(مثلاً «crm ایتا») را در بله بفرست."
+                )
+            elif action == "logs":
+                result = self._get_recent_logs()
+            elif action == "lead_details":
+                which = args.get("value", "last")
+                result = await self._get_lead_details(which)
+            elif action == "add_keyword":
+                kw = args.get("value", "")
+                result = (
+                    f"🔧 افزودن کلیدواژه '{kw}' - "
+                    f"از پنل admin/keywords استفاده کن."
+                )
+            elif action == "remove_keyword":
+                kw = args.get("value", "")
+                result = (
+                    f"🔧 حذف کلیدواژه '{kw}' - "
+                    f"از پنل admin/keywords استفاده کن."
+                )
+            elif action == "has_keyword":
+                kw = args.get("value", "")
+                result = await self._check_keyword(kw)
+            elif action in ("ask", "feature_request"):
+                result = await self.agent(original_text)
+            elif action == "unknown":
+                result = None
+            else:
+                log_warning(f"⚠️ [BRAIN:action] ناشناخته | {action}")
+                result = None
+        except Exception as e:
+            log_error(
+                f"❌ [BRAIN:action] {action} | "
+                f"{type(e).__name__}: {e}"
+            )
+            result = None
+
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        if elapsed_ms > _SLOW_ACTION_MS:
+            log_warning(
+                f"🐌 [BRAIN:action] {action} کند | {elapsed_ms:.0f}ms"
+            )
+        return result
+
+    # ═══════════════════════════════════════════
+    # گزارش‌ها
+    # ═══════════════════════════════════════════
+    def get_status(self) -> str:
+        mem = self.memory
+        return (
+            f"🧠 **وضعیت مغز هوشمند**\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"🔹 مدل: {self.model}\n"
+            f"🔹 حالت: {self.current_mode}\n"
+            f"🔹 کلاینت: {'✅ فعال' if self.client else '❌ آفلاین'}\n"
+            f"🔹 فقط‌خواندنی: {'✅' if self.read_only else '❌'}\n"
+            f"🔹 دسترسی کامل: {'✅' if self.full_access else '❌'}\n"
+            f"🔹 حافظه معنایی: "
+            f"{'✅' if mem.collection else '❌'}\n"
+            f"🔹 حافظه API: {'✅' if mem.api_memory else '❌'}\n"
+            f"🔹 Semantic Search: "
+            f"{'✅' if self.semantic_search.collection else '❌'}\n"
+            f"🔹 حافظه کوتاه: {len(mem.short_term)} پیام | "
+            f"خلاصه: {len(mem.summaries)}\n"
+            f"🔹 کش: {self.cache.stats()['entries']} مدخل\n"
+            f"🔹 دستورات: {self.stats['commands_processed']}\n"
+            f"🔹 Agent: {self.stats['agents_run']}\n"
+            f"🔹 خطاها: {self.stats['errors']}\n"
+            f"🔹 شروع: {self.stats['started_at']}"
+        )
+
+    def get_help(self) -> str:
+        return (
+            "📚 **راهنمای مغز هوشمند**\n"
+            "━━━━━━━━━━━━━━━\n\n"
+            "**💬 دستورات مستقیم:**\n"
+            "• /status یا «وضعیت»\n"
+            "• /help یا «راهنما»\n"
+            "• /stats یا «آمار»\n"
+            "• /clear یا «پاک»\n"
+            "• /mode <precise|code|chat|analyze>\n\n"
+            "**🤖 Agent خودکار:**\n"
+            "• «فایل x را بخوان»\n"
+            "• «کد من را تحلیل کن»\n"
+            "• «در کد دنبال x بگرد»\n"
+            "• «تست‌ها را اجرا کن»"
+        )
+
+    def get_stats(self) -> str:
+        return (
+            f"📊 **آمار مغز**\n"
+            f"━━━━━━━━━━\n"
+            f"🔹 دستورات: {self.stats['commands_processed']}\n"
+            f"🔹 Agent: {self.stats['agents_run']}\n"
+            f"🔹 خطاها: {self.stats['errors']}\n"
+            f"🔹 حافظه کوتاه: {len(self.memory.short_term)}\n"
+            f"🔹 خلاصه‌ها: {len(self.memory.summaries)}\n"
+            f"🔹 کش: {self.cache.stats()['entries']}"
+        )
+
+    def set_mode(self, mode: str):
+        valid = {
+            "precise", "debug", "architect", "concise",
+            "creative", "code", "chat", "analyze",
+        }
+        if mode in valid:
+            self.current_mode = mode
+            log_success(f"✅ [BRAIN:mode] حالت → {mode}")
+        else:
+            log_warning(f"⚠️ [BRAIN:mode] نامعتبر: {mode}")
+
+    async def _get_health_report(self) -> str:
+        try:
+            from core.health_check import HealthChecker
+            if self.db:
+                hc = HealthChecker(self.db)
+                report = await hc.check_all()
+                if isinstance(report, dict):
+                    return json.dumps(
+                        report, ensure_ascii=False, indent=2
+                    )[:3000]
+                if hasattr(report, "__dict__"):
+                    return json.dumps(
+                        report.__dict__, ensure_ascii=False, indent=2
+                    )[:3000]
+                return str(report)[:3000]
+        except Exception as e:
+            log_error(f"❌ [BRAIN:health] {type(e).__name__}: {e}")
+            return f"❌ خطا در گزارش سلامت: {e}"
+        return "⚠️ HealthChecker در دسترس نیست."
+
+    async def _get_keywords_report(self) -> str:
+        if not self.db:
+            return "⚠️ دیتابیس متصل نیست."
+        try:
+            stats = await self.db.get_keyword_stats(limit=30)
+            if not stats:
+                return "📭 هیچ کلیدواژه‌ای ثبت نشده است."
+            lines = ["📊 **آمار کلیدواژه‌ها**", "━━━━━━━━━━━━━━━"]
+            for kw, count in stats[:20]:
+                lines.append(f"• {kw}: {count} بار")
+            if len(stats) > 20:
+                lines.append(
+                    f"... و {len(stats)-20} کلیدواژه دیگر"
+                )
+            return "\n".join(lines)
+        except Exception as e:
+            log_error(
+                f"❌ [BRAIN:keywords] {type(e).__name__}: {e}"
+            )
+            return f"❌ خطا: {e}"
+
+    async def _get_platform_status(self, platform: str) -> str:
+        if not self.db:
+            return "⚠️ دیتابیس متصل نیست."
+        try:
+            last_poll = await self.db.get_last_poll(platform)
+            if not last_poll:
+                return f"📡 **{platform}**: هنوز داده‌ای ثبت نشده."
+            ago = (datetime.now() - last_poll).total_seconds()
+            if ago < 60:
+                return f"📡 **{platform}**: فعال ✅ (لحظاتی پیش)"
+            elif ago < 3600:
+                return (
+                    f"📡 **{platform}**: فعال ✅ "
+                    f"({ago/60:.0f} دقیقه پیش)"
+                )
+            else:
+                return (
+                    f"📡 **{platform}**: ⚠️ "
+                    f"({ago/3600:.1f} ساعت پیش)"
+                )
+        except Exception as e:
+            log_error(
+                f"❌ [BRAIN:platform_status] {type(e).__name__}: {e}"
+            )
+            return f"❌ خطا: {e}"
+
+    async def _get_report(self) -> str:
+        if not self.db:
+            return "⚠️ دیتابیس متصل نیست."
+        try:
+            total = await self.db.get_total_count()
+            daily = await self.db.get_daily_stats(days=7)
+            lines = [
+                "📊 **گزارش سریع**",
+                "━━━━━━━━━━━━",
+                f"🔹 کل پیام‌ها: {total.get('messages', 0)}",
+                f"🔹 سرنخ‌ها: {total.get('leads', 0)}",
+                f"🔹 گروه‌ها: {total.get('groups', 0)}",
+                "━━━━━━━━━━━━",
+                "📅 **۷ روز اخیر:**",
+            ]
+            for d in daily[:7]:
+                lines.append(
+                    f"  {d.get('date', '?'):12s}: "
+                    f"{d.get('count', 0)} پیام"
+                )
+            return "\n".join(lines)
+        except Exception as e:
+            log_error(f"❌ [BRAIN:report] {type(e).__name__}: {e}")
+            return f"❌ خطا: {e}"
+
+    def _get_recent_logs(self, limit: int = 30) -> str:
+        """آخرین خطوط لاگ — با seek از انتها (نه کل فایل در RAM)."""
+        log_dir = Path(LOGS_DIR)
+        if not log_dir.exists():
+            return "📭 پوشه لاگ وجود ندارد."
+        logs = (
+            list(log_dir.glob("*.log"))
+            + list(log_dir.glob("*.txt"))
+            + list(log_dir.glob("*.jsonl"))
+        )
+        if not logs:
+            return "📭 فایل لاگی یافت نشد."
+        latest = max(logs, key=lambda p: p.stat().st_mtime)
+        try:
+            size = latest.stat().st_size
+            with open(latest, "rb") as f:
+                if size > _LOG_TAIL_BYTES:
+                    f.seek(-_LOG_TAIL_BYTES, os.SEEK_END)
+                    f.readline()
+                data = f.read()
+            lines = data.decode("utf-8", errors="ignore").splitlines()
+            recent = lines[-limit:] if len(lines) > limit else lines
+            log_info(
+                f"📋 [BRAIN:logs] {latest.name} | "
+                f"lines_total≈{len(lines)} showing={len(recent)}"
+            )
+            return (
+                f"📋 **آخرین لاگ‌ها ({latest.name}):**\n"
+                + "\n".join(recent)
+            )
+        except Exception as e:
+            log_error(f"❌ [BRAIN:logs] {type(e).__name__}: {e}")
+            return f"❌ خطا: {e}"
+
+    async def _get_lead_details(self, which: str = "last") -> str:
+        if not self.db:
+            return "⚠️ دیتابیس متصل نیست."
+        try:
+            leads = await self.db.get_high_score_leads(
+                min_score=0, limit=1
+            )
+            if not leads:
+                return "📭 هیچ سرنخی ثبت نشده."
+            lead = leads[0]
+            return (
+                f"📌 **جزئیات سرنخ**\n"
+                f"━━━━━━━━━━━━━\n"
+                f"🆔: {str(lead.get('id', '?'))[:20]}...\n"
+                f"💬 پلتفرم: {lead.get('platform', '?')}\n"
+                f"👤 چت: {lead.get('chat_name', '?')}\n"
+                f"📝 متن: {str(lead.get('text', ''))[:200]}\n"
+                f"🏷️ کلیدواژه: {lead.get('keywords', '')}\n"
+                f"⭐ امتیاز: {lead.get('opportunity_score', 0)}\n"
+                f"🕐 زمان: {lead.get('timestamp', '?')}"
+            )
+        except Exception as e:
+            log_error(f"❌ [BRAIN:lead] {type(e).__name__}: {e}")
+            return f"❌ خطا: {e}"
+
+    async def _check_keyword(self, kw: str) -> str:
+        if not kw:
+            return "⚠️ لطفاً کلیدواژه را وارد کنید."
+        try:
+            from analyzers.keyword_finder import get_keyword_finder
+            finder = get_keyword_finder()
+            found = finder.has_match(kw)
+            log_info(
+                f"🔍 [BRAIN:kw-check] kw={kw!r} | found={found}"
+            )
+            if found:
+                return f"✅ کلیدواژه '{kw}' در سیستم وجود دارد."
+            return f"❌ کلیدواژه '{kw}' در سیستم یافت نشد."
+        except Exception as e:
+            log_error(
+                f"❌ [BRAIN:kw-check] {type(e).__name__}: {e}"
+            )
+            return f"❌ خطا: {e}"
+
+    # ═══════════════════════════════════════════
+    # گزارش‌ها و ابزارهای توسعه‌یافته
+    # ═══════════════════════════════════════════
+    def generate_report(self, days: int = 7) -> str:
+        """گزارش کامل عملکرد Agent — شامل آمار حافظه و کش."""
+        return (
+            f"📊 **گزارش عملکرد Agent**\n"
+            f"{'=' * 50}\n"
+            f"🔹 دستورات: {self.stats['commands_processed']}\n"
+            f"🔹 Agent: {self.stats['agents_run']}\n"
+            f"🔹 خطاها: {self.stats['errors']}\n"
+            f"🔹 یادگیری: "
+            f"{len(self.learning_engine.successful_interactions)} موفق, "
+            f"{len(self.learning_engine.failed_interactions)} ناموفق\n"
+            f"🔹 حافظه کوتاه: {len(self.memory.short_term)} | "
+            f"خلاصه: {len(self.memory.summaries)}\n"
+            f"🔹 کش: {self.cache.stats()['entries']} | "
+            f"hit_rate={self.cache.stats()['hit_rate']}\n"
+            f"🔹 Semantic: "
+            f"{'فعال' if self.semantic_search.collection else 'غیرفعال'}"
+        )
+
+    def analyze_logs(self, category: str = None) -> str:
+        """تحلیل لاگ‌ها — دسته‌بندی خطاها بر اساس نوع.
+
+        Args:
+            category: اگه داده شود، فقط همان دسته نمایش داده می‌شود.
+
+        Returns:
+            خلاصهٔ دسته‌بندی‌شدهٔ خطاها.
+        """
+        try:
+            logs_text = self._get_recent_logs(limit=200)
+            if not logs_text or "لاگ" in logs_text[:20]:
+                return logs_text
+
+            # دسته‌بندی خطاها
+            categories = {
+                "شبکه": [
+                    "connection", "timeout", "network", "socket",
+                ],
+                "دیتابیس": [
+                    "database", "sqlite", "sql", "locked",
+                ],
+                "AI": [
+                    "openai", "ollama", "deepseek", "api",
+                ],
+                "فایل": [
+                    "file", "path", "permission", "read",
+                ],
+                "مرورگر": [
+                    "playwright", "chromium", "browser",
+                ],
+                "کلیدواژه": [
+                    "keyword", "کلیدواژه",
+                ],
+            }
+
+            counts = {k: 0 for k in categories}
+            counts["سایر"] = 0
+
+            lines = logs_text.split("\n")
+            error_lines = [
+                ln for ln in lines
+                if "[ERROR]" in ln or "[CRITICAL]" in ln
+                or "❌" in ln
+            ]
+
+            for ln in error_lines:
+                ln_low = ln.lower()
+                matched = False
+                for cat, keywords in categories.items():
+                    if any(kw in ln_low for kw in keywords):
+                        counts[cat] += 1
+                        matched = True
+                        break
+                if not matched:
+                    counts["سایر"] += 1
+
+            result = ["📋 **تحلیل لاگ‌ها**", "━━━━━━━━━━━━━━━"]
+            result.append(f"🔹 کل خطوط: {len(lines)}")
+            result.append(f"🔹 خطاها: {len(error_lines)}")
+            result.append("")
+            result.append("📊 **دسته‌بندی خطاها:**")
+
+            if category:
+                if category in counts:
+                    result.append(
+                        f"• {category}: {counts[category]} مورد"
+                    )
+                else:
+                    result.append(f"• دستهٔ «{category}» یافت نشد")
+            else:
+                for cat, cnt in sorted(
+                    counts.items(), key=lambda x: -x[1]
+                ):
+                    if cnt > 0:
+                        result.append(f"• {cat}: {cnt} مورد")
+
+            log_info(
+                f"📊 [BRAIN:logs:analyze] "
+                f"errors={len(error_lines)} categories={counts}"
+            )
+            return "\n".join(result)
+        except Exception as e:
+            log_error(
+                f"❌ [BRAIN:logs:analyze] {type(e).__name__}: {e}"
+            )
+            return f"❌ خطا در تحلیل لاگ: {e}"
+
+    async def build_from_map(
+        self, task: str, max_retries: int = 3
+    ) -> str:
+        """ساخت پروژه از نقشه — با TaskPlanner.
+
+        Args:
+            task: توضیح پروژه/قابلیت مورد نظر.
+            max_retries: حداکثر تلاش مجدد.
+
+        Returns:
+            نتیجهٔ ساخت.
+        """
+        log_info(
+            f"🏗️ [BRAIN:build] شروع | task={task[:80]!r} | "
+            f"max_retries={max_retries}"
+        )
+        if not self.planner:
+            return "❌ برنامه‌ریز در دسترس نیست."
+        if not self.client:
+            return (
+                "❌ حالت آفلاین — ساخت پروژه از نقشه نیاز به AI دارد.\n"
+                "💡 OLLAMA_URL یا DEEPSEEK_API_KEY را تنظیم کن."
+            )
+
+        try:
+            # استفاده از planner برای ساخت پلن و اجرا
+            result = await self.planner.execute_plan(task)
+            log_success(
+                f"✅ [BRAIN:build] کامل | len={len(result)}"
+            )
+            return f"🏗️ **ساخت از نقشه:**\n{result}"
+        except Exception as e:
+            log_error(
+                f"❌ [BRAIN:build] {type(e).__name__}: {e}"
+            )
+            return f"❌ خطا در ساخت: {e}"
+
+    async def self_upgrade(
+        self, upgrade_request: str = "بهبود کلی کد"
+    ) -> str:
+        """خودارتقا — agent روی کد خودش اجرا می‌شود.
+
+        Args:
+            upgrade_request: توضیح ارتقای مورد نظر.
+
+        Returns:
+            نتیجهٔ ارتقا.
+        """
+        log_info(
+            f"🔄 [BRAIN:upgrade] شروع | "
+            f"request={upgrade_request[:80]!r}"
+        )
+        if not self.client:
+            return (
+                "❌ حالت آفلاین — خودارتقا نیاز به AI دارد.\n"
+                "💡 OLLAMA_URL یا DEEPSEEK_API_KEY را تنظیم کن."
+            )
+
+        try:
+            # اجرای agent روی brain.py خودش
+            self_path = __file__
+            prompt = (
+                f"خودت (فایل {self_path}) را بازبینی کن. "
+                f"درخواست ارتقا: {upgrade_request}\n\n"
+                f"گام‌ها:\n"
+                f"1) فایل را بخوان\n"
+                f"2) مشکلات را شناسایی کن\n"
+                f"3) پیشنهاد اصلاح بده (بدون اعمال خودکار)\n"
+            )
+            result = await self.agent(prompt, mode="analyze")
+            log_success(
+                f"✅ [BRAIN:upgrade] کامل | len={len(result)}"
+            )
+            return f"🔄 **خودارتقا:**\n{result}"
+        except Exception as e:
+            log_error(
+                f"❌ [BRAIN:upgrade] {type(e).__name__}: {e}"
+            )
+            return f"❌ خطا در خودارتقا: {e}"
+
+
+# ═══════════════════════════════════════════
+# Singleton
+# ═══════════════════════════════════════════
+_brain_instance: Optional[Brain] = None
+_brain_lock = threading.Lock()
+
+
+def get_brain(
+    event_bus: Optional[EventBus] = None,
+    db: Optional[Any] = None,
+    read_only: bool = False,
+    api_key: Optional[str] = None,
+    full_access: bool = False,
+    use_api_memory: bool = False,
+    memory_api_url: str = "",
+    memory_api_key: str = "",
+) -> Brain:
+    """Singleton: اگر اولین بار است، می‌سازد؛ وگرنه به‌روزرسانی می‌کند."""
+    global _brain_instance
+    with _brain_lock:
+        if _brain_instance is None:
+            log_info("🏗️ [BRAIN:singleton] ساخت نمونهٔ اول")
+            _brain_instance = Brain(
+                event_bus=event_bus,
+                db=db,
+                read_only=read_only,
+                api_key=api_key,
+                full_access=full_access,
+                use_api_memory=use_api_memory,
+                memory_api_url=memory_api_url,
+                memory_api_key=memory_api_key,
+            )
+        else:
+            updated = []
+            if event_bus and not _brain_instance.event_bus:
+                _brain_instance.set_event_bus(event_bus)
+                updated.append("event_bus")
+            if db and not _brain_instance.db:
+                _brain_instance.set_database(db)
+                updated.append("db")
+            if full_access and not _brain_instance.full_access:
+                _brain_instance.full_access = full_access
+                updated.append("full_access")
+            if (
+                use_api_memory
+                and memory_api_url
+                and _brain_instance.memory.api_memory is None
+            ):
+                try:
+                    _brain_instance.memory.api_memory = APIMemory(
+                        memory_api_url, memory_api_key
+                    )
+                    _brain_instance.memory.use_api = True
+                    _brain_instance.memory.api_url = memory_api_url
+                    _brain_instance.memory.api_key = memory_api_key
+                    updated.append("memory_api=✅")
+                except Exception as e:
+                    log_warning(
+                        f"⚠️ [BRAIN:singleton] memory_api | "
+                        f"{type(e).__name__}: {e}"
+                    )
+                    updated.append(f"memory_api=❌({type(e).__name__})")
+            if updated:
+                log_info(
+                    f"♻️ [BRAIN:singleton] به‌روزرسانی | "
+                    f"fields={updated}"
+                )
+    return _brain_instance

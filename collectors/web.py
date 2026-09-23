@@ -9,27 +9,94 @@
 دو حالت:
 - page → فقط همان یک صفحه
 - site → کل سایت تا عمق مشخص (پیش‌فرض depth=1، با محدودیت تعداد صفحه)
+- news → از صفحهٔ فهرست خبر، لینک خبرها را پیدا و متن کامل هر خبر را می‌خواند
 
-ضدتکراری: از محتوای هر صفحه «اثرانگشت» (hash) ساخته می‌شود؛ اگر محتوا عوض نشده باشد،
-دوباره خروجی نمی‌گیرد (هم در همین اجرا، هم بین اجراها به‌کمک کلید یکتای دیتابیس).
+ضدتکراری (نسخهٔ ۳):
+- اثرانگشت محتوای هر صفحه روی دیسک ذخیره می‌شود (storage/offset/web_seen.json)
+- بعد از ری‌استارت، صفحاتِ خوانده‌شده دوباره پردازش/ترجمه نمی‌شوند
+- سقف _MAX_SEEN برای جلوگیری از رشد بی‌نهایت فایل
 
-ترجمه: لایهٔ ترجمه بعداً روی همین خروجی اضافه می‌شود (متن اصلی + فارسی).
+ترجمه:
+- اگر WEB_TRANSLATE=true، متن با واژه‌نامهٔ اختصاصی + گوگل ترجمه می‌شود
+- بین ترجمه‌ها تأخیر کوتاه (Rate-limit گوگل: ۵ req/s)
+
+نسخهٔ ۳ (این نسخه):
+- ضدتکراریِ ماندگار روی دیسک (مثل بله/ایتا/واتساپ)
+- await برای _make_message (چون حالا async است)
+- تأخیر بین ترجمه‌ها برای جلوگیری از خطای 429 گوگل
 """
 import asyncio
+import hashlib
+import json
 import os
 import re
-import hashlib
 from datetime import datetime
+from typing import Any
 from urllib.parse import urljoin, urlparse
-from typing import List, Dict, Any, Optional, Set, Tuple
 
-from core.base_collector import BaseCollector, ConnectionStatus
-from core.logger import log_info, log_success, log_error, log_warning
+from core.contracts.base_collector import BaseCollector, ConnectionStatus
+from core.kernel.logger import log_error, log_info, log_success, log_warning
 
 DEFAULT_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
+
+# سقف حافظهٔ اثرانگشت‌های دیده‌شده (رم/دیسک کنترل‌شده)
+_MAX_SEEN = 8000
+
+# الگوهای مسیر خبری — فقط وقتی استفاده می‌شوند که URL فهرست، صفحهٔ اصلی باشد
+# (index_path خالی). در این حالت نمی‌توان از index_path برای تشخیص خبر استفاده کرد.
+_NEWS_PATH_HINTS = (
+    "/news/",
+    "/article/",
+    "/articles/",
+    "/press/",
+    "/blog/",
+    "/story/",
+    "/stories/",
+    "/post/",
+    "/posts/",
+)
+
+# تأخیر بین ترجمه‌ها (ثانیه) — احترام به محدودیت گوگل (۵ req/s)
+_TRANSLATE_DELAY = 0.35
+
+
+# ══════════════════════════════════════════════════════
+# الگوهای صفحه‌های آشغال (Cloudflare / Challenge / Login Wall)
+# ══════════════════════════════════════════════════════
+# این الگوها در متن یا تیتر صفحه چک می‌شوند. اگر پیدا شد، پیام رد می‌شود.
+_JUNK_TEXT_MARKERS = (
+    "just a moment",
+    "performing security verification",
+    "enable javascript and cookies to continue",
+    "checking your browser before accessing",
+    "verify you are human",
+    "verify you are not a bot",
+    "ray id:",
+    "cloudflare",
+    "ddos protection by",
+    "please wait while we check your browser",
+    "attention required!",
+    "access denied",
+    "you have been blocked",
+    "403 forbidden",
+    "کد امنیتی",
+    "در حال بررسی مرورگر",
+)
+
+# اگر متن کوتاه بود و شامل این نشانه‌ها بود → آشغال
+_JUNK_TITLE_MARKERS = (
+    "just a moment",
+    "attention required",
+    "403 forbidden",
+    "access denied",
+    "error",
+)
+
+# آستانه: اگر متن کمتر از این تعداد کاراکتر باشد و نشانه آشغال داشته باشد
+_JUNK_MIN_LEN = 800
 
 
 class WebCollector(BaseCollector):
@@ -42,18 +109,24 @@ class WebCollector(BaseCollector):
         **kwargs,
     ):
         super().__init__()
-        from config import BASE_DIR
+        from config import BASE_DIR, STORAGE_DIR
 
         self.sources_file = sources_file or os.path.join(
-            BASE_DIR, "data", "web_sources.txt"
+            BASE_DIR, "data", "sources", "web_sources.txt"
         )
         self.max_pages = int(max_pages)
         self.timeout = int(timeout)
         self.translate = bool(translate)
         self._translator = None
-        self._sources: List[Tuple[str, str, dict]] = []
+        self._sources: list[tuple[str, str, dict]] = []
         self._connected = False
-        self._seen_hashes: Set[str] = set()
+
+        # ── ضدتکراریِ ماندگار (روی دیسک) ──
+        self._seen_hashes: set[str] = set()
+        self._seen_path = os.path.join(STORAGE_DIR, "offset", "web_seen.json")
+        os.makedirs(os.path.dirname(self._seen_path), exist_ok=True)
+        self._load_seen()
+
         # مرورگرِ تنبل (فقط وقتی درخواست ساده شکست بخورد ساخته می‌شود): برای سایت‌های
         # JS-محور، بلاک‌کنندهٔ ربات (۴۰۳) یا گواهیِ منقضی.
         self._bpw = None
@@ -61,7 +134,7 @@ class WebCollector(BaseCollector):
 
     def _get_translator(self):
         if self._translator is None:
-            from core.translator import Translator
+            from core.adapters.translator import Translator
 
             self._translator = Translator(enabled=True)
         return self._translator
@@ -86,6 +159,33 @@ class WebCollector(BaseCollector):
         return SYSTEM_CONFIG.get("poll_interval_hours", 24) * 3600
 
     # ==================================================
+    # ضدتکراری ماندگار (روی دیسک)
+    # ==================================================
+    def _load_seen(self):
+        """لیست اثرانگشت‌های دیده‌شده را از دیسک می‌خواند."""
+        try:
+            with open(self._seen_path, encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                self._seen_hashes = set(data[-_MAX_SEEN:])
+                log_info(
+                    f"♻️ {len(self._seen_hashes)} اثرانگشتِ دیده‌شدهٔ وب بارگذاری شد"
+                )
+        except Exception:
+            self._seen_hashes = set()
+
+    def _save_seen(self):
+        """اثرانگشت‌های دیده‌شده را روی دیسک ذخیره می‌کند (با سقف _MAX_SEEN)."""
+        try:
+            if len(self._seen_hashes) > _MAX_SEEN:
+                # فقط آخرین _MAX_SEEN نگه داشته شود
+                self._seen_hashes = set(list(self._seen_hashes)[-_MAX_SEEN:])
+            with open(self._seen_path, "w", encoding="utf-8") as f:
+                json.dump(list(self._seen_hashes), f, ensure_ascii=False)
+        except Exception as e:
+            log_warning(f"ذخیرهٔ ضدتکراری وب ناموفق: {e}")
+
+    # ==================================================
     # اتصال = بارگذاری فایل لینک‌ها
     # ==================================================
     async def connect(self) -> bool:
@@ -102,11 +202,11 @@ class WebCollector(BaseCollector):
             )
         return True
 
-    def _load_sources(self) -> List[Tuple[str, str, dict]]:
+    def _load_sources(self) -> list[tuple[str, str, dict]]:
         sources = []
         if not os.path.exists(self.sources_file):
             return sources
-        with open(self.sources_file, "r", encoding="utf-8") as f:
+        with open(self.sources_file, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith("#"):
@@ -129,11 +229,11 @@ class WebCollector(BaseCollector):
     # ==================================================
     # خواندن منابع
     # ==================================================
-    async def fetch_messages(self, since: datetime = None) -> List[Dict[str, Any]]:
+    async def fetch_messages(self, since: datetime = None) -> list[dict[str, Any]]:
         if not self._connected or not self._sources:
             return []
 
-        results: List[Dict[str, Any]] = []
+        results: list[dict[str, Any]] = []
         try:
             import aiohttp
         except ImportError:
@@ -161,7 +261,7 @@ class WebCollector(BaseCollector):
                         else:
                             pages = await self._read_single(session, url)
                         for page_url, title, text in pages:
-                            msg = self._make_message(page_url, title, text)
+                            msg = await self._make_message(page_url, title, text)
                             if msg:
                                 results.append(msg)
                     except Exception as e:
@@ -169,12 +269,13 @@ class WebCollector(BaseCollector):
                         continue
         finally:
             await self._close_browser()  # اگر مرورگرِ رندر باز شده بود، ببند
+            self._save_seen()  # ضدتکراری را ماندگار کن (حتی اگر خطا داشتیم)
 
         if results:
             log_success(f"📥 وب: {len(results)} مطلب جدید")
         return results
 
-    async def _read_single(self, session, url) -> List[Tuple[str, str, str]]:
+    async def _read_single(self, session, url) -> list[tuple[str, str, str]]:
         html = await self._get_html(session, url)
         if not html:
             return []
@@ -183,11 +284,11 @@ class WebCollector(BaseCollector):
 
     async def _crawl_site(
         self, session, start_url, depth
-    ) -> List[Tuple[str, str, str]]:
+    ) -> list[tuple[str, str, str]]:
         """پیمایش هم‌دامنه تا عمق مشخص با محدودیت تعداد صفحه."""
         base_host = urlparse(start_url).netloc
-        visited: Set[str] = set()
-        out: List[Tuple[str, str, str]] = []
+        visited: set[str] = set()
+        out: list[tuple[str, str, str]] = []
         frontier = [(start_url, 0)]
 
         while frontier and len(visited) < self.max_pages:
@@ -213,9 +314,14 @@ class WebCollector(BaseCollector):
 
     async def _crawl_news(
         self, session, index_url, limit
-    ) -> List[Tuple[str, str, str]]:
-        """صفحهٔ فهرستِ اخبار را باز می‌کند، لینکِ خبرها را پیدا و **وارد خودِ خبرها** می‌شود
-        و متنِ کاملِ هر خبر را می‌خواند (نه فقط تیتر). فقط لینک‌های زیرشاخهٔ همان بخشِ خبری.
+    ) -> list[tuple[str, str, str]]:
+        """صفحهٔ فهرستِ اخبار را باز می‌کند، لینکِ خبرها را پیدا و وارد خودِ خبرها می‌شود
+        و متن کامل هر خبر را می‌خواند (نه فقط تیتر).
+
+        قاعدهٔ تشخیص «خبر» (به ترتیب اولویت):
+          ۱) اگر URL فهرست یک مسیر مشخص داشت (مثل /en/news) → زیرشاخه‌های همان مسیر
+          ۲) اگر URL فهرست صفحهٔ اصلی بود (path="") → مسیرهایی که الگوی خبری دارند
+             (news/article/press/blog/story/post/...)
         """
         index_html = await self._get_html(session, index_url)
         if not index_html:
@@ -223,19 +329,28 @@ class WebCollector(BaseCollector):
 
         base = urlparse(index_url)
         host = base.netloc
-        index_path = base.path.rstrip("/")  # مثلاً /en/news
+        index_path = base.path.rstrip("/")  # مثلاً /en/news یا "" برای صفحهٔ اصلی
+
+        def is_news_link(link: str) -> bool:
+            link = (link or "").split("#")[0].rstrip("/")
+            p = urlparse(link)
+            if p.netloc != host:
+                return False
+            path = p.path.rstrip("/")
+            # حالت ۱: index_path مشخص (مثل /en/news)
+            if index_path:
+                return path.startswith(index_path + "/") and path != index_path
+            # حالت ۲: صفحهٔ اصلی — فقط مسیرهای با الگوی خبری
+            #   مثال قبول:  /news/xyz, /blog/post-1, /en/articles/2024/foo
+            #   مثال رد:    /about, /contact, /login, /cart
+            low = path.lower()
+            return any(hint in low + "/" for hint in _NEWS_PATH_HINTS)
 
         def collect(links):
             out = []
             for link in links:
-                link = (link or "").split("#")[0].rstrip("/")
-                p = urlparse(link)
-                if p.netloc != host:
-                    continue
-                path = p.path.rstrip("/")
-                # صفحهٔ یک خبر = زیرِ همان بخشِ خبری و عمیق‌تر از خودِ فهرست
-                if path.startswith(index_path + "/") and path != index_path:
-                    out.append(link)
+                if is_news_link(link):
+                    out.append((link or "").split("#")[0].rstrip("/"))
             return out
 
         # اول لینک‌های HTML ساکن
@@ -252,11 +367,11 @@ class WebCollector(BaseCollector):
         # محدود کردن تعداد
         article_links = article_links[:limit]
 
-        # ✅ اصلاح: اگر هیچ خبری پیدا نشد، هیچ چیزی برنگردان (به‌جای برگرداندن خودِ صفحهٔ فهرست)
+        # اگر هیچ خبری پیدا نشد، چیزی برنگردان (نه خودِ صفحهٔ فهرست)
         if not article_links:
             return []
 
-        out: List[Tuple[str, str, str]] = []
+        out: list[tuple[str, str, str]] = []
         for art_url in article_links:
             html = await self._get_html(session, art_url)
             if not html:
@@ -269,7 +384,7 @@ class WebCollector(BaseCollector):
         log_info(f"وب(news): {len(out)} خبر از {host} خوانده شد")
         return out
 
-    async def _get_html(self, session, url) -> Optional[str]:
+    async def _get_html(self, session, url) -> str | None:
         """HTML را می‌گیرد؛ اول سریع (aiohttp)، اگر شکست خورد (۴۰۳/SSL/JS) با مرورگرِ
         واقعی رندر می‌کند تا «مثل یک کاربر» صفحه را ببیند."""
         html = await self._fetch(session, url)
@@ -277,7 +392,7 @@ class WebCollector(BaseCollector):
             return html
         return await self._fetch_rendered(url)
 
-    async def _fetch(self, session, url) -> Optional[str]:
+    async def _fetch(self, session, url) -> str | None:
         try:
             async with session.get(url, allow_redirects=True) as resp:
                 ctype = resp.headers.get("Content-Type", "")
@@ -334,7 +449,7 @@ class WebCollector(BaseCollector):
         self._bpw = None
         return None
 
-    async def _fetch_rendered(self, url) -> Optional[str]:
+    async def _fetch_rendered(self, url) -> str | None:
         ctx = await self._ensure_browser()
         if ctx is None:
             return None
@@ -367,7 +482,7 @@ class WebCollector(BaseCollector):
                 except Exception:
                     pass
 
-    async def _rendered_links(self, url) -> List[str]:
+    async def _rendered_links(self, url) -> list[str]:
         """صفحه را رندر می‌کند، چند بار اسکرول می‌کند و همهٔ لینک‌های هم‌دامنه را از DOMِ
         زنده برمی‌گرداند (برای سایت‌های خبریِ JS-محور که لینک‌ها بعد از اسکرول لود می‌شوند).
         """
@@ -416,7 +531,7 @@ class WebCollector(BaseCollector):
     # استخراج محتوا و لینک‌ها
     # ==================================================
     @staticmethod
-    def _extract(html: str) -> Tuple[str, str]:
+    def _extract(html: str) -> tuple[str, str]:
         try:
             from bs4 import BeautifulSoup
 
@@ -437,7 +552,7 @@ class WebCollector(BaseCollector):
         return title, text[:5000]
 
     @staticmethod
-    def _extract_links(html: str, base_url: str) -> List[str]:
+    def _extract_links(html: str, base_url: str) -> list[str]:
         links = []
         try:
             from bs4 import BeautifulSoup
@@ -450,12 +565,58 @@ class WebCollector(BaseCollector):
                 links.append(urljoin(base_url, m))
         return links
 
-    def _make_message(
+    @staticmethod
+    def _is_junk_page(title: str, text: str) -> tuple[bool, str]:
+        """تشخیص صفحه‌های آشغال (Cloudflare / Challenge / Login Wall).
+
+        Returns:
+            (True, دلیل) اگر آشغال است
+            (False, "") اگر سالم است
+        """
+        title_low = (title or "").lower()
+        text_low = (text or "").lower()
+
+        # ۱) نشانه در عنوان
+        for marker in _JUNK_TITLE_MARKERS:
+            if marker in title_low:
+                return True, f"عنوان شامل «{marker}»"
+
+        # ۲) نشانه‌های قوی در متن (فقط وقتی متن کوتاه است — صفحهٔ چالش‌اند)
+        if len(text_low) < _JUNK_MIN_LEN:
+            for marker in _JUNK_TEXT_MARKERS:
+                if marker in text_low:
+                    return True, f"متن کوتاه شامل «{marker}»"
+
+        # ۳) نشانه‌های قوی حتی در متن بلند (این‌ها فقط در صفحهٔ چالش‌اند)
+        strong_markers = (
+            "performing security verification",
+            "enable javascript and cookies to continue",
+            "checking your browser before accessing",
+            "please wait while we check your browser",
+            "ddos protection by",
+        )
+        for marker in strong_markers:
+            if marker in text_low:
+                return True, f"متن شامل «{marker}»"
+
+        return False, ""
+
+
+    async def _make_message(
         self, url: str, title: str, text: str
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         if not text:
             return None
-        # اثرانگشت محتوا برای حذف تکراری
+
+        # ─── فیلتر صفحه‌های آشغال (Cloudflare / Challenge) ───
+        is_junk, reason = self._is_junk_page(title, text)
+        if is_junk:
+            log_warning(
+                f"⏭️ وب: صفحهٔ آشغال رد شد | {reason} | "
+                f"url={url[:80]}"
+            )
+            return None
+        # اثرانگشت محتوا برای حذف تکراری (پایدار بین اجراها)
         fingerprint = hashlib.md5((url + "|" + text[:1000]).encode("utf-8")).hexdigest()
         if fingerprint in self._seen_hashes:
             return None
@@ -469,6 +630,8 @@ class WebCollector(BaseCollector):
         if self.translate:
             try:
                 text_translated = self._get_translator().translate(full_text)
+                # ⏸️ تأخیر کوتاه برای احترام به محدودیت ۵ req/s گوگل (جلوگیری از 429)
+                await asyncio.sleep(_TRANSLATE_DELAY)
             except Exception as e:
                 log_warning(f"ترجمهٔ صفحه ناموفق بود: {e}")
 
@@ -492,6 +655,8 @@ class WebCollector(BaseCollector):
         }
 
     async def disconnect(self) -> None:
+        # ضدتکراری را قبل از قطع، ذخیره کن
+        self._save_seen()
         self._connected = False
         self._set_status(ConnectionStatus.DISCONNECTED)
         log_info("🔌 وب متوقف شد")

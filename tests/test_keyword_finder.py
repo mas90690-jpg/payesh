@@ -1,6 +1,4 @@
 # tests/test_keyword_finder.py
-import pytest
-from analyzers.keyword_finder import get_keyword_finder
 
 
 def test_keywords_loaded(keyword_finder):
@@ -12,18 +10,18 @@ def test_keywords_loaded(keyword_finder):
 
 def test_persian_match(keyword_finder):
     """تطبیق نام فارسی محصولات"""
-    assert keyword_finder.has_match("قیمت یاراترا چنده؟") == True
-    assert keyword_finder.has_match("رونزا نکست بهترین است") == True
-    assert keyword_finder.has_match("سلام خوبی؟") == False
-    assert keyword_finder.has_match("کود NPK") == False  # چون NPK در لیست نیست
+    assert keyword_finder.has_match("قیمت یاراترا چنده؟")
+    assert keyword_finder.has_match("رونزا نکست بهترین است")
+    assert not keyword_finder.has_match("سلام خوبی؟")
+    assert not keyword_finder.has_match("کود NPK")  # چون NPK در لیست نیست
 
 
 def test_english_match(keyword_finder):
     """تطبیق نام انگلیسی محصولات (حساس به بزرگ/کوچکی نیست)"""
-    assert keyword_finder.has_match("Yara Rexolin Zn") == True
-    assert keyword_finder.has_match("Albatros") == True
-    assert keyword_finder.has_match("Yaratera") == True
-    assert keyword_finder.has_match("Hello World") == False
+    assert keyword_finder.has_match("Yara Rexolin Zn")
+    assert keyword_finder.has_match("Albatros")
+    assert keyword_finder.has_match("Yaratera")
+    assert not keyword_finder.has_match("Hello World")
 
 
 def test_match_returns_list(keyword_finder):

@@ -1,6 +1,7 @@
 # tests/test_database.py
+from datetime import datetime
+
 import pytest
-from datetime import datetime, timedelta
 
 
 @pytest.mark.asyncio

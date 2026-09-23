@@ -1,769 +1,785 @@
-# -*- coding: utf-8 -*-
 """
-ChatOps admin handler — manage the bot from a messenger (Bale by default).
+ChatOps admin handler — نسخهٔ ۸ (ماژولار + async-correct).
 
-Security model (so it can NEVER damage the bot):
-- Only users whose id is in ADMIN_IDS may issue commands; others are ignored.
-- Only PRIVATE chats are treated as commands (group messages are never commands).
-- ONLY a fixed whitelist of safe actions runs. No shell, no eval, no arbitrary code.
-- Free text is understood by the local AI (Ollama) for ACTION routing only; the
-  VALUES (keyword/param) are extracted from the raw text by rules (more reliable
-  than a small model echoing Persian). If AI is down, rule parser still works.
+این فایل فقط coordinator است:
+  - گیت‌های امنیتی (خصوصی + ADMIN_IDS)
+  - مسیرهای handle / process_text
+  - ارسال پاسخ
 
-Pairing: if ADMIN_IDS is empty, the bot logs the sender id of any private message
-so you can copy it into ADMIN_IDS (and it tells the sender their id).
+منطق به این ماژول‌ها واگذار شده:
+  - core/command_parser.py      → parse دستور
+  - handlers/keyword_admin.py   → CRUD کلیدواژه
+  - handlers/admin_memory.py    → حافظهٔ گفتگو
+  - handlers/admin_actions.py   → اجرای دستورها
+
+نسخهٔ ۸ (این نسخه):
+  - 🐛 FIX: پیام پیش‌فرض برای reply خالی (نه ارسال None)
+  - 🐛 FIX: _MAX_REPLY_LEN حذف شد (استفاده نمی‌شد)
+  - 🐛 FIX: _handle_command حالا "" را به پیام راهنما تبدیل می‌کند
+  - 🐛 FIX: _handle_free_text حالا fallback نهایی دارد
+  - 🎯 لاگ واضح‌تر برای fallback نهایی
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۷.
 """
+from __future__ import annotations
+
 import os
-import sys
-import json
-import asyncio
-import sqlite3
-import subprocess
-from datetime import datetime, timedelta
+import time
+from typing import Any
 
-from core.base_handler import BaseHandler
-from core.logger import get_logger, log_info, log_warning
 from analyzers.keyword_finder import get_keyword_finder
-from core.ai_assistant import get_ai_assistant
+from core.adapters import messenger_registry
+from core.adapters.command_parser import (
+    extract_value,
+    parse_command,
+    platform_in,
+)
+from core.contracts.base_handler import BaseHandler
+from core.kernel.logger import log_error, log_info, log_success, log_warning
 from core.safe_brain import SafeBrain, get_safe_brain
-from core import messenger_registry
+from core.services.ai_assistant import get_ai_assistant
+from handlers.admin_actions import AdminActions
+from handlers.admin_memory import AdminMemory
+from handlers.keyword_admin import KeywordAdmin
 
-# ════════════════════════════════════════
-# مغز هوشمند امن (یکپارچه با bot1.py)
-# ════════════════════════════════════════
+# ─── Optional imports (graceful) ───
+try:
+    from core.manual.brain import get_manual_brain
+    _manual_brain_available = True
+except ImportError as e:
+    _manual_brain_available = False
+    log_warning(f"⚠️ [ADMIN:init] manual_brain در دسترس نیست | {e}")
+
 try:
     from core.brain import get_brain
-
-    _brain = None  # lazy init
     _brain_available = True
-except ImportError:
-    _brain = None
+except ImportError as e:
     _brain_available = False
-    log_warning("⚠️ مغز هوشمند (brain.py) در دسترس نیست — حالت سنتی استفاده می‌شود")
+    log_warning(f"⚠️ [ADMIN:init] brain در دسترس نیست | {e}")
 
+
+# ─── مسیرها ───
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CUSTOM_KW = os.path.join(ROOT, "data", "keywords_custom.json")
 PID_FILE = os.path.join(ROOT, "storage", "bot.pid")
-KNOWLEDGE = os.path.join(ROOT, "data", "bot_knowledge.md")
 REQUESTS = os.path.join(ROOT, "storage", "requests.jsonl")
-MEMORY = os.path.join(ROOT, "storage", "ai_memory.jsonl")  # حافظهٔ سبکِ گفتگو (capped)
-MEMORY_MAX = 200  # سقفِ خطوط (کم‌حجم می‌ماند)
+MEMORY = os.path.join(ROOT, "storage", "ai_memory.jsonl")
 
-# Parameters the admin is allowed to read/change (safe whitelist; everything else refused)
-SAFE_PARAMS = {
-    "KEYWORDS_ONLY",
-    "EITAA_POLL_SECONDS",
-    "WHATSAPP_POLL_SECONDS",
-    "LINKEDIN_POLL_SECONDS",
-    "LINKEDIN_MONITOR_FEED",
-    "WEB_ENABLED",
-    "EITAA_ENABLED",
-    "BALE_ENABLED",
-    "RUBIKA_ENABLED",
-    "TELEGRAM_ENABLED",
-    "WHATSAPP_ENABLED",
-    "LINKEDIN_ENABLED",
-    "OBS_PORT",
-    "LOG_LEVEL",
-}
-_PLATFORM_MAP = {
-    "ایتا": "eitaa",
-    "بله": "bale",
-    "روبیکا": "rubika",
-    "تلگرام": "telegram",
-    "واتساپ": "whatsapp",
-    "واتس‌اپ": "whatsapp",
-    "لینکدین": "linkedin",
-    "وب": "web",
-    "eitaa": "eitaa",
-    "bale": "bale",
-    "rubika": "rubika",
-    "telegram": "telegram",
-    "whatsapp": "whatsapp",
-    "linkedin": "linkedin",
-    "web": "web",
-}
+# ⭐ مسیرها از data/paths.py (منبع یکتا)
+from data import paths as data_paths
+
+CUSTOM_KW = str(data_paths.KEYWORDS_CUSTOM)
+KNOWLEDGE = str(data_paths.BOT_KNOWLEDGE)
+MEMORY_MAX = 200
+
+# ─── ثابت‌ها ───
+_LOG_PREVIEW_LEN = 100
+_SLOW_HANDLE_MS = 5000
+_SLOW_LAYER_MS = 3000
+_SLOW_REPLY_MS = 3000
+
+# سقف متن برای ارسال به بله (بله حدود ۴۰۰۰ کاراکتر در هر پیام)
+_REPLY_CHUNK = 3900
+
+# prefixهای SafeBrain — برای تشخیص «واگذاری به لایهٔ بعد»
+_SAFEBRAIN_PREFIXES = ("🤖 SafeBrain", "🤖 WinDoctor")
+
+# تعداد کاراکتر برای اینکه SafeBrain real باشد (نه fallback)
+_SAFEBRAIN_MIN_REAL_LEN = 250
+
+# 🐛 FIX: پیام پیش‌فرض وقتی هیچ لایه‌ای پاسخ نداد
+_EMPTY_REPLY_FALLBACK = (
+    "🤔 متوجه نشدم یا پاسخی پیدا نشد.\n"
+    "می‌توانی:\n"
+    "• «راهنما» بزنی\n"
+    "• «وضعیت» یا «گزارش» بپرسی\n"
+    "• واضح‌تر بپرسی"
+)
 
 
 class AdminHandler(BaseHandler):
+    """ChatOps: تنها مسیر دستور دادن. سختگیر: فقط خصوصی، فقط ADMIN_IDS."""
+
     def __init__(self, db, scorer=None, **kwargs):
+        super().__init__()
         self.db = db
         self.kw = get_keyword_finder()
         self.ai = get_ai_assistant()
-        # SafeBrain — مغز امن با کش و حافظه (جایگزین هوشمند برای کاهش هزینه)
-        from config import AI as AI_CONFIG
 
+        self.db_path = getattr(
+            db, "db_path",
+            os.path.join(ROOT, "storage", "database", "messages.db"),
+        )
+
+        # ─── SafeBrain (singleton) ───
         api_key = os.environ.get("DEEPSEEK_API_KEY", "")
         self.safe_brain: SafeBrain = get_safe_brain(api_key=api_key)
-        from config import PLUGINS_CONFIG
 
+        # ─── ManualBrain ───
+        self.manual_brain = None
+        if _manual_brain_available:
+            try:
+                self.manual_brain = get_manual_brain(self.db_path)
+                log_success("✅ [ADMIN:init] ManualBrain بارگذاری شد")
+            except Exception as e:
+                log_warning(
+                    f"⚠️ [ADMIN:init] manual_brain init ناموفق | "
+                    f"{type(e).__name__}: {e}"
+                )
+
+        # ─── Brain — per-instance (نه global) ───
+        self._brain: Any | None = None
+
+        # ─── config ───
+        from config import PLUGINS_CONFIG
         cfg = PLUGINS_CONFIG.get("adminhandler", {})
         self.enabled = cfg.get("enabled", True)
-        self.admin_ids = set(str(x) for x in cfg.get("admin_ids", []))
+        self.admin_ids = {
+            str(x).strip() for x in cfg.get("admin_ids", []) if x
+        }
         self.platform = cfg.get("platform", "bale")
-        self.db_path = getattr(
-            db, "db_path", os.path.join(ROOT, "storage", "database", "messages.db")
-        )
-        self._knowledge = ""
-        try:
-            with open(KNOWLEDGE, "r", encoding="utf-8") as f:
-                self._knowledge = f.read()
-        except Exception:
-            pass
 
+        # چک: آیا پلتفرم مدیر فعال است؟ (برای لاگ)
+        self._platform_enabled = PLUGINS_CONFIG.get(
+            f"{self.platform}collector", {}
+        ).get("enabled", False)
+        if not self._platform_enabled and self.enabled:
+            log_warning(
+                f"⚠️ [ADMIN:init] پلتفرم مدیر «{self.platform}» غیرفعال است "
+                f"ولی ADMIN_ENABLED=true → پاسخ‌ها ارسال نمی‌شوند. "
+                f"BALE_ENABLED=true کن یا ADMIN_PLATFORM را عوض کن."
+            )
+
+        # ─── دانش ───
+        self._knowledge = self._load_knowledge()
+
+        # ─── زیرماژول‌ها ───
+        self._keyword_admin = KeywordAdmin(CUSTOM_KW)
+        self._memory = AdminMemory(MEMORY, MEMORY_MAX)
+        self._actions = AdminActions(
+            db=self.db,
+            db_path=self.db_path,
+            kw=self.kw,
+            ai=self.ai,
+            knowledge=self._knowledge,
+            keyword_admin=self._keyword_admin,
+            memory=self._memory,
+            root=ROOT,
+            platform=self.platform,
+            pid_file=PID_FILE,
+            get_requests_path=lambda: REQUESTS,
+            get_custom_kw_path=lambda: CUSTOM_KW,
+        )
+
+        log_success(
+            f"✅ [ADMIN:init] آماده | platform={self.platform} | "
+            f"admin_ids={len(self.admin_ids)} | "
+            f"enabled={self.enabled} | "
+            f"platform_enabled={self._platform_enabled} | "
+            f"manual={self.manual_brain is not None}"
+        )
+
+    # ═══════════════════════════════════════
+    # knowledge
+    # ═══════════════════════════════════════
+    def _load_knowledge(self) -> str:
+        try:
+            with open(KNOWLEDGE, encoding="utf-8") as f:
+                text = f.read()
+            log_info(
+                f"📚 [ADMIN:init] knowledge بارگذاری شد | {len(text)}ch"
+            )
+            return text
+        except FileNotFoundError:
+            log_warning(f"⚠️ [ADMIN:init] knowledge نبود | {KNOWLEDGE}")
+            return ""
+        except Exception as e:
+            log_warning(
+                f"⚠️ [ADMIN:init] knowledge | {type(e).__name__}: {e}"
+            )
+            return ""
+
+    # ═══════════════════════════════════════
+    # BaseHandler contract
+    # ═══════════════════════════════════════
     @property
-    def handler_name(self):
+    def handler_name(self) -> str:
         return "admin_handler"
 
-    def can_handle(self, event_name):
+    def can_handle(self, event_name: str) -> bool:
         return self.enabled and event_name == "message.received"
 
+    # ═══════════════════════════════════════
+    # SafeBrain fallback detection
+    # ═══════════════════════════════════════
+    @staticmethod
+    def _is_safebrain_fallback(reply: str | None) -> bool:
+        """آیا این پاسخ، پیامِ «هوش در دسترس نیست» SafeBrain است؟
+
+        تشخیص:
+          - خالی → fallback
+          - با prefix شروع شود + متن کوتاه → fallback
+          - با prefix شروع شود + متن بلند → پاسخ واقعی (rare)
+        """
+        if not reply:
+            return True
+        s = reply.strip()
+        if not s.startswith(_SAFEBRAIN_PREFIXES):
+            return False
+        # اگر با prefix شروع شده ولی متن کوتاه است → fallback
+        return len(s) < _SAFEBRAIN_MIN_REAL_LEN
+
+    # ═══════════════════════════════════════
+    # Brain — lazy + per-instance
+    # ═══════════════════════════════════════
+    def _get_brain(self):
+        """Lazy ساخت Brain (per-instance، نه global)."""
+        if not _brain_available:
+            return None
+        if self._brain is not None:
+            return self._brain
+        try:
+            self._brain = get_brain(db=self.db)
+            log_info("🏗️ [ADMIN:brain] Brain ساخته شد (lazy)")
+        except Exception as e:
+            log_warning(
+                f"⚠️ [ADMIN:brain] ساخت ناموفق | "
+                f"{type(e).__name__}: {e}"
+            )
+            self._brain = None
+        return self._brain
+
+    # ═══════════════════════════════════════
+    # AI fallback (for manual_brain)
+    # ═══════════════════════════════════════
+    async def _ai_fallback(self, question: str) -> str | None:
+        log_info(
+            f"🧠 [ADMIN:fallback] شروع | "
+            f"q={question[:_LOG_PREVIEW_LEN]!r}"
+        )
+        t0 = time.monotonic()
+
+        # ─── لایهٔ ۱: Brain ───
+        brain = self._get_brain()
+        if brain:
+            try:
+                t_layer = time.monotonic()
+                ans = await brain.process_admin_command(question)
+                layer_ms = (time.monotonic() - t_layer) * 1000
+
+                if ans and self._is_valid_ai_answer(ans):
+                    log_info(
+                        f"✅ [ADMIN:fallback:brain] پاسخ | "
+                        f"{layer_ms:.0f}ms | len={len(ans)}"
+                    )
+                    return ans
+                log_info(
+                    f"ℹ️ [ADMIN:fallback:brain] نامعتبر/خالی | "
+                    f"{layer_ms:.0f}ms"
+                )
+            except Exception as e:
+                log_warning(
+                    f"⚠️ [ADMIN:fallback:brain] "
+                    f"{type(e).__name__}: {e}"
+                )
+
+        # ─── لایهٔ ۲: AIAssistant ───
+        try:
+            from core.services.ai_assistant import PERSONA
+            system = (
+                PERSONA
+                + "\n\n# دانشِ ربات:\n" + self._knowledge
+                + "\n\n# وضعیتِ زندهٔ همین الان (از دیتابیس):\n"
+                + self._actions.live_context()
+            )
+            t_layer = time.monotonic()
+            ans = await self.ai.chat(question, system=system)
+            layer_ms = (time.monotonic() - t_layer) * 1000
+
+            if ans and self._is_valid_ai_answer(ans):
+                log_info(
+                    f"✅ [ADMIN:fallback:ai] پاسخ | "
+                    f"{layer_ms:.0f}ms | len={len(ans)}"
+                )
+                return ans
+            log_info(
+                f"ℹ️ [ADMIN:fallback:ai] نامعتبر/خالی | "
+                f"{layer_ms:.0f}ms"
+            )
+        except Exception as e:
+            log_warning(
+                f"⚠️ [ADMIN:fallback:ai] {type(e).__name__}: {e}"
+            )
+
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        log_warning(
+            f"❌ [ADMIN:fallback] هیچ لایه‌ای جواب نداد | "
+            f"{elapsed_ms:.0f}ms"
+        )
+        return None
+
+    @staticmethod
+    def _is_valid_ai_answer(ans: str | None) -> bool:
+        """پاسخ AI معتبر است یا پیام خطا؟"""
+        if not ans:
+            return False
+        s = str(ans).strip()
+        if not s:
+            return False
+        # پیام‌های خطای شناخته‌شده AI
+        _bad_prefixes = ("⚠️", "❌", "🚫", "⛔")
+        if s.startswith(_bad_prefixes):
+            return False
+        _bad_markers = (
+            "در دسترس نیست",
+            "خطای API",
+            "Error code:",
+            "rate limit",
+            "timed out",
+        )
+        for m in _bad_markers:
+            if m in s:
+                return False
+        return True
+
+    # ═══════════════════════════════════════
+    # entry point (messenger)
+    # ═══════════════════════════════════════
     async def handle(self, event):
+        t0 = time.monotonic()
         raw = event.data if isinstance(event.data, dict) else {}
+
+        # ─── فیلتر پلتفرم ───
         if raw.get("platform") != self.platform:
             return
+
         sender = str(raw.get("user_id") or "").strip()
-        ct = raw.get("chat_type") or ""
-        # تشخیصی: هر پیامِ یک مدیر را لاگ کن تا اگر جواب نداد، علتش معلوم باشد
-        if sender in self.admin_ids:
+        chat_id = str(raw.get("chat_id") or "").strip()
+        ct = (raw.get("chat_type") or "").lower()
+        is_admin = sender in self.admin_ids
+
+        if is_admin:
             log_info(
-                f"🛡️ admin msg | chat_type={ct} chat_id={raw.get('chat_id')} sender={sender}"
+                f"🛡️ [ADMIN:handle] پیام | chat_type={ct!r} "
+                f"chat_id={chat_id} sender={sender}"
             )
-        # فقط چتِ خصوصی = دستور. بله گاهی چتِ خصوصی را اشتباهی «group» می‌زند؛
-        # پس اگر فرستنده مدیر است، چتِ یک‌به‌یک (chat_id==فرستنده) را هم خصوصی حساب کن.
+
+        # ─── فقط خصوصی ───
         is_private = (
-            ct in ("private", "user", "")
-            or str(raw.get("chat_id")) == sender
-            or sender in self.admin_ids
-        )  # پیامِ خصوصیِ مدیر همیشه دستور است
+            ct in ("private", "user")
+            or (not ct and chat_id == sender)
+        )
         if not is_private:
+            if is_admin:
+                log_info(
+                    f"⏭️ [ADMIN:handle] غیرخصوصی — رد | "
+                    f"chat_type={ct!r} chat_id={chat_id}"
+                )
             return
+
         text = (raw.get("text") or raw.get("caption") or "").strip()
         if not text:
             return
 
-        # حالتِ pairing: هنوز مدیری ثبت نشده → آی‌دی را اعلام کن
+        # ─── لایهٔ ManualBrain ───
+        if self.admin_ids and is_admin and self.manual_brain:
+            try:
+                t_layer = time.monotonic()
+                manual_reply = await self.manual_brain.process(
+                    text, sender=sender, ai_fallback=self._ai_fallback,
+                )
+                layer_ms = (time.monotonic() - t_layer) * 1000
+
+                if manual_reply:
+                    log_success(
+                        f"✅ [ADMIN:layer:manual] پاسخ | "
+                        f"{layer_ms:.0f}ms | len={len(manual_reply)}"
+                    )
+                    await self._reply(raw, manual_reply)
+                    total_ms = (time.monotonic() - t0) * 1000
+                    log_info(
+                        f"🏁 [ADMIN:handle] کامل | total={total_ms:.0f}ms"
+                    )
+                    return
+
+                log_info(
+                    f"ℹ️ [ADMIN:layer:manual] نداد | "
+                    f"{layer_ms:.0f}ms — واگذاری به لایهٔ بعد"
+                )
+            except Exception as e:
+                log_warning(
+                    f"⚠️ [ADMIN:layer:manual] {type(e).__name__}: {e}"
+                )
+
+        # ─── pairing ───
         if not self.admin_ids:
             log_warning(
-                f"🔑 ADMIN PAIRING — platform={self.platform} user_id={sender} | "
-                f"این آی‌دی را در .env بگذار: ADMIN_IDS={sender}"
+                f"🔑 [ADMIN:pairing] platform={self.platform} "
+                f"user_id={sender} | .env → ADMIN_IDS={sender}"
             )
             await self._reply(
                 raw,
-                f"👋 آی‌دیِ تو: {sender}\nآن را در .env بگذار:\nADMIN_IDS={sender}\n"
+                f"👋 آیدیِ تو: {sender}\n"
+                f"آن را در .env بگذار:\nADMIN_IDS={sender}\n"
                 f"بعد ربات را ری‌استارت کن تا مدیر شوی.",
             )
             return
 
-        if sender not in self.admin_ids:
-            return  # کاربرِ غیرمجاز → نادیده
+        if not is_admin:
+            log_info(
+                f"⏭️ [ADMIN:handle] کاربر غیرمجاز | sender={sender}"
+            )
+            return
 
-        log_info(f"🛡️ admin command from {sender}: {text[:80]}")
-        action, value = self._rule_parse(text)
+        # ─── مسیر اصلی ───
+        log_info(
+            f"🛡️ [ADMIN:handle] دستور | {text[:_LOG_PREVIEW_LEN]!r}"
+        )
+
+        action, value = parse_command(text)
+        log_info(f"🎯 [ADMIN:parse] action={action} value={value!r}")
+
         try:
             if action is None:
-                # ── دستورِ روشن نبود → SafeBrain (مغز امن با کش و حافظه) ──
-                reply = await self.safe_brain.process(text)
-                if not reply or reply.startswith("🤖 SafeBrain"):
-                    # اگر SafeBrain نتوانست، fallback به روش‌های قبلی
-                    if _brain_available:
-                        global _brain
-                        if _brain is None:
-                            _brain = get_brain(db=self.db)
-                        try:
-                            reply = await _brain.process_admin_command(text)
-                        except Exception as e:
-                            log_warning(f"مغز خطا در گفتگوی آزاد، fallback: {e}")
-                            reply = await self._ask(text)
-                    else:
-                        reply = await self._ask(text)
+                reply = await self._handle_free_text(text)
             else:
-                # برای اکشن‌های شناخته شده، اول SafeBrain امتحان می‌کند
-                reply = await self.safe_brain.process(text)
-                if not reply or reply.startswith("🤖 SafeBrain"):
-                    reply = await self._execute(action, value, text)
+                reply = await self._handle_command(
+                    action, value, text
+                )
         except Exception as e:
+            log_error(f"❌ [ADMIN:handle] {type(e).__name__}: {e}")
             reply = f"❌ خطا در اجرای دستور: {e}"
+
+        # 🐛 FIX: پیام پیش‌فرض اگه reply خالی بود
+        if not reply:
+            log_info("ℹ️ [ADMIN:handle] reply خالی — پیام پیش‌فرض")
+            reply = _EMPTY_REPLY_FALLBACK
+
         await self._reply(raw, reply)
 
+        total_ms = (time.monotonic() - t0) * 1000
+        if total_ms > _SLOW_HANDLE_MS:
+            log_warning(
+                f"🐌 [ADMIN:handle] کند | {total_ms:.0f}ms | "
+                f"action={action}"
+            )
+        else:
+            log_info(
+                f"🏁 [ADMIN:handle] کامل | total={total_ms:.0f}ms | "
+                f"reply_len={len(reply or '')}"
+            )
+
+    # ═══════════════════════════════════════
+    # routing
+    # ═══════════════════════════════════════
+    async def _handle_command(
+        self, action: str, value, raw_text: str
+    ) -> str:
+        t0 = time.monotonic()
+
+        # ─── لایهٔ SafeBrain ───
+        reply: str | None = None
+        try:
+            t_sb = time.monotonic()
+            reply = await self.safe_brain.process(raw_text)
+            sb_ms = (time.monotonic() - t_sb) * 1000
+            log_info(
+                f"🧠 [ADMIN:safe_brain] {sb_ms:.0f}ms | "
+                f"reply={'✅' if reply else '❌ خالی'}"
+            )
+        except Exception as e:
+            log_warning(
+                f"⚠️ [ADMIN:safe_brain] {type(e).__name__}: {e}"
+            )
+            reply = None
+
+        # ─── اگه SafeBrain مسئول نبود → AdminActions ───
+        if self._is_safebrain_fallback(reply):
+            t_exec = time.monotonic()
+            reply = await self._actions.execute(action, value, raw_text)
+            exec_ms = (time.monotonic() - t_exec) * 1000
+            log_info(
+                f"⚙️ [ADMIN:execute] {exec_ms:.0f}ms | "
+                f"action={action} | len={len(reply or '')}"
+            )
+
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        if elapsed_ms > _SLOW_LAYER_MS:
+            log_warning(
+                f"🐌 [ADMIN:handle_command] کند | {elapsed_ms:.0f}ms"
+            )
+
+        # 🐛 FIX: تبدیل None/"" به پیام پیش‌فرض
+        return reply or _EMPTY_REPLY_FALLBACK
+
+    async def _handle_free_text(self, text: str) -> str:
+        t0 = time.monotonic()
+
+        # ─── لایهٔ ۱: SafeBrain ───
+        try:
+            reply = await self.safe_brain.process(text)
+            if reply and not self._is_safebrain_fallback(reply):
+                log_info(
+                    f"✅ [ADMIN:free] safe_brain پاسخ | "
+                    f"{time.monotonic() - t0:.2f}s"
+                )
+                return reply
+        except Exception as e:
+            log_warning(
+                f"⚠️ [ADMIN:free] safe_brain | "
+                f"{type(e).__name__}: {e}"
+            )
+
+        # ─── لایهٔ ۲: Brain ───
+        brain = self._get_brain()
+        if brain:
+            try:
+                t_b = time.monotonic()
+                ans = await brain.process_admin_command(text)
+                b_ms = (time.monotonic() - t_b) * 1000
+                if ans and self._is_valid_ai_answer(ans):
+                    log_info(
+                        f"✅ [ADMIN:free] brain پاسخ | {b_ms:.0f}ms"
+                    )
+                    return ans
+                log_info(
+                    f"ℹ️ [ADMIN:free] brain نامعتبر | {b_ms:.0f}ms"
+                )
+            except Exception as e:
+                log_warning(
+                    f"⚠️ [ADMIN:free] brain | {type(e).__name__}: {e}"
+                )
+
+        # ─── لایهٔ ۳: AIAssistant ───
+        log_info("🔄 [ADMIN:free] → _ask (AIAssistant)")
+        try:
+            ans = await self._actions.ask(text)
+            if ans and self._is_valid_ai_answer(ans):
+                return ans
+        except Exception as e:
+            log_warning(
+                f"⚠️ [ADMIN:free] ask | {type(e).__name__}: {e}"
+            )
+
+        # 🐛 FIX: fallback نهایی
+        log_warning(
+            f"❌ [ADMIN:free] هیچ لایه‌ای پاسخ نداد | "
+            f"{time.monotonic() - t0:.2f}s"
+        )
+        return _EMPTY_REPLY_FALLBACK
+
+    # ═══════════════════════════════════════
+    # web path
+    # ═══════════════════════════════════════
     async def process_text(self, text: str) -> str:
-        """پردازشِ یک پیامِ متنی و برگرداندنِ جواب (برای چتِ محلیِ مرورگر — بدونِ نت/بله).
-        محلی = مطمئن، پس بدونِ گیتِ آی‌دی. همان منطقِ دستور/گفتگوی بله."""
+        """مسیر وب (بدون messenger) — برای /chat در OBS server."""
         text = (text or "").strip()
         if not text:
             return ""
-        try:
-            reply = await self.safe_brain.process(text)
-            if reply and not reply.startswith("🤖 SafeBrain"):
-                return reply
-        except Exception:
-            pass
-        action, value = self._rule_parse(text)
+
+        log_info(
+            f"🌐 [ADMIN:web] درخواست | "
+            f"{text[:_LOG_PREVIEW_LEN]!r}"
+        )
+        t0 = time.monotonic()
+
+        # ─── لایهٔ ManualBrain ───
+        if self.manual_brain:
+            try:
+                t_layer = time.monotonic()
+                manual_reply = await self.manual_brain.process(
+                    text,
+                    sender="local_web",
+                    ai_fallback=self._ai_fallback,
+                )
+                layer_ms = (time.monotonic() - t_layer) * 1000
+                if manual_reply:
+                    log_success(
+                        f"✅ [ADMIN:web:manual] پاسخ | {layer_ms:.0f}ms"
+                    )
+                    return manual_reply
+            except Exception as e:
+                log_warning(
+                    f"⚠️ [ADMIN:web:manual] {type(e).__name__}: {e}"
+                )
+
+        # ─── parse یک‌بار ───
+        action, value = parse_command(text)
+        log_info(f"🎯 [ADMIN:web:parse] action={action}")
+
         try:
             if action is None:
-                return await self._ask(text)
-            return await self._execute(action, value, text)
+                reply = await self._handle_free_text(text)
+            else:
+                reply = await self._handle_command(
+                    action, value, text
+                )
+            total_ms = (time.monotonic() - t0) * 1000
+            log_info(
+                f"🏁 [ADMIN:web] کامل | {total_ms:.0f}ms | "
+                f"len={len(reply or '')}"
+            )
+            # 🐛 FIX: اگه reply خالی بود
+            return reply or _EMPTY_REPLY_FALLBACK
         except Exception as e:
+            log_error(f"❌ [ADMIN:web] {type(e).__name__}: {e}")
             return f"❌ خطا: {e}"
 
-    # ==================================================
-    # parsing
-    # ==================================================
-    @staticmethod
-    def _extract_value(text: str):
-        import re
-
-        m = re.search(r"[«\"']([^»\"']+)[»\"']", text)  # «...» or "..." or '...'
-        return m.group(1).strip() if m else None
-
-    def _platform_in(self, low: str):
-        for word, canon in _PLATFORM_MAP.items():
-            if word in low:
-                return canon
-        return None
-
-    def _rule_parse(self, text: str):
-        low = text.lower()
-        val = self._extract_value(text)
-        if any(w in low for w in ["help", "راهنما", "کمک", "دستورات", "منو"]):
-            return "help", None
-        if any(
-            w in low
-            for w in ["restart", "ری‌استارت", "ریستارت", "راه‌اندازی مجدد", "ری استارت"]
-        ):
-            return "restart", None
-        if ("حذف" in low or "remove" in low or "پاک" in low or "delete" in low) and (
-            "کلیدواژه" in low or "keyword" in low or val
-        ):
-            return "remove_keyword", val
-        if ("اضافه" in low or "add" in low) and (
-            "کلیدواژه" in low or "keyword" in low or val
-        ):
-            return "add_keyword", val
-        if ("دار" in low or "هست" in low or "has" in low or "exist" in low) and (
-            "کلیدواژه" in low or "keyword" in low
-        ):
-            return "has_keyword", val
-        # جزئیاتِ سرنخ (برای رونمایی): «اولین/آخرین سرنخ را با جزئیات بگو»
-        if ("سرنخ" in low or "پایش" in low or "lead" in low) and any(
-            w in low
-            for w in [
-                "جزئیات",
-                "اولین",
-                "آخرین",
-                "detail",
-                "first",
-                "last",
-                "نشون",
-                "بگو",
-            ]
-        ):
-            which = "first" if ("اولین" in low or "first" in low) else "last"
-            return "lead_details", which
-        # سلامتِ کاملِ ۰-۱۰۰
-        if any(
-            w in low
-            for w in [
-                "سلامت",
-                "health",
-                "چک کامل",
-                "تندرستی",
-                "همه پلتفرم",
-                "وضعیت کامل",
-            ]
-        ):
-            return "health", None
-        # درخواستِ قابلیتِ جدید: فقط وقتی فعلِ «خواستن» + اشارهٔ «قابلیت/توانایی» باشد
-        # (تا سؤالِ «چه قابلیت‌هایی داری؟» اشتباه گرفته نشود — آن سؤال است نه درخواست).
-        _want = any(
-            w in low
-            for w in [
-                "میخوام",
-                "می‌خوام",
-                "میخواهم",
-                "می‌خواهم",
-                "کاش",
-                "اضافه کن",
-                "اضاف کن",
-            ]
-        )
-        _cap = any(w in low for w in ["بتون", "قابلیت", "feature", "توانایی"])
-        if _want and _cap and "کلیدواژه" not in low:
-            return "feature_request", None
-        if any(w in low for w in ["کلیدواژه", "keyword"]):
-            return "keywords", None
-        if any(w in low for w in ["گزارش", "report"]):
-            return "report", None
-        if any(w in low for w in ["crm", "سی آر ام", "خروجی"]):
-            return "crm", None
-        # «این لاگ چیه/یعنی چی/توضیح بده» → توضیح؛ صرفِ «لاگ» → نمایش
-        if ("لاگ" in low or "log" in low) and any(
-            w in low for w in ["چیه", "یعنی", "توضیح", "معنی", "explain", "چرا"]
-        ):
-            return "explain_logs", None
-        if any(w in low for w in ["لاگ", "log"]):
-            return "logs", None
-        if any(
-            w in low
-            for w in [
-                "وضعیت",
-                "آمار",
-                "اوضاع",
-                "حال",
-                "چطور",
-                "سرنخ",
-                "lead",
-                "status",
-                "stat",
-            ]
-        ) and not self._platform_in(low):
-            return "status", None
-        p = self._platform_in(low)
-        if p and any(
-            w in low for w in ["کار", "وصل", "working", "status", "?", "؟", "فعال"]
-        ):
-            return "platform_status", p
-        return None, val
-
-    # ==================================================
-    # safe actions (whitelist) → reply text
-    # ==================================================
-    async def _execute(self, action: str, value, raw_text: str) -> str:
-        # ── تلاش برای استفاده از مغز هوشمند (brain) ──
-        if _brain_available:
-            global _brain
-            if _brain is None:
-                _brain = get_brain(db=self.db)
-            brain_cmds = {
-                "help",
-                "status",
-                "health",
-                "lead_details",
-                "keywords",
-                "has_keyword",
-                "add_keyword",
-                "remove_keyword",
-            }
-            if action in brain_cmds:
-                try:
-                    return await _brain.process_admin_command(raw_text)
-                except Exception as e:
-                    log_warning(f"مغز خطا داد، fallback به حالت سنتی: {e}")
-
-        # ── حالت سنتی (Fallback) ──
-        if action == "help":
-            return self._help()
-        if action == "status":
-            return self._status()
-        if action == "report":
-            from core.daily_reporter import generate_executive_report
-
-            path = generate_executive_report()
-            return f"📄 گزارش مدیریتی ساخته شد:\n{path}"
-        if action == "crm":
-            from core.crm_export import export_crm
-
-            res = export_crm(30)
-            return (
-                f"📤 خروجی CRM آماده شد ({res.get('count', 0)} سرنخ):\n"
-                f"{res.get('xlsx') or res.get('csv')}"
-            )
-        if action == "logs":
-            return self._logs()
-        if action == "keywords":
-            ks = self.kw.keywords
-            sample = "، ".join(ks[:15])
-            return f"🔑 {len(ks)} کلیدواژه بارگذاری شده.\nنمونه: {sample}"
-        if action == "add_keyword":
-            return self._add_keyword(value or self._extract_value(raw_text))
-        if action == "remove_keyword":
-            return self._remove_keyword(value or self._extract_value(raw_text))
-        if action == "health":
-            return await self._health()
-        if action == "lead_details":
-            return await self._lead_details(value or "last")
-        if action == "has_keyword":
-            v = value or self._extract_value(raw_text)
-            if not v:
-                return "کدام کلیدواژه؟ داخل « » بنویس."
-            found = bool(self.kw.has_match(v) or v in self.kw.keywords)
-            return (
-                f"{'✅ بله' if found else '❌ نه'}، «{v}» {'هست' if found else 'نیست'}."
-            )
-        if action == "platform_status":
-            return await self._platform_status(value)
-        if action == "get_param":
-            return self._get_param(value)
-        if action == "set_param":
-            return self._set_param(raw_text)
-        if action == "restart":
-            asyncio.create_task(self._do_restart())
-            return "🔄 در حال ری‌استارت... چند ثانیه دیگر دوباره بالا می‌آیم."
-        if action == "explain_logs":
-            return await self._explain_logs()
-        if action == "feature_request":
-            return self._log_request(raw_text)
-        # هر چیز دیگری = سؤالِ آزاد → هوش با کمکِ سندِ دانش جواب می‌دهد
-        return await self._ask(raw_text)
-
-    async def _ask(self, question: str) -> str:
-        """پاسخ به سؤالِ آزاد — هویتِ ربات + سندِ دانش + حافظهٔ زندهٔ دیتابیس + گفتگوی اخیر."""
-        from core.ai_assistant import PERSONA
-
-        system = (
-            PERSONA
-            + "\n\n# دانشِ ربات:\n"
-            + self._knowledge
-            + "\n\n# وضعیتِ زندهٔ همین الان (از دیتابیس):\n"
-            + self._live_context()
-            + self._recent_memory()
-        )
-        ans = await self.ai.chat(question, system=system)
-        if not ans:
-            return "هوش الان در دسترس نیست. خلاصهٔ قابلیت‌ها:\n" + self._help()
-        self._remember(question, ans)  # حافظهٔ سبک (capped) — کم‌کم باهوش‌تر می‌شود
-        return ans
-
-    def _recent_memory(self, n: int = 6) -> str:
-        """چند گفتگوی اخیرِ مدیر (حافظهٔ سبک). کم‌حجم چون فقط N خطِ آخر خوانده می‌شود."""
-        if not os.path.exists(MEMORY):
-            return ""
-        try:
-            with open(MEMORY, "r", encoding="utf-8") as f:
-                lines = f.readlines()[-n:]
-            items = []
-            for ln in lines:
-                try:
-                    o = json.loads(ln)
-                    items.append(f"س: {o.get('q','')[:120]}\nج: {o.get('a','')[:160]}")
-                except Exception:
-                    pass
-            return ("\n\n# گفتگوی اخیر (حافظه):\n" + "\n".join(items)) if items else ""
-        except Exception:
-            return ""
-
-    def _remember(self, q: str, a: str):
-        try:
-            os.makedirs(os.path.dirname(MEMORY), exist_ok=True)
-            with open(MEMORY, "a", encoding="utf-8") as f:
-                f.write(
-                    json.dumps(
-                        {"ts": datetime.now().isoformat(), "q": q, "a": a},
-                        ensure_ascii=False,
-                    )
-                    + "\n"
-                )
-            # سقفِ حجم: فقط آخرین MEMORY_MAX خط نگه داشته شود
-            with open(MEMORY, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-            if len(lines) > MEMORY_MAX:
-                with open(MEMORY, "w", encoding="utf-8") as f:
-                    f.writelines(lines[-MEMORY_MAX:])
-        except Exception:
-            pass
-
-    def _live_context(self) -> str:
-        """خلاصهٔ کوتاه و زندهٔ وضعیت از دیتابیس (حافظه = همان دیتابیس؛ سبک، هر بار تازه).
-        با بزرگ‌شدنِ داده‌ها سنگین نمی‌شود چون فقط چند عددِ خلاصه و آخرین سرنخ را می‌خواند.
-        """
-        try:
-            c = sqlite3.connect(self.db_path)
-            cur = c.cursor()
-            total = cur.execute(
-                "SELECT COUNT(*) FROM messages WHERE keywords!=''"
-            ).fetchone()[0]
-            today = cur.execute(
-                "SELECT COUNT(*) FROM messages WHERE keywords!='' AND date(timestamp)=date('now')"
-            ).fetchone()[0]
-            byp = cur.execute(
-                "SELECT platform, COUNT(*) FROM messages WHERE keywords!='' GROUP BY platform"
-            ).fetchall()
-            last = cur.execute(
-                "SELECT platform, chat_name, keywords, timestamp FROM messages WHERE keywords!='' ORDER BY timestamp DESC LIMIT 1"
-            ).fetchone()
-            c.close()
-            parts = [
-                f"کل سرنخ‌ها: {total}",
-                f"امروز: {today}",
-                (
-                    "به‌تفکیک: " + "، ".join(f"{p}={n}" for p, n in byp)
-                    if byp
-                    else "به‌تفکیک: -"
-                ),
-            ]
-            if last:
-                parts.append(
-                    f"آخرین سرنخ: {last[0]} / گروه {last[1]} / کلیدواژه {last[2]} / {last[3]}"
-                )
-            return "\n".join(parts)
-        except Exception:
-            return "(فعلاً آماری در دسترس نیست)"
-
-    async def _explain_logs(self) -> str:
-        logs = self._logs(15)
-        prompt = (
-            f"این لاگ‌های ربات را خیلی ساده به فارسی توضیح بده که چه اتفاقی افتاده و "
-            f"اگر خطایی هست یعنی چه و چه باید کرد:\n\n{logs}"
-        )
-        ans = await self.ai.chat(prompt)
-        return ans or logs
-
-    def _log_request(self, text: str) -> str:
-        try:
-            os.makedirs(os.path.dirname(REQUESTS), exist_ok=True)
-            with open(REQUESTS, "a", encoding="utf-8") as f:
-                f.write(
-                    json.dumps(
-                        {"ts": datetime.now().isoformat(), "request": text},
-                        ensure_ascii=False,
-                    )
-                    + "\n"
-                )
-            return (
-                "📝 ثبت شد. این یک قابلیتِ جدید است که الان ربات ندارد؛ برای توسعه‌دهنده "
-                "ثبتش کردم تا اضافه شود."
-            )
-        except Exception as e:
-            return f"خطا در ثبتِ درخواست: {e}"
-
-    def _help(self) -> str:
-        return (
-            "🛡️ دستورها (متن آزاد هم می‌فهمم):\n"
-            "• وضعیت / آمار\n• گزارش\n• CRM (اکسل)\n• لاگ\n"
-            "• کلیدواژه‌ها\n• کلیدواژه «...» را اضافه کن\n• کلیدواژه «...» را داری؟\n"
-            "• لینکدین کار می‌کند؟ (یا هر پلتفرم)\n• ری‌استارت"
-        )
-
-    def _status(self) -> str:
-        try:
-            c = sqlite3.connect(self.db_path)
-            cur = c.cursor()
-            total = cur.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-            leads = cur.execute(
-                "SELECT COUNT(*) FROM messages WHERE keywords!=''"
-            ).fetchone()[0]
-            hot = cur.execute(
-                "SELECT COUNT(*) FROM messages WHERE opportunity_type='داغ'"
-            ).fetchone()[0]
-            rows = cur.execute(
-                "SELECT platform, COUNT(*) FROM messages WHERE keywords!='' GROUP BY platform"
-            ).fetchall()
-            c.close()
-            by = "، ".join(f"{p}: {n}" for p, n in rows) or "—"
-            return (
-                f"📊 وضعیت:\nکل پیام: {total} | سرنخ: {leads} | داغ: {hot}\n"
-                f"به تفکیک پلتفرم: {by}"
-            )
-        except Exception as e:
-            return f"خطا در خواندن آمار: {e}"
-
-    def _logs(self, n: int = 12) -> str:
-        path = os.path.join(ROOT, "storage", "logs", "app.jsonl")
-        if not os.path.exists(path):
-            return "لاگی موجود نیست."
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                lines = f.readlines()[-n:]
-            out = []
-            for ln in lines:
-                try:
-                    o = json.loads(ln)
-                    out.append(f"[{o.get('level','')}] {o.get('msg','')[:90]}")
-                except Exception:
-                    out.append(ln.strip()[:90])
-            return "🗒️ آخرین لاگ‌ها:\n" + "\n".join(out)
-        except Exception as e:
-            return f"خطا در خواندن لاگ: {e}"
-
-    def _add_keyword(self, value) -> str:
-        if not value:
-            return "کلیدواژه را داخل « » بنویس، مثلاً: کلیدواژه «کود مایع» را اضافه کن"
-        try:
-            data = []
-            if os.path.exists(CUSTOM_KW):
-                with open(CUSTOM_KW, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-            if not isinstance(data, list):
-                data = []
-            if value in data:
-                return f"«{value}» از قبل هست."
-            data.append(value)
-            with open(CUSTOM_KW, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            return f"✅ «{value}» اضافه شد (تا چند ثانیهٔ دیگر خودکار فعال می‌شود، بدون ری‌استارت)."
-        except Exception as e:
-            return f"خطا در افزودن کلیدواژه: {e}"
-
-    def _remove_keyword(self, value) -> str:
-        if not value:
-            return "کدام کلیدواژه را حذف کنم؟ داخل « » بنویس."
-        try:
-            data = []
-            if os.path.exists(CUSTOM_KW):
-                with open(CUSTOM_KW, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-            if not isinstance(data, list) or value not in data:
-                return (
-                    f"«{value}» در کلیدواژه‌های افزودنی نیست. "
-                    f"(فقط کلیدواژه‌هایی که از همین‌جا اضافه شده‌اند قابلِ حذف‌اند، نه محصولاتِ اصلی.)"
-                )
-            data = [k for k in data if k != value]
-            with open(CUSTOM_KW, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            return f"🗑️ «{value}» حذف شد (چند ثانیهٔ دیگر خودکار اعمال می‌شود)."
-        except Exception as e:
-            return f"خطا در حذفِ کلیدواژه: {e}"
-
-    async def _health(self) -> str:
-        """سلامتِ کاملِ ۰-۱۰۰: همهٔ پلتفرم‌ها + سیستم + شمارش."""
-        lines = ["🩺 سلامتِ کامل:"]
-        for p in ("eitaa", "bale", "rubika", "telegram", "whatsapp", "linkedin", "web"):
-            try:
-                last = await self.db.get_last_poll(p)
-            except Exception:
-                last = None
-            if not last:
-                lines.append(f"• {p}: — (فعالیتی ثبت نشده)")
-            else:
-                mins = (datetime.now() - last).total_seconds() / 60
-                mark = "✅" if mins < 30 else "⚠️"
-                lines.append(f"• {p}: {mark} آخرین فعالیت {int(mins)} دقیقه پیش")
-        try:
-            import psutil
-
-            lines.append(
-                f"💻 CPU {psutil.cpu_percent(interval=0.3)}% | RAM {psutil.virtual_memory().percent}%"
-            )
-        except Exception:
-            pass
-        lines.append(self._status())
-        return "\n".join(lines)
-
-    async def _lead_details(self, which: str) -> str:
-        """جزئیاتِ اولین/آخرین سرنخ + توضیحِ نحوهٔ ثبت (برای رونمایی به مدیر)."""
-        order = "ASC" if which == "first" else "DESC"
-        try:
-            c = sqlite3.connect(self.db_path)
-            c.row_factory = sqlite3.Row
-            row = c.execute(
-                f"SELECT platform, chat_name, chat_link, keywords, opportunity_type, "
-                f"opportunity_score, text, timestamp FROM messages WHERE keywords!='' "
-                f"ORDER BY timestamp {order} LIMIT 1"
-            ).fetchone()
-            c.close()
-        except Exception as e:
-            return f"خطا در خواندن سرنخ: {e}"
-        if not row:
-            return "هنوز هیچ سرنخی ثبت نشده."
-        label = "اولین" if which == "first" else "آخرین"
-        detail = (
-            f"🔎 {label} سرنخ:\n"
-            f"📱 پلتفرم: {row['platform']}\n"
-            f"👥 گروه: {row['chat_name']}\n"
-            f"🔑 کلیدواژه: {row['keywords']}\n"
-            f"🎯 {row['opportunity_type'] or '-'} (امتیاز {row['opportunity_score'] or 0})\n"
-            f"🕒 {row['timestamp']}\n"
-            f"💬 {(row['text'] or '')[:300]}"
-        )
-        if row["chat_link"]:
-            detail += f"\n🔗 {row['chat_link']}"
-        # توضیحِ طبیعیِ نحوهٔ ثبت (با زبانِ خودِ ربات) اگر هوش در دسترس باشد
-        from core.ai_assistant import PERSONA
-
-        narration = await self.ai.chat(
-            "این سرنخ را برای مدیر در یک جلسه توضیح بده: چه دیدی، چطور تشخیص دادی کلیدواژه دارد، "
-            "و مراحلِ ثبتش چه بود (خواندن پیام → تطبیق کلیدواژه → امتیازدهی → ذخیره در دیتابیس). کوتاه و طبیعی.\n\n"
-            + detail,
-            system=PERSONA,
-        )
-        return detail + (("\n\n🗣️ " + narration) if narration else "")
-
-    async def _platform_status(self, platform) -> str:
-        # اگر مدل نامِ پلتفرمِ معتبری نداد، به‌جای جوابِ بی‌معنی، وضعیتِ کلی را بده
-        if platform not in _PLATFORM_MAP.values():
-            return self._status()
-        try:
-            last = await self.db.get_last_poll(platform)
-        except Exception:
-            last = None
-        if not last:
-            return (
-                f"ℹ️ {platform}: هنوز فعالیتی ثبت نشده (شاید تازه شروع شده یا وصل نیست)."
-            )
-        mins = (datetime.now() - last).total_seconds() / 60
-        if mins < 30:
-            return f"✅ {platform}: فعال — آخرین فعالیت {int(mins)} دقیقه پیش."
-        return f"⚠️ {platform}: آخرین فعالیت {int(mins)} دقیقه پیش (شاید وصل نیست)."
-
-    def _get_param(self, name) -> str:
-        if not name or name.upper() not in SAFE_PARAMS:
-            return f"این پارامتر مجاز نیست. مجازها: {', '.join(sorted(SAFE_PARAMS))}"
-        return f"{name.upper()} = {os.getenv(name.upper(), '(تنظیم‌نشده)')}"
-
-    def _set_param(self, raw_text: str) -> str:
-        import re
-
-        m = re.search(r"([A-Z_]{3,})\s*[=:]\s*(\S+)", raw_text)
-        if not m:
-            return "قالب: set PARAM=VALUE"
-        name, val = m.group(1).upper(), m.group(2)
-        if name not in SAFE_PARAMS:
-            return f"تغییرِ «{name}» مجاز نیست. مجازها: {', '.join(sorted(SAFE_PARAMS))}"
-        try:
-            self._update_env(name, val)
-            return f"✅ {name}={val} ذخیره شد. برای اعمالِ کامل، ری‌استارت کن."
-        except Exception as e:
-            return f"خطا در تغییر: {e}"
-
-    @staticmethod
-    def _update_env(key: str, value: str):
-        env_path = os.path.join(ROOT, ".env")
-        lines, found = [], False
-        if os.path.exists(env_path):
-            with open(env_path, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-        for i, ln in enumerate(lines):
-            if ln.strip().startswith(f"{key}="):
-                lines[i] = f"{key}={value}\n"
-                found = True
-                break
-        if not found:
-            lines.append(f"{key}={value}\n")
-        with open(env_path, "w", encoding="utf-8") as f:
-            f.writelines(lines)
-
-    async def _do_restart(self):
-        await asyncio.sleep(1)
-        try:
-            kwargs = {"cwd": ROOT}
-            if os.name == "nt":
-                kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-            else:
-                kwargs["start_new_session"] = True
-            proc = subprocess.Popen(
-                [sys.executable, os.path.join(ROOT, "main.py")], **kwargs
-            )
-            try:
-                with open(PID_FILE, "w") as f:
-                    f.write(str(proc.pid))
-            except Exception:
-                pass
-        finally:
-            os._exit(0)
-
+    # ═══════════════════════════════════════
+    # reply
+    # ═══════════════════════════════════════
     async def _reply(self, raw: dict, text: str):
+        t0 = time.monotonic()
         sender = messenger_registry.get_sender(self.platform)
         if not sender:
             log_warning(
-                f"admin reply skipped — no sender registered for {self.platform}"
+                f"⚠️ [ADMIN:reply] sender نیست برای {self.platform}"
             )
             return
-        # اگر چتِ یک‌به‌یک است، حتماً private بفرست (بله گاهی آن را group می‌زند)
+
+        chat_id = raw.get("chat_id") or raw.get("user_id")
         ct = raw.get("chat_type")
-        if str(raw.get("chat_id")) == str(raw.get("user_id")):
+        uid = raw.get("user_id")
+        if uid is not None and str(chat_id) == str(uid):
             ct = "private"
-        try:
-            await sender(raw.get("chat_id"), ct, text)
-            log_info(f"✅ admin reply sent → chat_id={raw.get('chat_id')} ({ct})")
-        except Exception as e:
-            log_warning(f"❌ admin reply failed: {e}")
+
+        if not text:
+            log_warning(
+                f"⚠️ [ADMIN:reply] متن خالی | chat_id={chat_id}"
+            )
+            return
+
+        # ─── شکستن متن بلند ───
+        chunks = self._chunk_text(text, _REPLY_CHUNK)
+
+        for i, chunk in enumerate(chunks):
+            try:
+                t_c = time.monotonic()
+                await sender(chat_id, ct, chunk)
+                c_ms = (time.monotonic() - t_c) * 1000
+
+                if c_ms > _SLOW_REPLY_MS:
+                    log_warning(
+                        f"🐌 [ADMIN:reply] chunk {i+1}/{len(chunks)} کند | "
+                        f"{c_ms:.0f}ms | chat_id={chat_id}"
+                    )
+            except Exception as e:
+                elapsed_ms = (time.monotonic() - t0) * 1000
+                log_error(
+                    f"❌ [ADMIN:reply] chunk {i+1}/{len(chunks)} | "
+                    f"{type(e).__name__}: {e} | "
+                    f"{elapsed_ms:.0f}ms | chat_id={chat_id}"
+                )
+                # ادامه بده — شاید chunk بعدی موفق بشه
+                continue
+
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        log_info(
+            f"✅ [ADMIN:reply] ارسال شد | {elapsed_ms:.0f}ms | "
+            f"chat_id={chat_id} ({ct}) | "
+            f"chunks={len(chunks)} | len={len(text)}"
+        )
+
+    @staticmethod
+    def _chunk_text(text: str, size: int) -> list[str]:
+        """متن بلند را به chunkهای ≤size می‌شکند (روی newline)."""
+        if not text:
+            return [""]
+        if len(text) <= size:
+            return [text]
+
+        chunks: list[str] = []
+        remaining = text
+        while remaining:
+            if len(remaining) <= size:
+                chunks.append(remaining)
+                break
+            # سعی کن روی newline بشکن
+            cut = remaining.rfind("\n", 0, size)
+            if cut < size // 2:
+                # newline نزدیک نبود → روی فاصله
+                cut = remaining.rfind(" ", 0, size)
+            if cut < size // 2:
+                # هیچ‌کدام → cut هارد
+                cut = size
+            chunks.append(remaining[:cut])
+            remaining = remaining[cut:].lstrip("\n")
+
+        return chunks
+
+    # ═══════════════════════════════════════
+    # Backward-compat wrappers (تست‌ها + کد قدیمی)
+    # ═══════════════════════════════════════
+    def _rule_parse(self, text):
+        return parse_command(text)
+
+    def _extract_value(self, text):
+        return extract_value(text)
+
+    def _platform_in(self, low):
+        return platform_in(low)
+
+    def _add_keyword(self, value):
+        return self._keyword_admin.add(value, CUSTOM_KW)
+
+    def _remove_keyword(self, value):
+        return self._keyword_admin.remove(value, CUSTOM_KW)
+
+    def _remember(self, q, a):
+        self._memory.remember(q, a)
+
+    def _recent_memory(self, n=6):
+        return self._memory.recent(n)
+
+    async def _execute(self, action, value, raw_text):
+        return await self._actions.execute(action, value, raw_text)
+
+    def _status(self):
+        return self._actions.status()
+
+    def _live_context(self):
+        return self._actions.live_context()
+
+    async def _health(self):
+        return await self._actions.health()
+
+    async def _lead_details(self, which):
+        return await self._actions.lead_details(which)
+
+    async def _platform_status(self, platform):
+        return await self._actions.platform_status(platform)
+
+    def _logs(self, n=12):
+        return self._actions.logs(n)
+
+    async def _explain_logs(self):
+        return await self._actions.explain_logs()
+
+    def _help(self):
+        return self._actions.help_text()
+
+    def _get_param(self, name):
+        return self._actions.get_param(name)
+
+    def _set_param(self, raw_text):
+        return self._actions.set_param(raw_text)
+
+    # ⚠️ توجه: crm_action/report_action در admin_actions الان async شدند
+    # → این wrapperها هم async شدند
+    async def _crm_action(self, raw_text):
+        return await self._actions.crm_action(raw_text)
+
+    async def _report_action(self, raw_text):
+        return await self._actions.report_action(raw_text)
+
+    def _log_request(self, text):
+        return self._actions.log_request(text)
+
+    def _update_env(self, key, value):
+        return self._actions._update_env(key, value)
+
+    @staticmethod
+    def _read_custom_kw_dict():
+        return KeywordAdmin(CUSTOM_KW).read(CUSTOM_KW)
+
+    @staticmethod
+    def _write_custom_kw_dict(kw_tier):
+        return KeywordAdmin(CUSTOM_KW).write(kw_tier, CUSTOM_KW)

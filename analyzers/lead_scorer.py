@@ -9,10 +9,16 @@
 ⚠️ طبقِ خواستهٔ کاربر: منطق اینجا در «کد» است، نه در فایل‌های data/ (چیزی به data اضافه نشد).
 """
 import re
-from typing import List, Tuple, Optional
 
-from core.base_analyzer import BaseAnalyzer
-from core.models import AnalyzedMessage
+from core.contracts.base_analyzer import BaseAnalyzer
+from core.kernel.models import AnalyzedMessage
+
+# 🎯 tier از priority_finder: T1 +40، T2 +15
+try:
+    from analyzers.priority_finder import get_priority_finder
+    _TIER_AVAILABLE = True
+except ImportError:
+    _TIER_AVAILABLE = False
 
 # هر گروه: (برچسبِ نوع، فهرستِ واژه‌های سیگنال، وزن)
 # واژه‌ها فارسی + انگلیسی تا روی همهٔ پلتفرم‌ها (از جمله لینکدین/وب) کار کند.
@@ -142,12 +148,22 @@ class LeadScorer(BaseAnalyzer):
         ]
 
     def score(
-        self, text: Optional[str], has_keyword: bool = True
-    ) -> Tuple[int, str, List[str]]:
-        """امتیاز (۰..۱۰۰)، نوعِ فرصت (داغ/گرم/سرد)، و فهرستِ سیگنال‌های یافت‌شده."""
+        self, text: str | None, has_keyword: bool = True
+    ) -> tuple[int, str, list[str]]:
+        """امتیاز (۰..۱۰۰)، نوعِ فرصت (داغ/گرم/سرد)، و سیگنال‌های یافت‌شده."""
         t = text or ""
-        total = 10 if has_keyword else 0  # پایه: وجودِ نامِ محصول = «تناسب» (fit)
-        found: List[str] = []
+        total = 10 if has_keyword else 0
+
+        # 🎯 بونوس tier (T1 +40، T2 +15)
+        if _TIER_AVAILABLE and has_keyword:
+            try:
+                pf = get_priority_finder()
+                tier = pf.highest_tier(t)
+                total += pf.tier_bonus(tier)
+            except Exception:
+                pass
+
+        found: list[str] = []
         for label, pat, weight in self._patterns:
             if pat.search(t):
                 total += weight
@@ -166,7 +182,7 @@ class LeadScorer(BaseAnalyzer):
         return message
 
 
-_shared: Optional[LeadScorer] = None
+_shared: LeadScorer | None = None
 
 
 def get_lead_scorer() -> LeadScorer:

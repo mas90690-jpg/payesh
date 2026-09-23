@@ -1,8 +1,10 @@
 # tests/test_admin_handler.py
 import json
+
 import pytest
-from handlers.admin_handler import AdminHandler
+
 from analyzers.keyword_finder import get_keyword_finder
+from handlers.admin_handler import AdminHandler
 
 
 def test_rule_parse():

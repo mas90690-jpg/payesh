@@ -1,240 +1,205 @@
-# Byte-compiled / optimized / DLL files
+# ======================================================================
+#  .gitignore — Lead Monitor (Srooyesh)
+#  نسخه: 1.0.0
+#
+#  🎯 استراتژی:
+#     • storage/  → کامل ignore (session، DB، media، reports، logs،
+#                    حافظهٔ AI، بکاپها — حساس و/یا runtime)
+#     • data/     → تحت بکاپ (✅ commit میشود) — شامل runtime:
+#                    keywords_custom.json، learned_rules.json،
+#                    candidate_rules.json، rule_stats.json،
+#                    my_formulas.json، sources/*.txt
+#     • .env      → هرگز (فقط .env.example track میشود)
+#     • storage/  → حتی اگر .gitkeep داشته باشد، بهکار نمیآید
+# ======================================================================
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  ۱) Python — bytecode، build، cache
+# ──────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
-*$py.class
+*.pyo
+*.pyd
 *.so
-*.pyd
-
-# C extensions
-*.pyd
-
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
 *.egg-info/
-.installed.cfg
 *.egg
-MANIFEST
+.eggs/
+build/
+dist/
+sdist/
+wheels/
 
-# PyInstaller
-*.manifest
-*.spec
-
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
-htmlcov/
+# ──────────────────────────────────────────────────────────────────────
+#  ۲) ابزارهای تست و lint
+# ──────────────────────────────────────────────────────────────────────
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 .tox/
 .nox/
 .coverage
 .coverage.*
-.cache
-nosetests.xml
+htmlcov/
 coverage.xml
+nosetests.xml
+junit.xml
 *.cover
-*.py,cover
 .hypothesis/
-.pytest_cache/
-cover/
 
-# Translations
-*.mo
-*.pot
-
-# Django stuff:
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
-
-# Flask stuff:
-instance/
-.webassets-cache
-
-# Scrapy stuff:
-.scrapy
-
-# Sphinx documentation
-docs/_build/
-
-# PyBuilder
-.pybuilder/
-target/
-
-# Jupyter Notebooks
-.ipynb_checkpoints
-
-# IPython
-profile_default/
-ipython_config.py
-
-# pyenv
-.python-version
-
-# pipenv
-Pipfile.lock
-
-# poetry
-poetry.lock
-
-# pdm
-.pdm.toml
-
-# PEP 582
-__pypackages__/
-
-# Celery stuff
-celerybeat-schedule
-celerybeat.pid
-
-# SageMath parsed files
-*.sage.py
-
-# Environments
-.env
-.venv
-env/
+# ──────────────────────────────────────────────────────────────────────
+#  ۳) Virtual environment
+# ──────────────────────────────────────────────────────────────────────
 venv/
+env/
+.venv/
 ENV/
 env.bak/
 venv.bak/
+.python-version
 
-# Spyder project settings
-.spyderproject
-.spyproject
+# ──────────────────────────────────────────────────────────────────────
+#  ۴) Secrets — هرگز commit نشود
+#     (هماهنگ با backup_service._SENSITIVE_STEMS + _ALLOWED_SAMPLE_SUFFIXES)
+# ──────────────────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+*.jks
+*.keystore
+secrets.json
+credentials.json
+auth.json
+known_hosts
+.netrc
+.git-credentials
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
 
-# Rope project settings
-.ropeproject
+# ──────────────────────────────────────────────────────────────────────
+#  ۵) Storage — کل پوشه (حساس + runtime)
+#
+#     شامل:
+#       storage/sessions/    → نشست Playwright/rubpy/telethon
+#       storage/database/    → messages.db + WAL/SHM + report_cache.json
+#       storage/media/       → عکس/فایل پیامهای کلیدواژهدار
+#       storage/logs/        → app.jsonl
+#       storage/offset/      → seen_ids، chat_offsets، state.json
+#       storage/reports/     → گزارشهای تولیدشده
+#       storage/backups/     → پشتیبانهای zip
+#       storage/brain/       → حافظه و کش Brain
+#       storage/safe_brain/  → حافظه و کش SafeBrain
+#       storage/pycache/     → pycache_prefix
+#       storage/bot.pid      → PID فایل
+#       storage/requests.jsonl → درخواستهای قابلیت
+#       storage/ai_memory.jsonl → حافظهٔ گفتگو
+# ──────────────────────────────────────────────────────────────────────
+storage/
 
-# mkdocs documentation
-/site
+# ──────────────────────────────────────────────────────────────────────
+#  ۶) SQLite side files (برای وقتی کسی DB را از جای دیگر هم بیاورد)
+# ──────────────────────────────────────────────────────────────────────
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
 
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
+# ──────────────────────────────────────────────────────────────────────
+#  ۷) Logs / PIDs / temp / backup قدیمی کد
+# ──────────────────────────────────────────────────────────────────────
+*.log
+*.pid
+*.bale
+*.tmp
+*.bak
+*.orig
+*.rej
+*~
+*_old.py
+*_backup.py
+*_copy.py
+*.swp
 
-# Pyre type checker
-.pyre/
-
-# pytype static type analyzer
-.pytype/
-
-# Cython debug symbols
-cython_debug/
-
-# IDEs
+# ──────────────────────────────────────────────────────────────────────
+#  ۸) IDE
+# ──────────────────────────────────────────────────────────────────────
 .vscode/
 .idea/
-*.swp
-*.swo
-*~
-*.iml
+*.sublime-project
+*.sublime-workspace
+*.code-workspace
+.spyderproject
+.spyproject
+.ropeproject
 
-# Project specific - Database files
-*.db
-*.sqlite3
-storage/database/*.db
-storage/db/*.db
-
-# Backup files
-storage/backups/
-*.zip
-*.gz
-*.tar
-*.rar
-*.7z
-
-# Logs
-storage/logs/
-*.log
-*.log.*
-
-# Session files (حساس - نشست پیام‌رسان‌ها)
-storage/sessions/
-*.session
-*.rp
-*.bale
-
-# Media files (میان‌برها و فایل‌های دانلود شده)
-storage/media/
-*.jpg
-*.jpeg
-*.png
-*.gif
-*.mp4
-*.mp3
-*.webp
-
-# Reports
-reports/
-storage/reports/
-*.json
-!data/*.json
-!**/_config.json
-
-# Cache
-storage/cache/
-storage/pycache/
-*.cache
-
-# PID files
-*.pid
-
-# Environment variables
-.env
-.env.local
-.env.*.local
-
-# Browser/WebDriver sessions (حساس - اطلاعات مرورگر)
-storage/sessions/eitaa_web/
-storage/sessions/whatsapp/
-*.pma
-*.db
-*.db-journal
-*.log
-*.old
-
-# OS generated files
+# ──────────────────────────────────────────────────────────────────────
+#  ۹) OS
+# ──────────────────────────────────────────────────────────────────────
 Thumbs.db
-desktop.ini
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
 .DS_Store
-*.tmp
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
 
-# Coverage
-.coverage
-.coverage.*
-coverage.xml
+# ──────────────────────────────────────────────────────────────────────
+#  ۱۰) Node (آیندهنگرانه — اگر ابزار فرانت اضافه شد)
+# ──────────────────────────────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
 
-# Temporary files
-*.tmp
-temp/
-tmp/
-*.bak
-*.backup
+# ──────────────────────────────────────────────────────────────────────
+#  ۱۱) Docker (اگر build محلی ساخت)
+# ──────────────────────────────────────────────────────────────────────
+.dockerignore
+docker-compose.override.yml
+*.dockerfile.local
 
-# Root-level fallbacks (if not using storage/ structure)
-/sessions/
-/media/
-/logs/
-
-# Alembic migrations (keep structure but ignore auto-generated)
-migrations/__pycache__/
-migrations/versions/__pycache__/
-!migrations/versions/*.py
-!migrations/env.py
-!migrations/script.py.mako
+# ──────────────────────────────────────────────────────────────────────
+#  ۱۲) ⚠️ نکات مهم
+#
+#  ✅  data/ کاملاً track میشود — شامل:
+#        data/products.py
+#        data/products_en.py
+#        data/paths.py
+#        data/runtime/
+#          ├── keywords_custom.json    ← کلیدواژههای دستی شما
+#          ├── candidate_rules.json    ← قوانین یادگرفتهشدهٔ AI
+#          ├── learned_rules.json      ← قوانین دستی «یاد بگیر»
+#          ├── rule_stats.json         ← آمار استفاده
+#          ├── my_formulas.json        ← فرمولهای SQL شما
+#          └── unknown_questions.jsonl ← سؤالات ناشناخته
+#        data/sources/
+#          ├── glossary.txt            ← واژهنامهٔ شما
+#          ├── target_groups.txt       ← گروههای هدف
+#          ├── linkedin_searches.txt
+#          └── web_sources.txt
+#        data/configs/
+#        data/prompts/
+#        data/schemas/
+#
+#     ⚠️  اگر خواستید فقط keywords_custom.json و targets را
+#         track کنید و بقیهٔ runtime را نه، این را اضافه کنید:
+#
+#         data/runtime/*
+#         !data/runtime/keywords_custom.json
+#
+#     ولی برای «بکاپ کامل دادهها» همانطور که الان هست،
+#     هیچکدام را ignore نکنید.
+# ──────────────────────────────────────────────────────────────────────

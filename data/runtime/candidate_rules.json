@@ -1,0 +1,41 @@
+[
+  {
+    "name": "ai_learned_1789904642",
+    "triggers": [
+      "wmic OS get TotalVisibleMemorySize,FreePhysicalMemory"
+    ],
+    "action": {
+      "type": "text",
+      "text": "⏳ مغز در حال انجام کار دیگری است..."
+    },
+    "learned": true,
+    "source": "ai",
+    "created_at": "2026-09-20T15:14:02.427444"
+  },
+  {
+    "name": "ai_learned_1790058123",
+    "triggers": [
+      "راهنما"
+    ],
+    "action": {
+      "type": "text",
+      "text": "📚 **راهنمای مغز**\n━━━━━━━━━━━━━\n💬 /status یا «وضعیت»\n💬 /help یا «راهنما»\n💬 /stats یا «آمار»\n💬 /clear یا «پاک»\n💬 /mode <mode>\n🤖 یا هر سؤال آزاد"
+    },
+    "learned": true,
+    "source": "ai",
+    "created_at": "2026-09-22T09:52:03.111493"
+  },
+  {
+    "name": "ai_learned_1790079802",
+    "triggers": [
+      "پاک"
+    ],
+    "action": {
+      "type": "text",
+      "text": "🗑️ پاک شد."
+    },
+    "learned": true,
+    "source": "ai",
+    "created_at": "2026-09-22T15:53:22.418842"
+  }
+]

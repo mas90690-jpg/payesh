@@ -1,0 +1,1170 @@
+# -*- coding: utf-8 -*-
+"""
+core/safe_brain.py — مغز امن ربات پایش سرنخ.
+
+لایهٔ محافظ روی Brain (singleton) که:
+  - فقط دستورهای مجاز (whitelist) را اجرا می‌کند
+  - از کش (SafeCache) و حافظه (project_memory, global_memory) استفاده می‌کند
+  - الگوهای مخرب را بلاک می‌کند
+  - برای سؤال‌های ساده از AIAssistant.chat() استفاده می‌کند
+  - برای کارهای پیچیده از Brain.agent() استفاده می‌کند
+  - در full_access، محدودیت‌ها را نادیده می‌گیرد
+
+⚠️ این لایه «نازک» است: وظیفهٔ اصلی‌اش گاردِ امنیت + کش است. اکشن‌هایی که
+دیتابیس/لاگ/وضعیت واقعی لازم دارند را به caller (AdminHandler) واگذار می‌کند.
+
+⚠️ نکتهٔ مهم: `_fallback_response` حالا از prefixِ `🤖 WinDoctor` استفاده
+می‌کند ولی **فقط در حالت خطای واقعی**. admin_handler از طریق
+`_is_safebrain_fallback` این را به‌عنوان واگذاری تشخیص می‌دهد؛ ولی حالا
+SafeBrain خودش قبل از دادن fallback، تمام تلاش را می‌کند.
+
+نسخهٔ ۵ (این نسخه):
+  - 🐛 FIX بحرانی: cache.set دو بار پشت هم حذف شد (bug تایپی)
+  - 🐛 FIX بحرانی: process حالا try/except کلی دارد
+  - 🐛 FIX: _get_brain / _get_ai / _can_call_api / get_safe_brain با lock
+  - 🐛 FIX: SafeCache.set حالا throttle save دارد (disk I/O کم‌تر)
+  - 🐛 FIX: SafeMemory._save حالا throttle دارد
+  - 🐛 FIX: BLOCKED_PATTERNS حالا با word boundary (کم‌تر false positive)
+  - 🐛 FIX: _is_safe حالا text را normalize می‌کند (lower + strip)
+  - 🐛 FIX: _fallback_response حالا متن ورودی را در نظر می‌گیرد
+  - 🐛 FIX: _brain_failed حالا بعد از ۵ دقیقه retry می‌کند (نه دائمی)
+  - 🐛 FIX: SAFE_ACTIONS_HANDLED_LOCALLY استفاده می‌شود (کد مرده رفع)
+  - 🎯 cache.set حالا فقط یک بار در هر مسیر صدا زده می‌شود
+  - 🎯 stats["fallback"] اضافه شد (شمارش fallback)
+  - 🎯 _read_custom_kw_dict با mtime cache (hot-reload سریع‌تر)
+  - 🧹 type hints دقیق + from __future__ import annotations
+"""
+from __future__ import annotations
+
+import os
+import re
+import json
+import time
+import hashlib
+import threading
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from config import STORAGE_DIR, AI as AI_CONFIG, AI_ENABLED
+from core.logger import (
+    log_info, log_success, log_warning, log_error, get_logger,
+)
+
+# ⭐ پارسر مشترک — منبع یکتا
+from core.command_parser import (
+    parse_command as _parse_command,
+    extract_value as _extract_value_fn,
+    platform_in as _platform_in_fn,
+)
+
+# ════════════════════════════════════════════
+# مسیرها
+# ════════════════════════════════════════════
+SAFE_BRAIN_DIR = Path(STORAGE_DIR) / "safe_brain"
+SAFE_MEMORY_DIR = SAFE_BRAIN_DIR / "memory"
+SAFE_CACHE_DIR = SAFE_BRAIN_DIR / "cache"
+for _d in (SAFE_BRAIN_DIR, SAFE_MEMORY_DIR, SAFE_CACHE_DIR):
+    _d.mkdir(parents=True, exist_ok=True)
+
+
+# ════════════════════════════════════════════
+# ثابت‌ها
+# ════════════════════════════════════════════
+
+# اکشن‌هایی که SafeBrain مجاز است در نظر بگیرد
+SAFE_ACTIONS = frozenset({
+    "status", "report", "crm", "logs", "keywords",
+    "add_keyword", "remove_keyword", "has_keyword",
+    "platform_status", "health", "lead_details",
+    "get_param", "set_param", "help", "restart",
+    "explain_logs", "feature_request", "ask",
+})
+
+# اکشن‌هایی که SafeBrain خودش انجام می‌دهد (بقیه واگذار به AdminHandler)
+SAFE_ACTIONS_HANDLED_LOCALLY = frozenset({
+    "help", "add_keyword", "remove_keyword", "feature_request",
+})
+
+# الگوهای ممنوعه در متن — با word boundary برای کاهش false positive
+BLOCKED_PATTERNS_REGEX = [
+    # سیستم — این‌ها با word boundary چک می‌شوند
+    r"\brm\s+-rf\b",
+    r"\brmdir\s+/s\b",
+    r"\bdel\s+/f\b",
+    r"\bformat\s+[a-z]:",         # format C:
+    r"\bmkfs\b",
+    r"\bdd\s+if=",
+    r"\bshutdown\b",
+    r"\breboot\b",
+    r"\bpoweroff\b",
+    r"\binit\s+[06]\b",
+    r">\s*/dev/sd",
+    r"\bchmod\s+777\b",
+    # fork bomb
+    r":\(\)\s*\{.*?\};:",
+    # دیتابیس
+    r"\bdrop\s+table\b",
+    r"\bdrop\s+database\b",
+    r"\bdelete\s+from\b",
+    r"\btruncate\s+table\b",
+    # کد خطرناک
+    r"\bos\.system\b",
+    r"\bsubprocess\.(call|popen|run)\b",
+    r"\beval\s*\(",
+    r"\bexec\s*\(",
+    r"\b__import__\b",
+    r"\bcompile\s*\(",
+]
+
+# الگوهای ساده — substring check (بدون regex)
+BLOCKED_SUBSTRINGS = [
+    ":(){ :|:& };:",  # fork bomb با فاصله‌های اصلی
+]
+
+# حداکثر تماس با API در ساعت
+MAX_API_CALLS_PER_HOUR = int(os.getenv("SAFE_BRAIN_MAX_API_HOUR", "20"))
+
+# cache منفی برین — چند ثانیه بعد دوباره تلاش کن
+_BRAIN_FAIL_RETRY_S = 300  # ۵ دقیقه
+
+# throttle برای save (جلوگیری از disk thrash)
+_CACHE_SAVE_INTERVAL_S = 3.0
+_MEM_SAVE_INTERVAL_S = 2.0
+
+# آستانه‌های هشدار (میلی‌ثانیه)
+_SLOW_PROCESS_MS = 5000
+_SLOW_ACTION_MS = 2000
+_LOG_PREVIEW_LEN = 80
+
+# ─── cache برای keywords_custom.json ───
+_KW_CACHE: Optional[Dict[str, str]] = None
+_KW_CACHE_MTIME: float = 0.0
+_KW_LOCK = threading.Lock()
+
+
+# ════════════════════════════════════════════
+# helpers — keywords_custom.json (mtime cache)
+# ════════════════════════════════════════════
+def _kw_file_path() -> Path:
+    from data import paths as data_paths
+    return data_paths.KEYWORDS_CUSTOM
+
+
+def _read_custom_kw_dict(force_reload: bool = False) -> Dict[str, str]:
+    """خواندن {name: tier} با cache mtime-aware (hot-reload سریع)."""
+    global _KW_CACHE, _KW_CACHE_MTIME
+
+    path = _kw_file_path()
+    try:
+        mtime = path.stat().st_mtime if path.exists() else 0.0
+    except OSError:
+        mtime = 0.0
+
+    with _KW_LOCK:
+        if (
+            not force_reload
+            and _KW_CACHE is not None
+            and mtime == _KW_CACHE_MTIME
+        ):
+            return dict(_KW_CACHE)
+
+    if not path.exists():
+        with _KW_LOCK:
+            _KW_CACHE = {}
+            _KW_CACHE_MTIME = mtime
+        return {}
+
+    try:
+        with open(str(path), "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except json.JSONDecodeError as e:
+        log_warning(
+            f"⚠️ [SAFEBRAIN:kw] JSON نامعتبر | "
+            f"line={e.lineno} | {e.msg}"
+        )
+        return {}
+    except Exception as e:
+        log_warning(
+            f"⚠️ [SAFEBRAIN:kw] خواندن | {type(e).__name__}: {e}"
+        )
+        return {}
+
+    out: Dict[str, str] = {}
+
+    # فرمت قدیمی: لیست خالص
+    if isinstance(data, list):
+        out = {
+            str(x).strip(): "T1"
+            for x in data
+            if isinstance(x, str) and x.strip()
+        }
+    # فرمت جدید: dict
+    elif isinstance(data, dict):
+        kws = data.get("keywords", data)
+        if isinstance(kws, dict):
+            for k, meta in kws.items():
+                name = str(k).strip()
+                if not name:
+                    continue
+                if isinstance(meta, dict):
+                    tier = str(meta.get("tier", "T1")).upper()
+                elif isinstance(meta, str):
+                    tier = meta.upper()
+                else:
+                    tier = "T1"
+                if tier not in ("T1", "T2", "T3"):
+                    tier = "T1"
+                out[name] = tier
+        elif isinstance(kws, list):
+            out = {
+                str(x).strip(): "T1"
+                for x in kws
+                if isinstance(x, str) and x.strip()
+            }
+
+    with _KW_LOCK:
+        _KW_CACHE = dict(out)
+        _KW_CACHE_MTIME = mtime
+    return out
+
+
+def _invalidate_kw_cache() -> None:
+    """پاک‌کردن cache کلمات (بعد از write)."""
+    global _KW_CACHE, _KW_CACHE_MTIME
+    with _KW_LOCK:
+        _KW_CACHE = None
+        _KW_CACHE_MTIME = 0.0
+
+
+def _write_custom_kw_dict(kw_tier: Dict[str, str]) -> bool:
+    """نوشتن {name: tier} — atomic (tmp + replace)."""
+    path = _kw_file_path()
+    try:
+        data = {
+            "version": "2.0.0",
+            "updated_at": datetime.now().isoformat(),
+            "keywords": {
+                k.strip(): {
+                    "tier": (
+                        t.upper()
+                        if t and t.upper() in ("T1", "T2", "T3")
+                        else "T1"
+                    )
+                }
+                for k, t in kw_tier.items()
+                if k and k.strip()
+            },
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        with open(str(tmp), "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        tmp.replace(path)
+        # invalidation
+        _invalidate_kw_cache()
+        return True
+    except Exception as e:
+        log_error(
+            f"❌ [SAFEBRAIN:kw] نوشتن | {type(e).__name__}: {e}"
+        )
+        return False
+
+
+# ════════════════════════════════════════════
+# SafeMemory (با throttle save)
+# ════════════════════════════════════════════
+class SafeMemory:
+    """حافظهٔ سبک محلی — فایل JSON با throttle save."""
+
+    def __init__(
+        self, name: str = "safe_memory", max_entries: int = 100
+    ):
+        self.filepath = SAFE_MEMORY_DIR / f"{name}.json"
+        self.max_entries = max_entries
+        self.memory: List[Dict] = []
+        self._lock = threading.Lock()
+        self._last_save = 0.0
+        self._dirty = False
+        self._load()
+
+    def _load(self):
+        if not self.filepath.exists():
+            return
+        try:
+            with self._lock:
+                self.memory = json.loads(
+                    self.filepath.read_text(encoding="utf-8")
+                )
+            log_info(
+                f"📚 [SAFEBRAIN:mem:{self.filepath.stem}] "
+                f"{len(self.memory)} ورودی بارگذاری شد"
+            )
+        except json.JSONDecodeError as e:
+            log_warning(
+                f"⚠️ [SAFEBRAIN:mem:{self.filepath.stem}] "
+                f"JSON نامعتبر | line={e.lineno} — حافظه خالی شد"
+            )
+            self.memory = []
+        except Exception as e:
+            log_warning(
+                f"⚠️ [SAFEBRAIN:mem:{self.filepath.stem}] "
+                f"{type(e).__name__}: {e}"
+            )
+            self.memory = []
+
+    def _save(self, force: bool = False):
+        """ذخیره — با throttle (هر _MEM_SAVE_INTERVAL_S)."""
+        now = time.time()
+        with self._lock:
+            if not force and (now - self._last_save) < _MEM_SAVE_INTERVAL_S:
+                self._dirty = True
+                return
+            data = json.dumps(
+                self.memory, ensure_ascii=False, indent=2
+            )
+            self._last_save = now
+            self._dirty = False
+
+        try:
+            tmp = self.filepath.with_suffix(".tmp")
+            tmp.write_text(data, encoding="utf-8")
+            tmp.replace(self.filepath)
+        except Exception as e:
+            log_warning(
+                f"⚠️ [SAFEBRAIN:mem:{self.filepath.stem}] ذخیره | "
+                f"{type(e).__name__}: {e}"
+            )
+
+    def flush(self):
+        """ذخیره اجباری (برای shutdown)."""
+        with self._lock:
+            dirty = self._dirty
+        if dirty:
+            self._save(force=True)
+
+    def add(self, role: str, content: str):
+        with self._lock:
+            self.memory.append({
+                "role": role,
+                "content": str(content)[:500],
+                "timestamp": time.time(),
+            })
+            if len(self.memory) > self.max_entries:
+                self.memory = self.memory[-self.max_entries:]
+        self._save()
+
+    def get_recent(self, n: int = 5) -> List[Dict]:
+        with self._lock:
+            return self.memory[-n:] if self.memory else []
+
+    def get_context(self, n: int = 5) -> str:
+        recent = self.get_recent(n)
+        if not recent:
+            return ""
+        lines = []
+        for entry in recent:
+            role = (
+                "کاربر" if entry.get("role") == "user" else "دستیار"
+            )
+            lines.append(f"{role}: {entry.get('content', '')[:200]}")
+        return "\n".join(lines)
+
+    def search(self, query: str, n: int = 3) -> List[Dict]:
+        if not query:
+            return []
+        results: List[Dict] = []
+        q = query.lower()
+        with self._lock:
+            for entry in reversed(self.memory):
+                if q in (entry.get("content") or "").lower():
+                    results.append(entry)
+                    if len(results) >= n:
+                        break
+        return results
+
+    def clear(self):
+        with self._lock:
+            self.memory = []
+            self._dirty = True
+        self._save(force=True)
+
+    @property
+    def count(self) -> int:
+        with self._lock:
+            return len(self.memory)
+
+
+# ════════════════════════════════════════════
+# SafeCache (با throttle save)
+# ════════════════════════════════════════════
+class SafeCache:
+    """کش سبک با TTL — فایل JSON با throttle save."""
+
+    def __init__(
+        self, name: str = "safe_cache", ttl_hours: int = 48
+    ):
+        self.filepath = SAFE_CACHE_DIR / f"{name}.json"
+        self.ttl = timedelta(hours=ttl_hours)
+        self.cache: Dict[str, Dict] = {}
+        self._lock = threading.Lock()
+        self._hits = 0
+        self._misses = 0
+        self._last_save = 0.0
+        self._dirty = False
+        self._load()
+
+    @staticmethod
+    def _key(text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    def _load(self):
+        if not self.filepath.exists():
+            return
+        try:
+            with self._lock:
+                self.cache = json.loads(
+                    self.filepath.read_text(encoding="utf-8")
+                )
+            log_info(
+                f"💾 [SAFEBRAIN:cache:{self.filepath.stem}] "
+                f"{len(self.cache)} مدخل بارگذاری شد"
+            )
+        except json.JSONDecodeError as e:
+            log_warning(
+                f"⚠️ [SAFEBRAIN:cache:{self.filepath.stem}] "
+                f"JSON نامعتبر | line={e.lineno} — کش خالی شد"
+            )
+            self.cache = {}
+        except Exception as e:
+            log_warning(
+                f"⚠️ [SAFEBRAIN:cache:{self.filepath.stem}] "
+                f"{type(e).__name__}: {e}"
+            )
+            self.cache = {}
+
+    def _save(self, force: bool = False):
+        """ذخیره — با throttle."""
+        now = time.time()
+        with self._lock:
+            if (
+                not force
+                and (now - self._last_save) < _CACHE_SAVE_INTERVAL_S
+            ):
+                self._dirty = True
+                return
+            data = json.dumps(self.cache, ensure_ascii=False)
+            self._last_save = now
+            self._dirty = False
+
+        try:
+            tmp = self.filepath.with_suffix(".tmp")
+            tmp.write_text(data, encoding="utf-8")
+            tmp.replace(self.filepath)
+        except Exception as e:
+            log_warning(
+                f"⚠️ [SAFEBRAIN:cache:{self.filepath.stem}] "
+                f"ذخیره | {type(e).__name__}: {e}"
+            )
+
+    def flush(self):
+        with self._lock:
+            dirty = self._dirty
+        if dirty:
+            self._save(force=True)
+
+    def get(self, text: str) -> Optional[str]:
+        if not text:
+            return None
+        key = self._key(text)
+        with self._lock:
+            entry = self.cache.get(key)
+        if entry:
+            try:
+                age = datetime.now() - datetime.fromtimestamp(
+                    entry.get("timestamp", 0)
+                )
+                if age < self.ttl:
+                    self._hits += 1
+                    return entry.get("answer")
+            except Exception:
+                pass
+        self._misses += 1
+        return None
+
+    def set(self, text: str, answer: str):
+        if not text or not answer:
+            return
+        key = self._key(text)
+        with self._lock:
+            self.cache[key] = {
+                "answer": answer,
+                "timestamp": time.time(),
+            }
+            if len(self.cache) > 500:
+                sorted_items = sorted(
+                    self.cache.items(),
+                    key=lambda x: x[1].get("timestamp", 0),
+                )
+                self.cache = dict(sorted_items[-400:])
+            self._dirty = True
+        self._save()
+
+    def clear(self):
+        with self._lock:
+            self.cache = {}
+            self._hits = 0
+            self._misses = 0
+            self._dirty = True
+        self._save(force=True)
+        log_info(
+            f"🗑️ [SAFEBRAIN:cache:{self.filepath.stem}] پاک شد"
+        )
+
+    @property
+    def size(self) -> int:
+        with self._lock:
+            return len(self.cache)
+
+    def stats(self) -> Dict[str, Any]:
+        total = self._hits + self._misses
+        return {
+            "size": self.size,
+            "hits": self._hits,
+            "misses": self._misses,
+            "hit_rate": (
+                round(self._hits / total, 3) if total else 0.0
+            ),
+        }
+
+
+# ════════════════════════════════════════════
+# SafeBrain
+# ════════════════════════════════════════════
+class SafeBrain:
+    """مغز امن ربات — لایهٔ نازک روی Brain."""
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        brain: Optional[Any] = None,
+        full_access: bool = False,
+        use_api_memory: bool = False,
+        memory_api_url: str = "",
+        memory_api_key: str = "",
+    ):
+        self.api_key = api_key or os.environ.get(
+            "DEEPSEEK_API_KEY", ""
+        )
+        self.full_access = full_access
+
+        self.project_memory = SafeMemory(
+            "project_memory", max_entries=200
+        )
+        self.global_memory = SafeMemory(
+            "global_memory", max_entries=500
+        )
+        self.cache = SafeCache("safe_brain_cache", ttl_hours=48)
+
+        self._api_calls_this_hour = 0
+        self._api_hour_start = time.monotonic()
+        self._api_lock = threading.Lock()
+
+        self._brain_instance: Optional[Any] = None
+        self._brain_failed_at: float = 0.0
+        self._brain_lock = threading.Lock()
+
+        self._ai_assistant: Optional[Any] = None
+        self._ai_lock = threading.Lock()
+
+        self.use_api_memory = use_api_memory
+        self.memory_api_url = memory_api_url
+        self.memory_api_key = memory_api_key
+
+        self.stats: Dict[str, Any] = {
+            "processed": 0,
+            "cached": 0,
+            "api_calls": 0,
+            "blocked": 0,
+            "errors": 0,
+            "delegated": 0,
+            "fallback": 0,
+            "started_at": datetime.now().isoformat(),
+        }
+
+        log_success(
+            f"✅ [SAFEBRAIN:init] آماده | "
+            f"api_key={'✅' if self.api_key else '❌'} | "
+            f"full_access={'✅' if full_access else '❌'} | "
+            f"max_api_hour={MAX_API_CALLS_PER_HOUR} | "
+            f"memory: project={self.project_memory.count} "
+            f"global={self.global_memory.count} | "
+            f"cache={self.cache.size}"
+        )
+
+    # ═══════════════════════════════════════════
+    # lazy init — thread-safe + retry بعد از _BRAIN_FAIL_RETRY_S
+    # ═══════════════════════════════════════════
+    def _get_brain(self):
+        """دریافت Brain (با cache منفی + retry بعد از مدت)."""
+        with self._brain_lock:
+            if self._brain_instance is not None:
+                return self._brain_instance
+
+            # cache منفی — ولی با retry
+            if self._brain_failed_at > 0:
+                age = time.monotonic() - self._brain_failed_at
+                if age < _BRAIN_FAIL_RETRY_S:
+                    return None
+                # بعد از ۵ دقیقه، دوباره تلاش کن
+
+            try:
+                t0 = time.monotonic()
+                from core.brain import get_brain
+                self._brain_instance = get_brain(
+                    api_key=self.api_key,
+                    full_access=self.full_access,
+                    use_api_memory=self.use_api_memory,
+                    memory_api_url=self.memory_api_url,
+                    memory_api_key=self.memory_api_key,
+                )
+                elapsed_ms = (time.monotonic() - t0) * 1000
+                self._brain_failed_at = 0.0
+                log_success(
+                    f"✅ [SAFEBRAIN:brain] اتصال | {elapsed_ms:.0f}ms"
+                )
+                return self._brain_instance
+            except Exception as e:
+                self._brain_failed_at = time.monotonic()
+                log_error(
+                    f"❌ [SAFEBRAIN:brain] اتصال | "
+                    f"{type(e).__name__}: {e} — retry تا "
+                    f"{_BRAIN_FAIL_RETRY_S}s دیگر"
+                )
+                return None
+
+    def _get_ai(self):
+        with self._ai_lock:
+            if self._ai_assistant is not None:
+                return self._ai_assistant
+            try:
+                t0 = time.monotonic()
+                from core.ai_assistant import get_ai_assistant
+                self._ai_assistant = get_ai_assistant()
+                elapsed_ms = (time.monotonic() - t0) * 1000
+                log_info(
+                    f"🔗 [SAFEBRAIN:ai] اتصال | {elapsed_ms:.0f}ms"
+                )
+            except Exception as e:
+                log_warning(
+                    f"⚠️ [SAFEBRAIN:ai] در دسترس نیست | "
+                    f"{type(e).__name__}: {e}"
+                )
+                return None
+            return self._ai_assistant
+
+    # ═══════════════════════════════════════════
+    # rate limit (thread-safe + monotonic)
+    # ═══════════════════════════════════════════
+    def _can_call_api(self) -> bool:
+        if self.full_access:
+            return True
+        with self._api_lock:
+            now = time.monotonic()
+            if now - self._api_hour_start > 3600:
+                log_info(
+                    f"🔄 [SAFEBRAIN:api] reset پنجرهٔ ساعتی | "
+                    f"قبل: {self._api_calls_this_hour} تماس"
+                )
+                self._api_calls_this_hour = 0
+                self._api_hour_start = now
+            if self._api_calls_this_hour >= MAX_API_CALLS_PER_HOUR:
+                log_warning(
+                    f"⚠️ [SAFEBRAIN:api] محدودیت ساعتی "
+                    f"({MAX_API_CALLS_PER_HOUR}) رد شد"
+                )
+                return False
+            self._api_calls_this_hour += 1
+            self.stats["api_calls"] += 1
+            return True
+
+    # ═══════════════════════════════════════════
+    # security — با regex word-boundary
+    # ═══════════════════════════════════════════
+    def _is_safe(self, text: str) -> Tuple[bool, str]:
+        """چک امنیت — regex با word boundary (کم‌تر false positive)."""
+        if self.full_access:
+            return True, ""
+        if not text:
+            return True, ""
+
+        low = text.lower()
+
+        # substring ساده (fork bomb)
+        for pat in BLOCKED_SUBSTRINGS:
+            if pat.lower() in low:
+                return False, f"الگوی ممنوعه: {pat}"
+
+        # regex
+        for pat in BLOCKED_PATTERNS_REGEX:
+            if re.search(pat, low, re.IGNORECASE):
+                return False, f"الگوی ممنوعه: {pat}"
+
+        return True, ""
+
+    # ═══════════════════════════════════════════
+    # process — نقطهٔ ورود
+    # ═══════════════════════════════════════════
+    async def process(self, text: str) -> str:
+        """پردازش امن متن.
+
+        Returns:
+            - پاسخ متنی → جواب آماده است
+            - "" (خالی) → SafeBrain مسئول نیست؛ caller ادامه دهد
+        """
+        text = (text or "").strip()
+        if not text:
+            return ""
+
+        t_all = time.monotonic()
+        self.stats["processed"] += 1
+        log_info(
+            f"▶️ [SAFEBRAIN:process] #{self.stats['processed']} | "
+            f"len={len(text)} | full_access={self.full_access} | "
+            f"in={text[:_LOG_PREVIEW_LEN]!r}"
+        )
+
+        try:
+            return await self._process_inner(text, t_all)
+        except Exception as e:
+            self.stats["errors"] += 1
+            elapsed_ms = (time.monotonic() - t_all) * 1000
+            log_error(
+                f"❌ [SAFEBRAIN:process] {type(e).__name__}: {e} | "
+                f"{elapsed_ms:.0f}ms — fallback"
+            )
+            self.stats["fallback"] += 1
+            return self._fallback_response(text)
+
+    async def _process_inner(self, text: str, t_all: float) -> str:
+        # ─── ۱) امنیت ───
+        safe, reason = self._is_safe(text)
+        if not safe:
+            self.stats["blocked"] += 1
+            log_warning(
+                f"⛔ [SAFEBRAIN:process] مسدود | {reason}"
+            )
+            return f"⛔ درخواست مسدود شد: {reason}"
+
+        # ─── ۲) کش ───
+        cached = self.cache.get(text)
+        if cached:
+            self.stats["cached"] += 1
+            elapsed_ms = (time.monotonic() - t_all) * 1000
+            log_info(
+                f"💡 [SAFEBRAIN:process] cache HIT | "
+                f"{elapsed_ms:.0f}ms"
+            )
+            return cached
+
+        # ─── ۳) تشخیص دستور ───
+        action, value = self._rule_parse(text)
+        log_info(
+            f"🎯 [SAFEBRAIN:parse] action={action} value={value!r}"
+        )
+
+        if action is not None:
+            return await self._handle_parsed_action(
+                action, value, text, t_all
+            )
+
+        # ─── ۴) AI ───
+        ai_result = await self._try_ai(text, t_all)
+        if ai_result is not None:
+            return ai_result
+
+        # ─── ۵) Brain.agent ───
+        if self.api_key and self._can_call_api():
+            brain = self._get_brain()
+            if brain:
+                try:
+                    self.project_memory.add("user", text)
+                    self.global_memory.add("user", text)
+                    t_b = time.monotonic()
+                    result = await brain.agent(text)
+                    b_ms = (time.monotonic() - t_b) * 1000
+                    self.project_memory.add("assistant", result)
+                    self.global_memory.add("assistant", result)
+                    # cache فقط یک بار
+                    self.cache.set(text, result)
+                    elapsed_ms = (time.monotonic() - t_all) * 1000
+                    log_success(
+                        f"✅ [SAFEBRAIN:process] Brain.agent | "
+                        f"agent={b_ms:.0f}ms total={elapsed_ms:.0f}ms"
+                    )
+                    return result
+                except Exception as e:
+                    log_error(
+                        f"❌ [SAFEBRAIN:process] Brain.agent | "
+                        f"{type(e).__name__}: {e}"
+                    )
+                    self.stats["errors"] += 1
+
+        # ─── ۶) Fallback ───
+        self.stats["fallback"] += 1
+        elapsed_ms = (time.monotonic() - t_all) * 1000
+        log_warning(
+            f"⚠️ [SAFEBRAIN:process] fallback | {elapsed_ms:.0f}ms"
+        )
+        return self._fallback_response(text)
+
+    async def _handle_parsed_action(
+        self, action: str, value: Optional[str], text: str, t_all: float
+    ) -> str:
+        """اجرای action پارس‌شده (local یا واگذاری)."""
+        if self.full_access or action in SAFE_ACTIONS:
+            result = await self._execute_safe_action(
+                action, value, text
+            )
+            if result is None or result == "":
+                self.stats["delegated"] += 1
+                elapsed_ms = (time.monotonic() - t_all) * 1000
+                log_info(
+                    f"↪️ [SAFEBRAIN:process] واگذاری | "
+                    f"action={action} | {elapsed_ms:.0f}ms"
+                )
+                return ""
+
+            # cache فقط یک بار
+            self.cache.set(text, result)
+            self.global_memory.add("assistant", result)
+            elapsed_ms = (time.monotonic() - t_all) * 1000
+            log_success(
+                f"✅ [SAFEBRAIN:process] {action} | "
+                f"{len(result)}ch | {elapsed_ms:.0f}ms"
+            )
+            return result
+
+        self.stats["blocked"] += 1
+        log_warning(
+            f"⛔ [SAFEBRAIN:process] اکشن غیرمجاز: {action}"
+        )
+        return f"⛔ اکشن '{action}' مجاز نیست."
+
+    async def _try_ai(self, text: str, t_all: float) -> Optional[str]:
+        """تلاش برای پاسخ از AI. Returns answer یا None."""
+        ai = self._get_ai()
+        if not ai or not AI_CONFIG.get("enabled", True):
+            return None
+
+        try:
+            if not await ai.available():
+                return None
+
+            context = self.global_memory.get_context(3)
+            system = (
+                "تو «مغز هوشمند ربات پایش سرنخ سپاهان رویش» هستی؛ "
+                "یک دستیار داخلی ربات. همیشه به فارسی، کوتاه، "
+                "دقیق و حرفه‌ای جواب بده. هرگز نگو که «کلود» یا "
+                "یک مدل هوش مصنوعی بیرونی هستی. اگر چیزی را "
+                "نمی‌دانی، صادقانه بگو.\n\n"
+            )
+            if context:
+                system += f"زمینه گفتگو:\n{context}\n\n"
+
+            t_ai = time.monotonic()
+            ans = await ai.chat(text, system=system)
+            ai_ms = (time.monotonic() - t_ai) * 1000
+
+            if not ans:
+                return None
+
+            # چک پاسخ نامعتبر
+            is_fallback = (
+                "در دسترس نیست" in ans
+                or ans.startswith("🤖 WinDoctor")
+                or ans.startswith("⚠️")
+            )
+
+            self.global_memory.add("user", text)
+            self.global_memory.add("assistant", ans)
+
+            # cache فقط اگه پاسخ معتبر است
+            if not is_fallback:
+                self.cache.set(text, ans)
+
+            elapsed_ms = (time.monotonic() - t_all) * 1000
+            log_success(
+                f"✅ [SAFEBRAIN:process] AI | "
+                f"ai={ai_ms:.0f}ms total={elapsed_ms:.0f}ms | "
+                f"len={len(ans)} | fallback={is_fallback}"
+            )
+            return ans
+        except Exception as e:
+            log_warning(
+                f"⚠️ [SAFEBRAIN:process] AI | "
+                f"{type(e).__name__}: {e}"
+            )
+            return None
+
+    # ═══════════════════════════════════════════
+    # parsing — wrapper نازک روی command_parser
+    # ═══════════════════════════════════════════
+    @staticmethod
+    def _extract_value(text: str) -> Optional[str]:
+        return _extract_value_fn(text)
+
+    @staticmethod
+    def _platform_in(low: str) -> Optional[str]:
+        return _platform_in_fn(low)
+
+    def _rule_parse(
+        self, text: str
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """منبع یکتا: core/command_parser."""
+        return _parse_command(text)
+
+    # ═══════════════════════════════════════════
+    # execute
+    # ═══════════════════════════════════════════
+    async def _execute_safe_action(
+        self, action: str, value: Optional[str], raw_text: str
+    ) -> Optional[str]:
+        t0 = time.monotonic()
+        try:
+            # ─── ۴ اکشن محلی ───
+            if action in SAFE_ACTIONS_HANDLED_LOCALLY:
+                if action == "help":
+                    return self._help()
+                if action == "add_keyword":
+                    return self._add_keyword(
+                        value or self._extract_value(raw_text) or ""
+                    )
+                if action == "remove_keyword":
+                    return self._remove_keyword(
+                        value or self._extract_value(raw_text) or ""
+                    )
+                if action == "feature_request":
+                    return self._log_request(raw_text)
+
+            # ─── واگذاری به AdminHandler ───
+            # بقیه SAFE_ACTIONS → None (caller اجرا کند)
+            if action in SAFE_ACTIONS:
+                return None
+
+            # ─── ناشناخته ───
+            if self.full_access:
+                log_warning(
+                    f"⚠️ [SAFEBRAIN:exec] ناشناخته «{action}» "
+                    f"(full_access)"
+                )
+            return None
+        except Exception as e:
+            log_error(
+                f"❌ [SAFEBRAIN:exec] {action} | "
+                f"{type(e).__name__}: {e}"
+            )
+            self.stats["errors"] += 1
+            return f"❌ خطا در اجرا: {e}"
+        finally:
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            if elapsed_ms > _SLOW_ACTION_MS:
+                log_warning(
+                    f"🐌 [SAFEBRAIN:exec] {action} کند | "
+                    f"{elapsed_ms:.0f}ms"
+                )
+
+    # ═══════════════════════════════════════════
+    # local answers
+    # ═══════════════════════════════════════════
+    @staticmethod
+    def _help() -> str:
+        return (
+            "🛡️ **SafeBrain — راهنما:**\n"
+            "━━━━━━━━━━━━━━━\n"
+            "دستورهایی که مستقیم کار می‌کنند:\n"
+            "• کلیدواژه «...» را اضافه کن\n"
+            "• حذف کلیدواژه «...»\n"
+            "• درخواست قابلیت جدید (با «می‌خوام» + «قابلیت»)\n\n"
+            "برای بقیه (وضعیت، گزارش، CRM، لاگ، سلامت، ری‌استارت) → "
+            "AdminHandler جواب دقیق از دیتابیس می‌دهد."
+        )
+
+    @staticmethod
+    def _add_keyword(value: str) -> str:
+        if not value:
+            return "کلیدواژه را داخل « » بنویس."
+        kw = str(value).strip()
+        current = _read_custom_kw_dict()
+        if kw in current:
+            log_info(f"ℹ️ [SAFEBRAIN:add_kw] «{kw}» از قبل هست")
+            return f"«{kw}» از قبل هست."
+        current[kw] = "T1"
+        if _write_custom_kw_dict(current):
+            log_success(
+                f"✅ [SAFEBRAIN:add_kw] «{kw}» اضافه شد | "
+                f"total={len(current)}"
+            )
+            return (
+                f"✅ «{kw}» اضافه شد "
+                f"(چند ثانیهٔ دیگر خودکار فعال می‌شود)."
+            )
+        return "❌ ذخیره ناموفق."
+
+    @staticmethod
+    def _remove_keyword(value: str) -> str:
+        if not value:
+            return "کدام کلیدواژه؟ داخل « » بنویس."
+        kw = str(value).strip()
+        current = _read_custom_kw_dict()
+        if kw not in current:
+            log_info(f"ℹ️ [SAFEBRAIN:rm_kw] «{kw}» نبود")
+            return f"«{kw}» در لیست کلیدواژه‌های سفارشی نیست."
+        current.pop(kw, None)
+        if _write_custom_kw_dict(current):
+            log_success(
+                f"🗑️ [SAFEBRAIN:rm_kw] «{kw}» حذف شد | "
+                f"remaining={len(current)}"
+            )
+            return f"🗑️ «{kw}» حذف شد."
+        return "❌ ذخیره ناموفق."
+
+    @staticmethod
+    def _log_request(text: str) -> str:
+        try:
+            path = Path(STORAGE_DIR) / "requests.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(str(path), "a", encoding="utf-8") as f:
+                f.write(
+                    json.dumps(
+                        {
+                            "ts": datetime.now().isoformat(),
+                            "request": text,
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+            log_info(
+                f"📝 [SAFEBRAIN:request] ثبت شد | "
+                f"len={len(text)}"
+            )
+            return "📝 درخواست قابلیت جدید ثبت شد."
+        except Exception as e:
+            log_error(
+                f"❌ [SAFEBRAIN:request] {type(e).__name__}: {e}"
+            )
+            return f"❌ خطا در ثبت: {e}"
+
+    def _fallback_response(self, text: str = "") -> str:
+        """پاسخ fallback — با hint از متن ورودی.
+
+        ⚠️ با «🤖 WinDoctor» شروع می‌شود — admin_handler این را
+        به‌عنوان واگذاری تشخیص می‌دهد. ولی حالا این تابع فقط در
+        حالت خطای واقعی صدا زده می‌شود (نه هر بار).
+        """
+        hint = ""
+        if text:
+            t_low = text.lower()
+            if any(k in t_low for k in ("وضعیت", "status")):
+                hint = "\n💡 «وضعیت» → آمار زنده"
+            elif any(k in t_low for k in ("گزارش", "report", "crm")):
+                hint = "\n💡 «گزارش» یا «crm» → ساخت فایل"
+            elif any(k in t_low for k in ("کلیدواژه", "keyword")):
+                hint = "\n💡 «کلیدواژه‌ها» → لیست کامل"
+
+        return (
+            "🤖 WinDoctor:\n"
+            "هوش مصنوعی در دسترس نیست. از دستورات مستقیم استفاده کنید:\n"
+            "• «وضعیت» → آمار\n"
+            "• «راهنما» → دستورات\n"
+            "• «کلیدواژه‌ها» → لیست\n"
+            "• «سلامت» → بررسی سیستم"
+            + hint
+        )
+
+    # ═══════════════════════════════════════════
+    # flush (برای shutdown)
+    # ═══════════════════════════════════════════
+    def flush(self):
+        """ذخیرهٔ اجباری cache + memories (برای shutdown)."""
+        try:
+            self.cache.flush()
+            self.project_memory.flush()
+            self.global_memory.flush()
+            log_info("💾 [SAFEBRAIN:flush] همه ذخیره شدند")
+        except Exception as e:
+            log_warning(
+                f"⚠️ [SAFEBRAIN:flush] {type(e).__name__}: {e}"
+            )
+
+    # ═══════════════════════════════════════════
+    # debug
+    # ═══════════════════════════════════════════
+    def get_stats(self) -> Dict[str, Any]:
+        """آمار کامل — JSON-safe."""
+        brain_age = (
+            time.monotonic() - self._brain_failed_at
+            if self._brain_failed_at > 0
+            else 0.0
+        )
+        return {
+            **self.stats,
+            "cache": self.cache.stats(),
+            "project_memory": self.project_memory.count,
+            "global_memory": self.global_memory.count,
+            "api_calls_this_hour": self._api_calls_this_hour,
+            "brain_connected": self._brain_instance is not None,
+            "brain_failed": self._brain_failed_at > 0,
+            "brain_retry_in_s": (
+                max(0, int(_BRAIN_FAIL_RETRY_S - brain_age))
+                if self._brain_failed_at > 0
+                else 0
+            ),
+            "ai_available": self._ai_assistant is not None,
+        }
+
+
+# ════════════════════════════════════════════
+# Singleton (thread-safe)
+# ════════════════════════════════════════════
+_shared_safe_brain: Optional[SafeBrain] = None
+_shared_lock = threading.Lock()
+
+
+def get_safe_brain(
+    api_key: Optional[str] = None,
+    full_access: bool = False,
+    use_api_memory: bool = False,
+    memory_api_url: str = "",
+    memory_api_key: str = "",
+) -> SafeBrain:
+    """دریافت نمونهٔ Singleton SafeBrain (thread-safe)."""
+    global _shared_safe_brain
+
+    with _shared_lock:
+        if _shared_safe_brain is None:
+            log_info("🏗️ [SAFEBRAIN:singleton] ساخت نمونهٔ اول")
+            _shared_safe_brain = SafeBrain(
+                api_key=api_key,
+                full_access=full_access,
+                use_api_memory=use_api_memory,
+                memory_api_url=memory_api_url,
+                memory_api_key=memory_api_key,
+            )
+        else:
+            updated = []
+            if full_access and not _shared_safe_brain.full_access:
+                _shared_safe_brain.full_access = True
+                updated.append("full_access=True")
+            if use_api_memory and memory_api_url:
+                _shared_safe_brain.use_api_memory = True
+                _shared_safe_brain.memory_api_url = memory_api_url
+                _shared_safe_brain.memory_api_key = memory_api_key
+                updated.append("memory_api")
+            if updated:
+                log_info(
+                    f"♻️ [SAFEBRAIN:singleton] به‌روزرسانی | "
+                    f"fields={updated}"
+                )
+    return _shared_safe_brain

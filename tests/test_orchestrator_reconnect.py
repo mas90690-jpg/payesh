@@ -1,7 +1,8 @@
 # tests/test_orchestrator_reconnect.py
+
 import pytest
-from datetime import datetime
-from core.orchestrator import Orchestrator
+
+from core.app.orchestrator import Orchestrator
 
 
 class _FakeBus:
@@ -45,7 +46,7 @@ class _FlakyCollector:
 @pytest.mark.asyncio
 async def test_supervise_reconnect_recovers(monkeypatch):
     # sleep را بی‌اثر کن تا تست سریع باشد (backoff واقعی لازم نیست)
-    import core.orchestrator as orch
+    import core.app.orchestrator as orch
 
     async def _no_sleep(*a, **k):
         return None

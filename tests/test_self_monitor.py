@@ -1,7 +1,9 @@
 # tests/test_self_monitor.py
 import json
+
 import pytest
-from core.self_monitor import SelfMonitor
+
+from core.ops.self_monitor import SelfMonitor
 
 
 def test_recent_errors_parsing(tmp_path, monkeypatch):
@@ -18,7 +20,7 @@ def test_recent_errors_parsing(tmp_path, monkeypatch):
         + "\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr("core.self_monitor.LOG_FILE", str(log))
+    monkeypatch.setattr("core.ops.self_monitor.LOG_FILE", str(log))
     sm = SelfMonitor(db=None)
     sm.interval = 10_000_000  # پنجرهٔ زمانیِ بزرگ تا همه را بشمارد
     errs = sm._recent_errors()
@@ -28,7 +30,7 @@ def test_recent_errors_parsing(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_check_once_no_crash_without_admins(tmp_path, monkeypatch):
     """بدون admin/sender نباید کرش کند (فقط هشدار را رد می‌کند)."""
-    monkeypatch.setattr("core.self_monitor.LOG_FILE", str(tmp_path / "none.jsonl"))
+    monkeypatch.setattr("core.ops.self_monitor.LOG_FILE", str(tmp_path / "none.jsonl"))
     sm = SelfMonitor(db=None)
     sm.watch = []
     await sm.check_once()  # نباید استثنا بدهد

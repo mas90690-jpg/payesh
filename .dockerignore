@@ -1,18 +1,42 @@
-# فایل‌های موقت و حجیم که داخل ایمیج لازم نیستند
+# .dockerignore — چیزهایی که نباید داخل image برود
+.git
+.gitignore
+.github
+
+# Python
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# venv
 venv/
 .venv/
-2.0/
-temps/
-storage/pycache/
-storage/logs/
-storage/backups/
+env/
+ENV/
+
+# Secrets (بحرانی)
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.crt
+
+# Runtime data (باید volume شود، نه image)
+storage/
+data/runtime/
+
+# Debug
 *.log
-*.zip
-.git/
-.gitignore
-*.md
-نقشه*.txt
-eitaa_debug.html
+*.tmp
+bot.pid
+
+# IDE
+.idea/
+.vscode/
+*.swp

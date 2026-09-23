@@ -1,0 +1,277 @@
+# ======================================================================
+#  pyproject.toml — تعریف پکیج + ابزارها
+#  Lead Monitor (Srooyesh) — نسخهٔ 3.0.0
+#
+#  ⚠️  منبع یکتای وابستگی‌ها و تنظیمات ابزارها:
+#      • وابستگی‌ها      → اینجا
+#      • pytest          → pytest.ini (نه اینجا)
+#      • coverage        → اینجا
+#      • ruff/black/mypy → اینجا
+# ======================================================================
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  پروژه
+# ══════════════════════════════════════════════════════════════════════
+[project]
+name = "lead-monitor"
+version = "3.0.0"
+description = "پایش سرنخ فروش سپاهان رویش — WinDoctor"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "Srooyesh" }]
+keywords = [
+    "lead-monitor",
+    "sales",
+    "b2b",
+    "persian",
+    "nlp",
+    "chatops",
+]
+classifiers = [
+    "Private :: Do Not Upload",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Natural Language :: Persian",
+    "Operating System :: OS Independent",
+    "Topic :: Communications :: Chat",
+]
+
+# ─── وابستگی‌های اصلی (اجباری) ───
+dependencies = [
+    # وب و شبکه
+    "aiohttp>=3.9,<4.0",
+    "requests>=2.31,<3.0",
+
+    # دیتابیس
+    "aiosqlite>=0.19,<1.0",
+
+    # مرورگر
+    "playwright>=1.40,<2.0",
+
+    # زمان‌بندی
+    "apscheduler>=3.10,<4.0",
+
+    # سیستم
+    "psutil>=5.9,<7.0",
+
+    # پارس HTML
+    "beautifulsoup4>=4.12,<5.0",
+
+    # AI (OpenAI-compatible — برای DeepSeek/Ollama)
+    "openai>=1.12,<2.0",
+
+    # ترجمه
+    "deep-translator>=1.11,<2.0",
+
+    # env
+    "python-dotenv>=1.0,<2.0",
+
+    # Excel
+    "openpyxl>=3.1,<4.0",
+]
+
+# ─── لینک‌ها ───
+[project.urls]
+Homepage = "https://github.com/srooyesh/lead-monitor"
+Documentation = "https://github.com/srooyesh/lead-monitor/blob/main/README.md"
+Repository = "https://github.com/srooyesh/lead-monitor.git"
+Issues = "https://github.com/srooyesh/lead-monitor/issues"
+
+# ─── entry point ───
+[project.scripts]
+# main:main یک coroutine است؛ entry point باید sync باشد.
+# main:_run یک wrapper sync است که asyncio.run(main()) را صدا می‌زند.
+lead-monitor = "main:_run"
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  وابستگی‌های اختیاری (گروه‌بندی‌شده)
+# ══════════════════════════════════════════════════════════════════════
+[project.optional-dependencies]
+
+# پیام‌رسان‌ها (کتابخانه‌های userbot)
+telegram  = ["telethon>=1.36,<2.0"]
+rubika    = ["rubpy>=7.0,<8.0"]
+
+# دیتابیس جایگزین
+postgres  = ["asyncpg>=0.29,<1.0"]
+
+# حافظهٔ معنایی
+vector    = [
+    "chromadb>=0.4,<0.5",
+    "sentence-transformers>=2.2,<4.0",
+]
+
+# ابزارهای سیستمی
+clipboard = ["pyperclip>=1.8,<2.0"]
+
+# توسعه (تست + lint + type)
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=4.1",
+    "mypy>=1.8",
+    "ruff>=0.4",
+    "black>=24.0",
+]
+
+# همهٔ گروه‌ها (نصب کامل)
+all = [
+    "telethon>=1.36,<2.0",
+    "rubpy>=7.0,<8.0",
+    "asyncpg>=0.29,<1.0",
+    "chromadb>=0.4,<0.5",
+    "sentence-transformers>=2.2,<4.0",
+    "pyperclip>=1.8,<2.0",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=4.1",
+    "mypy>=1.8",
+    "ruff>=0.4",
+    "black>=24.0",
+]
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  setuptools — کشف پکیج
+# ══════════════════════════════════════════════════════════════════════
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["core*", "collectors*", "handlers*", "analyzers*"]
+exclude = [
+    "data*",
+    "storage*",
+    "tests*",
+    "scripts*",
+    "docs*",
+]
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  pytest — ⚠️ config در pytest.ini است (نه اینجا)
+#  دلیل: pytest اول pytest.ini را می‌خواند. اگر هر دو باشند،
+#         بلوک اینجا نادیده گرفته می‌شود → dead code.
+# ══════════════════════════════════════════════════════════════════════
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  coverage — سقف حداقل پوشش
+#  (coverage config جای دیگری نمی‌رود → اینجا درست است)
+# ══════════════════════════════════════════════════════════════════════
+[tool.coverage.run]
+source = ["core", "collectors", "handlers", "analyzers"]
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+    "*/__init__.py",
+]
+branch = true
+
+[tool.coverage.report]
+fail_under = 70
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "\\.\\.\\.",
+]
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  ruff — لینتر سریع
+# ══════════════════════════════════════════════════════════════════════
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+exclude = [
+    ".git",
+    ".venv",
+    "__pycache__",
+    "storage",
+    "data",
+    "var",
+    "docs",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "C4",  # flake8-comprehensions
+]
+ignore = [
+    "E501",  # خط بلند — به‌خاطر متن فارسی قابل قبول
+    "E402",  # import بالای فایل نیست — برای patch_console لازم است
+    "B008",  # function call in default arg (الگوی config)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]  # unused imports in __init__
+"tests/**"    = ["B", "C4"]
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  black — فرمتر
+# ══════════════════════════════════════════════════════════════════════
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+exclude = '''
+/(
+    \.git
+  | \.venv
+  | __pycache__
+  | storage
+  | data
+  | var
+  | docs
+)/
+'''
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  mypy — بررسی type hints
+# ══════════════════════════════════════════════════════════════════════
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+disallow_untyped_defs = false   # ← فعلاً false؛ در آینده true کن
+disallow_incomplete_defs = false
+check_untyped_defs = true
+no_implicit_optional = true
+show_error_codes = true
+pretty = true
+ignore_missing_imports = true
+
+# پکیج‌های خارجی که stub ندارند
+[[tool.mypy.overrides]]
+module = [
+    "rubpy.*",
+    "telethon.*",
+    "chromadb.*",
+    "deep_translator.*",
+    "playwright.*",
+]
+ignore_missing_imports = true
+
+# فایل‌های تست — نرم‌تر
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+check_untyped_defs = false

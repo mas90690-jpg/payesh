@@ -1,0 +1,215 @@
+{
+  "version": "2.0.2",
+  "description": "کنترل دسترسی کامل هوش — v2.0.2: تنظیمات بله برای hot-reload از چت",
+  "read": {
+    "allow": [
+      "core/**/*.py",
+      "collectors/**/*.py",
+      "handlers/**/*.py",
+      "analyzers/**/*.py",
+      "data/**",
+      "storage/logs/**",
+      "storage/reports/**",
+      "storage/brain/**",
+      "*.py",
+      "*.md",
+      "*.txt",
+      "*.ini",
+      "requirements.txt",
+      "pytest.ini"
+    ],
+    "deny": [
+      ".env",
+      "data/configs/access_control.json",
+      "storage/sessions/**",
+      "storage/database/*.db-wal",
+      "storage/database/*.db-shm"
+    ]
+  },
+  "write": {
+    "allow": [
+      "data/runtime/**",
+      "data/sources/target_groups.txt",
+      "storage/reports/**",
+      "storage/brain/**",
+      "storage/requests.jsonl"
+    ],
+    "deny": [
+      "data/configs/**",
+      "core/**",
+      "collectors/**",
+      "handlers/**",
+      "analyzers/**",
+      "main.py",
+      "config.py",
+      "panel.py",
+      "login.py",
+      ".env",
+      "storage/database/**",
+      "storage/sessions/**"
+    ]
+  },
+  "database": {
+    "read_tables": [
+      "*"
+    ],
+    "write_tables": [],
+    "allow_delete": false,
+    "max_rows_select": 1000
+  },
+  "settings": {
+    "read": [
+      "*"
+    ],
+    "write": [
+      "EITAA_POLL_SECONDS",
+      "BALE_POLL_SECONDS",
+      "RUBIKA_POLL_SECONDS",
+      "TELEGRAM_POLL_SECONDS",
+      "WHATSAPP_POLL_SECONDS",
+      "LINKEDIN_POLL_SECONDS",
+      "EITAA_MAX_CHATS",
+      "BALE_MAX_CHATS",
+      "RUBIKA_HISTORY_LIMIT",
+      "TELEGRAM_HISTORY_LIMIT",
+      "WHATSAPP_MAX_CHATS",
+      "LINKEDIN_MAX_RESULTS",
+      "EITAA_ENABLED",
+      "BALE_ENABLED",
+      "RUBIKA_ENABLED",
+      "TELEGRAM_ENABLED",
+      "WHATSAPP_ENABLED",
+      "WEB_ENABLED",
+      "LINKEDIN_ENABLED",
+      "LOG_LEVEL",
+      "WEB_TRANSLATE",
+      "KEYWORDS_ONLY",
+      "LEAD_ALERTS_ENABLED",
+      "LEAD_ALERT_MIN_SCORE",
+      "BRAND_TOKEN_ENABLED",
+      "BRAND_TOKEN_MIN_LEN",
+      "EVENT_LOG",
+      "LINKEDIN_ADD_QUERY_TO_KEYWORDS",
+
+      "BALE_MESSAGES_PER_CHAT",
+      "BALE_BACKFILL_SCROLLS",
+      "BALE_DELAY_MIN",
+      "BALE_DELAY_MAX",
+      "BALE_BETWEEN_MIN",
+      "BALE_BETWEEN_MAX",
+      "BALE_TYPING_MIN",
+      "BALE_TYPING_MAX",
+      "BALE_ADMIN_CHAT",
+      "BALE_UA_SUFFIX",
+
+      "EITAA_MESSAGES_PER_CHAT",
+      "EITAA_BACKFILL_SCROLLS",
+      "EITAA_DELAY_MIN",
+      "EITAA_DELAY_MAX",
+      "EITAA_BETWEEN_MIN",
+      "EITAA_BETWEEN_MAX"
+    ],
+    "deny": [
+      "DEEPSEEK_API_KEY",
+      "ADMIN_IDS",
+      "BALE_PHONE",
+      "RUBIKA_PHONE",
+      "EITAA_PHONE",
+      "DATABASE_TYPE",
+      "DB_*",
+      "BALE_PROXY",
+      "BROWSER_PROXY",
+      "PROXY_URL",
+      "CHROME_PATH",
+      "TELEGRAM_API_ID",
+      "TELEGRAM_API_HASH",
+      "TELEGRAM_PHONE",
+      "AI_PRIORITY",
+      "AI_ENABLED",
+      "OLLAMA_URL",
+      "OLLAMA_MODEL",
+      "AI_TIMEOUT",
+      "OBS_ENABLED",
+      "OBS_HOST",
+      "OBS_PORT",
+      "BACKUP_*",
+      "DAILY_BACKUP_HOURS",
+      "KEEP_DAILY_BACKUPS",
+      "KEEP_FULL_BACKUPS",
+      "FULL_BACKUP_DAYS",
+      "CLEANUP_INTERVAL_HOURS",
+      "KEEP_MEDIA_DAYS",
+      "KEEP_REPORTS_DAYS",
+      "KEEP_MESSAGES_DAYS"
+    ]
+  },
+  "platforms": {
+    "toggleable": [
+      "eitaa",
+      "bale",
+      "rubika",
+      "telegram",
+      "whatsapp",
+      "web",
+      "linkedin"
+    ],
+    "status_check": true,
+    "allow_restart_collector": true
+  },
+  "commands": {
+    "allow": [
+      "git status",
+      "git diff",
+      "git log",
+      "python -m pytest",
+      "pytest",
+      "pip list",
+      "pip show",
+      "dir",
+      "ls",
+      "type",
+      "cat",
+      "head",
+      "tail",
+      "systeminfo",
+      "tasklist",
+      "netstat"
+    ],
+    "deny": [
+      "python -c",
+      "rm -rf",
+      "rmdir /s",
+      "del /f /s",
+      "format",
+      "shutdown",
+      "reboot",
+      "mkfs",
+      "dd if=",
+      "chmod 777",
+      ":(){ :|:& };:"
+    ]
+  },
+  "safety": {
+    "backup_before_write": true,
+    "require_confirmation": [
+      "write_file",
+      "edit_file",
+      "delete_file",
+      "move_file",
+      "git_commit",
+      "kill_process",
+      "restart_platform"
+    ],
+    "max_file_size_mb": 5,
+    "max_command_timeout_sec": 300,
+    "max_db_rows": 1000,
+    "log_all_writes": true
+  },
+  "ai_limits": {
+    "max_calls_per_hour": 100,
+    "max_tokens_per_call": 4096,
+    "allow_self_upgrade": false,
+    "allow_git_push": false,
+    "allow_kill_process": false
+  }
+}

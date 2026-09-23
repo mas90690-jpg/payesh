@@ -2,27 +2,40 @@
 """
 کلکتور واتساپ (WhatsApp) در حالت «کاربر عادی» با اتوماسیون مرورگر روی web.whatsapp.com
 
-واتساپ API رسمی برای خواندن گروه‌ها به‌عنوان کاربر ندارد و کتابخانه‌های توکن‌محور
-(Business API) به درد این کار نمی‌خورند. تنها راه رایگانِ «به‌عنوان کاربر» = ورود به
-web.whatsapp.com با اسکن QR و خواندن پیام‌ها از صفحه (مثل ایتا).
+نسخهٔ ۴ (این نسخه):
+  - 🐛 FIX: فیلتر هدف اگر نام چت معتبر نبود، آن چت را رد نمی‌کند
+    (قبلاً نام خالی → همه چت‌ها غیرهدف رد می‌شدند)
+  - ⭐ NEW: متد _is_valid_chat_name برای هم‌راستایی با بله/ایتا
+  - ⭐ NEW: ثابت _DEFAULT_CHAT_NAME (به‌جای رشتهٔ هاردکد در چند جا)
+  - 🐛 FIX: has_match فقط یک‌بار صدا زده می‌شود (نتیجه در has_kw)
 
-ورود یک‌بار و دستی: `python login.py` (گزینه واتساپ) → مرورگر باز می‌شود، با گوشی QR را
-اسکن می‌کنی؛ نشست در پروفایل مرورگر (user_data_dir) ذخیره می‌ماند.
+نسخهٔ ۳:
+  - ⭐ فیلتر «گروه هدف» اضافه شد (platform="whatsapp")
+  - 🐛 import get_target_groups به بالای فایل منتقل شد
+  - 🐛 chat_name قبل از کلیک از آیتم لیست استخراج می‌شود
 
-نکته: واتساپ در ایران ممکن است نیاز به VPN داشته باشد (مشکل شبکه، نه این کد).
+نسخهٔ ۲:
+  - استخراج sender_name از data-pre-plain-text در چت گروهی
+  - حذف _processed_chats (مرده)
+  - هم‌راستا با ایتا در استفاده از limit بزرگ‌تر در backfill
+
+ورود یک‌بار و دستی: `python login.py` (گزینه واتساپ) → مرورگر باز می‌شود، با گوشی
+QR را اسکن می‌کنی؛ نشست در پروفایل مرورگر (user_data_dir) ذخیره می‌ماند.
 """
 import asyncio
-import os
-import json
 import hashlib
+import json
+import os
+import re
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import Any
 
-from core.base_collector import BaseCollector, ConnectionStatus
-from core.logger import log_info, log_success, log_error, log_warning
 from analyzers.keyword_finder import get_keyword_finder
+from analyzers.target_filter import get_target_groups
+from core.contracts.base_collector import BaseCollector, ConnectionStatus
+from core.kernel.logger import log_error, log_info, log_success, log_warning
 
-# ایمپورتِ playwright در سطح ماژول با محافظ (قابل patch در تست، graceful اگر نصب نبود)
+# ایمپورتِ playwright در سطح ماژول با محافظ
 try:
     from playwright.async_api import async_playwright
 except ImportError:
@@ -30,6 +43,9 @@ except ImportError:
 
 WHATSAPP_WEB_URL = "https://web.whatsapp.com/"
 _MAX_SEEN = 8000
+
+# نام پیش‌فرضی که وقتی استخراج ناموفق است برگردانده می‌شود
+_DEFAULT_CHAT_NAME = "واتساپ"
 
 # نشانه‌های ورود/عدم‌ورود (وب‌واتساپ نسبتاً پایدار است)
 LOGIN_MARKERS = [
@@ -70,11 +86,12 @@ class WhatsAppCollector(BaseCollector):
         self._context = None
         self._page = None
         self._connected = False
-        self._messages_queue: List[Dict[str, Any]] = []
+        self._messages_queue: list[dict[str, Any]] = []
         self._seen_ids = set()
-        self._processed_chats = set()
         # matcher مشترک: عکس فقط برای پیام‌های کلیدواژه‌دار دانلود می‌شود
         self._kw = get_keyword_finder()
+        # فیلتر گروه هدف (مثل ایتا/بله)
+        self._targets = get_target_groups()
 
         from config import STORAGE_DIR
 
@@ -82,7 +99,7 @@ class WhatsAppCollector(BaseCollector):
         os.makedirs(self._user_data_dir, exist_ok=True)
         self._media_dir = os.path.join(STORAGE_DIR, "media", "whatsapp")
         os.makedirs(self._media_dir, exist_ok=True)
-        # ضدتکراری ماندگار (مثل ایتا) تا بعد از ری‌استارت پیام‌های قدیمی دوباره خوانده نشوند
+        # ضدتکراری ماندگار
         self._seen_path = os.path.join(STORAGE_DIR, "offset", "whatsapp_seen.json")
         os.makedirs(os.path.dirname(self._seen_path), exist_ok=True)
         self._load_seen()
@@ -101,19 +118,34 @@ class WhatsAppCollector(BaseCollector):
 
     @property
     def poll_interval_seconds(self) -> float:
-        # واتساپ هم اسکرپرِ مرورگری سنگین است؛ مثل ایتا کند اجرا شود نه هر ۲ ثانیه.
+        # واتساپ هم اسکرپرِ مرورگری سنگین است.
         return float(self._poll_seconds)
+
+    # ==================================================
+    # اعتبارسنجی نام چت — هم‌راستا با بله/ایتا
+    # ==================================================
+    @staticmethod
+    def _is_valid_chat_name(name: str) -> bool:
+        """نام چت معتبر است؟ (نه خالی، نه نام پیش‌فرض)"""
+        if not name:
+            return False
+        n = str(name).strip()
+        if not n or n == _DEFAULT_CHAT_NAME:
+            return False
+        return True
 
     # ==================================================
     # ضدتکراری ماندگار (روی دیسک)
     # ==================================================
     def _load_seen(self):
         try:
-            with open(self._seen_path, "r", encoding="utf-8") as f:
+            with open(self._seen_path, encoding="utf-8") as f:
                 data = json.load(f)
             if isinstance(data, list):
                 self._seen_ids = set(data[-_MAX_SEEN:])
-                log_info(f"♻️ {len(self._seen_ids)} پیامِ دیده‌شدهٔ واتساپ بارگذاری شد")
+                log_info(
+                    f"♻️ {len(self._seen_ids)} پیامِ دیده‌شدهٔ واتساپ بارگذاری شد"
+                )
         except Exception:
             self._seen_ids = set()
 
@@ -129,7 +161,7 @@ class WhatsAppCollector(BaseCollector):
     # ==================================================
     # اتصال (با نشست ذخیره‌شده در پروفایل مرورگر)
     # ==================================================
-    async def connect(self, headless: Optional[bool] = None) -> bool:
+    async def connect(self, headless: bool | None = None) -> bool:
         try:
             if async_playwright is None:
                 log_error("playwright نصب نیست: pip install playwright")
@@ -165,9 +197,8 @@ class WhatsAppCollector(BaseCollector):
             return False
 
     async def _launch_context(self, use_headless: bool):
-        """مرورگر را قابل‌حمل باز می‌کند: اگر CHROME_PATH ست باشد همان، وگرنه
-        خودکار Chrome→Edge→Chromium (روی سرور لینوکس هم بدون مسیر هاردکد کار می‌کند)."""
-        from config import CHROME_PATH
+        """مرورگر را قابل‌حمل باز می‌کند."""
+        from config import CHROME_PATH, get_browser_proxy
 
         base = dict(
             user_data_dir=self._user_data_dir,
@@ -178,6 +209,7 @@ class WhatsAppCollector(BaseCollector):
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
             ],
+            **get_browser_proxy(),
         )
         if CHROME_PATH:
             try:
@@ -215,9 +247,99 @@ class WhatsAppCollector(BaseCollector):
         return False
 
     # ==================================================
+    # ابزار کمکی — استخراج فرستنده
+    # ==================================================
+    @staticmethod
+    def _parse_pre_plain_text(pre: str) -> str:
+        """از data-pre-plain-text، نام فرستنده را بیرون می‌کشد.
+
+        فرمت واتساپ:  "[12:34, 01/02/2024] علی رضایی: "
+        """
+        if not pre:
+            return ""
+        try:
+            m = re.search(r"\]\s*(.+?)\s*:\s*$", pre)
+            if not m:
+                return ""
+            name = m.group(1).strip()
+            # پاک‌سازی نشانه‌های جهت‌دهی (RTL/LTR markers)
+            for ch in ("\u200e", "\u200f", "\u202a", "\u202b", "\u202c", "\u202d", "\u202e"):
+                name = name.replace(ch, "")
+            if name and len(name) < 60:
+                return name
+        except Exception:
+            pass
+        return ""
+
+    async def _extract_sender_from_bubble(self, bubble) -> str:
+        """استخراج نام فرستنده از data-pre-plain-text یا spanهای داخلی."""
+        # روش ۱: خود bubble
+        try:
+            pre = await bubble.get_attribute("data-pre-plain-text")
+            name = self._parse_pre_plain_text(pre or "")
+            if name:
+                return name
+        except Exception:
+            pass
+        # روش ۲: فرزند copyable-text
+        try:
+            el = await bubble.query_selector(".copyable-text[data-pre-plain-text]")
+            if el:
+                pre = await el.get_attribute("data-pre-plain-text")
+                name = self._parse_pre_plain_text(pre or "")
+                if name:
+                    return name
+        except Exception:
+            pass
+        # روش ۳: span کوتاه داخلی (fallback کم‌دقت)
+        for sel in ('span[dir="auto"]', "span[aria-label]"):
+            try:
+                el = await bubble.query_selector(sel)
+                if el:
+                    t = (await el.inner_text() or "").strip()
+                    if t and len(t) < 60:
+                        return t
+            except Exception:
+                continue
+        return ""
+
+    # ==================================================
+    # استخراج نام چت از آیتم لیست (قبل از کلیک)
+    # ==================================================
+    async def _extract_item_title(self, chat_item) -> str:
+        """نام چت را از خودِ آیتمِ لیست استخراج می‌کند."""
+        # روش ۱: span[title] داخل آیتم
+        for sel in (
+            '[data-testid="cell-frame-title"] span[title]',
+            'span[title]',
+            'span[dir="auto"]',
+        ):
+            try:
+                el = await chat_item.query_selector(sel)
+                if el:
+                    t = (await el.get_attribute("title")) or (
+                        await el.inner_text() or ""
+                    )
+                    t = (t or "").strip()
+                    if t and len(t) < 80:
+                        return t
+            except Exception:
+                continue
+        # روش ۲: aria-label مستقیم
+        try:
+            aria = await chat_item.get_attribute("aria-label")
+            if aria:
+                a = aria.strip()
+                if a and len(a) < 80:
+                    return a
+        except Exception:
+            pass
+        return ""
+
+    # ==================================================
     # خواندن پیام‌های جدید از چتِ باز
     # ==================================================
-    async def fetch_messages(self, since: datetime = None) -> List[Dict[str, Any]]:
+    async def fetch_messages(self, since: datetime = None) -> list[dict[str, Any]]:
         if not self._connected or not self._page:
             return []
         try:
@@ -227,18 +349,18 @@ class WhatsAppCollector(BaseCollector):
 
         new_msgs = self._messages_queue.copy()
         self._messages_queue.clear()
-        self._save_seen()  # ضدتکراری را ماندگار کن
+        self._save_seen()
         self._needs_backfill = False
         if new_msgs:
             log_success(f"📥 {len(new_msgs)} پیام جدید از واتساپ")
         return new_msgs
 
     async def _backfill_scroll(self):
-        """در اولین اسکرپ بعد از اتصال، چت را به بالا اسکرول می‌کند (catch-up، best-effort)."""
+        """در اولین اسکرپ بعد از اتصال، چت را به بالا اسکرول می‌کند (catch-up)."""
         if not (self._needs_backfill and self._backfill_scrolls > 0):
             return
         try:
-            await self._page.mouse.move(640, 400)  # روی ناحیهٔ پیام‌ها
+            await self._page.mouse.move(640, 400)
         except Exception:
             return
         for _ in range(self._backfill_scrolls):
@@ -250,7 +372,9 @@ class WhatsAppCollector(BaseCollector):
 
     async def _scrape_all_chats(self):
         """در لیست چت‌ها می‌چرخد، هر گروه/چت را باز می‌کند و پیام‌هایش را می‌خواند.
-        پیام‌های نخوانده/آفلاین هم همین‌جا گرفته می‌شوند (چون همهٔ چت‌ها مرور می‌شوند).
+
+        🐛 FIX نسخهٔ ۴: فیلتر هدف حالا اگر نام چت معتبر نیست، رد نمی‌کند
+        (قبلاً نام خالی → همه چت‌ها غیرهدف رد می‌شدند).
         """
         page = self._page
         chat_selectors = [
@@ -259,13 +383,14 @@ class WhatsAppCollector(BaseCollector):
             '#pane-side [role="row"]',
         ]
         chat_items = []
+        used_sel = ""
         for sel in chat_selectors:
             chat_items = await page.query_selector_all(sel)
             if chat_items:
+                used_sel = sel
                 break
 
         if not chat_items:
-            # خوددیتکشن: DOM را ذخیره کن (اگر انتخابگرها قدیمی شدند، فوری قابل اصلاح)
             try:
                 await self.dump_dom()
             except Exception:
@@ -274,15 +399,47 @@ class WhatsAppCollector(BaseCollector):
             await self._scrape_open_chat()
             return
 
-        log_info(f"🔍 واتساپ: {len(chat_items)} چت برای مرور")
-        for idx, chat in enumerate(chat_items[: self._max_chats]):
+        total = len(chat_items)
+        limit = self._max_chats if self._max_chats > 0 else total
+        chat_items = chat_items[:limit]
+
+        log_info(
+            f"🔍 [whatsapp:scrape] شروع | کل={total} | انتخاب={limit} | "
+            f"selector={used_sel}"
+        )
+
+        processed = 0
+        skipped_target = 0
+        failed = 0
+
+        for idx, chat in enumerate(chat_items):
             try:
+                # نام چت را قبل از کلیک بگیر (برای فیلتر هدف)
+                chat_name = await self._extract_item_title(chat)
+
+                # 🎯 فیلتر گروه هدف (فقط اگر نام معتبر باشد)
+                # 🐛 FIX نسخهٔ ۴: اگر chat_name نامعتبر بود، فیلتر رد نمی‌کند
+                if (self._targets.enabled(platform="whatsapp")
+                        and self._is_valid_chat_name(chat_name)
+                        and not self._targets.is_target(chat_name, platform="whatsapp")):
+                    skipped_target += 1
+                    log_info(f"   ⏭️ [{idx+1}] غیرهدف: «{chat_name}»")
+                    continue
+
                 await chat.click()
                 await asyncio.sleep(self._chat_open_delay)
                 await self._scrape_open_chat()
+                processed += 1
+
             except Exception as e:
+                failed += 1
                 log_warning(f"خطا در مرور چت واتساپ {idx}: {e}")
                 continue
+
+        log_success(
+            f"🏁 [whatsapp:scrape] کامل | پردازش={processed} | "
+            f"غیرهدف={skipped_target} | خطا={failed}"
+        )
 
     async def _scrape_open_chat(self):
         """پیام‌های چتِ بازِ فعلی را می‌خواند."""
@@ -295,16 +452,25 @@ class WhatsAppCollector(BaseCollector):
             if bubbles:
                 break
 
-        for b in bubbles[-self._messages_per_chat :]:
+        # هنگام catch-up پیام‌های بیشتری را بخوان — مثل ایتا
+        limit = (
+            max(self._messages_per_chat, 200)
+            if self._needs_backfill
+            else self._messages_per_chat
+        )
+
+        for b in bubbles[-limit:]:
             try:
                 data_id = await b.get_attribute("data-id") or ""
                 # data-id واتساپ: false_<chat>@g.us_<msgid>_<sender>
                 chat_id = chat_name
-                if "@g.us" in data_id or "@c.us" in data_id:
+                is_group = "@g.us" in data_id
+                if is_group or "@c.us" in data_id:
                     parts = data_id.split("_")
                     if len(parts) >= 2:
                         chat_id = parts[1]
-                # متن
+
+                # inner_text از bubble هم متن و هم caption را برمی‌گرداند.
                 text = ""
                 tnode = await b.query_selector(
                     "span.selectable-text, .copyable-text span.selectable-text"
@@ -314,24 +480,33 @@ class WhatsAppCollector(BaseCollector):
                 if not text:
                     text = (await b.inner_text() or "").strip()
 
-                # شناسهٔ پایدار (md5 به‌جای hash ناپایدار) و ضدتکراری قبل از هر کار سنگین
+                # شناسهٔ پایدار (md5 به‌جای hash ناپایدار)
                 mid = data_id or hashlib.md5(text.encode("utf-8")).hexdigest()[:16]
                 uniq = f"{chat_name}:{mid}"
                 if uniq in self._seen_ids:
                     continue
-                # بدون متن = بدون امکان تطبیق کلیدواژه → اصلاً نگه ندار
+                # بدون متن = بدون امکان تطبیق کلیدواژه
                 if not text:
                     continue
                 self._seen_ids.add(uniq)
 
-                # فقط پیام‌های کلیدواژه‌دار صف شوند (دیده‌شده ثبت شد، دور بعد دوباره چک نمی‌شود)
-                if not self._kw.has_match(text):
+                # فیلتر کلیدواژه — نتیجه در متغیر نگه داشته می‌شود (نه دو بار صدا زدن)
+                has_kw = self._kw.has_match(text)
+                if not has_kw:
                     continue
 
-                # دانلود عکس (این پیام کلیدواژه دارد)
+                # ─── استخراج فرستنده ───
+                sender_name = ""
+                if is_group:
+                    sender_name = await self._extract_sender_from_bubble(b)
+                if not sender_name:
+                    # چت خصوصی یا شکست در استخراج → نام چت
+                    sender_name = chat_name
+
+                # دانلود عکس (این پیام قطعاً کلیدواژه دارد)
                 media_type, local_file_path = "text", None
                 try:
-                    from core.web_media import download_dom_image
+                    from core.adapters.web_media import download_dom_image
 
                     mt, lp = await download_dom_image(
                         self._page, b, self._media_dir, "whatsapp"
@@ -348,11 +523,11 @@ class WhatsAppCollector(BaseCollector):
                         "text": text,
                         "chat_id": str(chat_id),
                         "chat_name": chat_name,
-                        "chat_type": "group" if "@g.us" in data_id else "private",
+                        "chat_type": "group" if is_group else "private",
                         "chat_username": None,
                         "chat_link": None,  # واتساپ یوزرنیم عمومی ندارد؛ لینک دعوت جداست
-                        "user_id": "",
-                        "sender_name": "",
+                        "user_id": "",  # واتساپ در data-id عدد کاربر ندارد (به‌راحتی)
+                        "sender_name": sender_name,
                         "timestamp": datetime.now(),
                         "media_type": media_type,
                         "file_id": None,
@@ -378,7 +553,7 @@ class WhatsAppCollector(BaseCollector):
                         return t
             except Exception:
                 continue
-        return "واتساپ"
+        return _DEFAULT_CHAT_NAME
 
     async def dump_dom(self, path: str = None) -> str:
         path = path or os.path.join(self._user_data_dir, "whatsapp_dom_dump.html")

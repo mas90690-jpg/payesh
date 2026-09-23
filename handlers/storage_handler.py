@@ -1,230 +1,642 @@
 # handlers/storage_handler.py
-from core.base_handler import BaseHandler
-from analyzers.keyword_finder import get_keyword_finder
+"""
+ذخیرهٔ پیام‌های کلیدواژه‌دار به‌عنوان سرنخ.
+
+چهار گارد (به ترتیب اجرا):
+  ۱) پیامِ خصوصیِ «مدیر» روی هر پلتفرمی → دستور است، نه سرنخ → رد.
+  ۲) گروهِ غیرهدف (data/target_groups.txt) → رد.
+  ۳) پیامِ بدون کلیدواژه (نه از finder، نه preset از کلکتور) → رد.
+  ۴) پیامِ بدون tier مجاز → رد. پیش‌فرض فقط T1.
+
+معیار پذیرش:
+  - مدیر از بله پیام خصوصی بفرستد → هیچ ردیفی در messages ساخته نشود.
+  - یک پیام گروهی حاوی نام محصول (T1) → با keywords و score ذخیره شود.
+  - پیام فقط با کلیدواژهٔ دستی سطح 2 (T2) → ذخیره نشود (مگر config بگوید).
+
+نسخهٔ ۳ (این نسخه):
+  - 🐛 FIX بحرانی: _alert_lead دیگر T1-only هاردکد نیست →
+    از LEAD_ALERTS.get("tiers", ["T1"]) استفاده می‌کند.
+  - 🐛 FIX بحرانی: _schedule_alert حالا task reference نگه می‌دارد
+    (جلوگیری از GC قبل از اتمام).
+  - 🐛 FIX: _is_admin_message منطق دقیق‌تر (chat_type="" فقط با
+    chat_id==user_id).
+  - 🐛 FIX: _make_platform_unique_id حالا idempotent است.
+  - 🐛 FIX: handle حالا try/except کلی دارد — event گم نمی‌شود.
+  - 🐛 FIX: _alert_lead بدون chat_name هشدار نمی‌دهد (بی‌فایده).
+  - 🐛 FIX: _apply_score روی text=None امن شد.
+  - 🐛 FIX: LEAD_ALERTS پیش‌فرض هم‌راستا با config (False).
+  - 🎯 _log_stats هر ۱۰۰ سرنخ (نه ۲۵) + در سطح debug.
+  - 🎯 import platform_label به بالای فایل منتقل شد.
+  - 🎯 raw کپی می‌شود (mutate روی event اصلی نمی‌زنیم).
+  - 🎯 timing کامل + counters.
+  - 🧹 type hints دقیق.
+"""
+from __future__ import annotations
+
+import asyncio
+import time
 from datetime import datetime
+from typing import Any
+
+from analyzers.keyword_finder import get_keyword_finder
+from core.contracts.base_handler import BaseHandler
+from core.kernel.logger import log_error, log_info, log_success, log_warning
+
+# ─── ثابت‌ها ───
+_LOG_PREVIEW_LEN = 100
+_SLOW_HANDLE_MS = 3000          # handle > 3s
+_STATS_INTERVAL = 100           # هر ۱۰۰ سرنخ، آمار خلاصه
+_ALERT_TASK_MAX = 50            # سقف taskهای pending هشدار
 
 
 class StorageHandler(BaseHandler):
-    def __init__(self, db, scorer=None, **kwargs):
-        self.db = db
-        # همان instance مشترکی که کلکتورها هم برای گیتِ دانلود عکس استفاده می‌کنند
-        self.keyword_finder = get_keyword_finder()
-        # فقط پیام‌های کلیدواژه‌دار ذخیره شوند (پیش‌فرض True؛ از config/.env)
-        from config import PLUGINS_CONFIG
+    """پیام کلیدواژه‌دار را به‌عنوان سرنخ ذخیره می‌کند (بعد از چهار گارد)."""
 
-        self.keywords_only = PLUGINS_CONFIG.get("storagehandler", {}).get(
-            "keywords_only", True
+    # فیلتر «گروهِ هدف» فقط روی پیام‌رسان‌ها (وب/لینکدین گروه ندارند)
+    _TARGET_FILTERED_PLATFORMS = (
+        "eitaa", "bale", "rubika", "telegram", "whatsapp",
+    )
+
+    # ═══════════════════════════════════════════
+    # __init__
+    # ═══════════════════════════════════════════
+    def __init__(self, db, scorer=None, **kwargs):
+        super().__init__()
+        self.db = db
+        self.keyword_finder = get_keyword_finder()
+
+        from config import LEAD_ALERTS, PLUGINS_CONFIG
+
+        cfg = PLUGINS_CONFIG.get("storagehandler", {})
+        self.keywords_only = cfg.get("keywords_only", True)
+        self.require_t1 = cfg.get("require_t1", True)
+
+        # tiers مجاز برای ذخیره (پیش‌فرض T1 فقط)
+        self._allowed_tiers = self._parse_allowed_tiers(cfg)
+
+        # tiers مجاز برای هشدار — از LEAD_ALERTS (config.py)
+        self._alert_tiers = tuple(
+            str(t).upper()
+            for t in LEAD_ALERTS.get("tiers", ["T1"])
         )
-        # تفکیکِ منطقِ مدیر از پایش: پیامِ خصوصیِ «مدیر» نباید به‌عنوان سرنخ ذخیره شود
-        # (آن دستور است، نه سرنخ). مدیر فقط با آیدیِ env شناخته می‌شود.
+
         _adm = PLUGINS_CONFIG.get("adminhandler", {})
-        self._admin_ids = set(str(x) for x in _adm.get("admin_ids", []))
-        self._admin_platform = _adm.get("platform", "bale")
-        self.stats = {
+        self._admin_ids = {
+            str(x).strip() for x in _adm.get("admin_ids", []) if x
+        }
+
+        # taskهای هشدار pending (جلوگیری از GC)
+        self._alert_tasks: list[asyncio.Task] = []
+
+        self.stats: dict[str, int] = {
             "total": 0,
             "messages_with_keywords": 0,
             "media_messages": 0,
             "dropped": 0,
+            "admin_skipped": 0,
+            "target_skipped": 0,
+            "t2_only_skipped": 0,
+            "errors": 0,
         }
 
+        log_success(
+            f"✅ [STORAGE:init] آماده | "
+            f"keywords_only={self.keywords_only} | "
+            f"require_t1={self.require_t1} | "
+            f"allowed_tiers={self._allowed_tiers} | "
+            f"alert_tiers={self._alert_tiers} | "
+            f"admin_ids={len(self._admin_ids)}"
+        )
+
+    @staticmethod
+    def _parse_allowed_tiers(cfg: dict[str, Any]) -> tuple:
+        """خواندن tiers مجاز از config (پیش‌فرض T1)."""
+        raw = cfg.get("allowed_tiers")
+        if raw and isinstance(raw, (list, tuple)):
+            tiers = tuple(
+                str(t).upper() for t in raw if str(t).strip()
+            )
+            if tiers:
+                return tiers
+        return ("T1",)
+
+    # ═══════════════════════════════════════════
+    # هویت
+    # ═══════════════════════════════════════════
     @property
-    def handler_name(self):
+    def handler_name(self) -> str:
         return "storage_handler"
 
-    def can_handle(self, event_name):
+    def can_handle(self, event_name: str) -> bool:
         return event_name == "message.received"
 
-    async def handle(self, event):
-        raw = event.data
+    # ═══════════════════════════════════════════
+    # گارد ۱: پیام خصوصیِ مدیر
+    # ═══════════════════════════════════════════
+    def _is_admin_message(self, raw: dict) -> bool:
+        """پیامِ خصوصیِ یک مدیر → دستور است، نه سرنخ.
 
-        # اگر دیتا دیکشنری نبود، تبدیل کن
-        if not isinstance(raw, dict):
-            raw = {
-                "id": getattr(raw, "id", None),
-                "text": getattr(raw, "text", ""),
-                "chat_id": getattr(raw, "chat_id", ""),
-                "chat_name": getattr(raw, "chat_name", "Unknown"),
-                "user_id": getattr(raw, "user_id", "unknown"),
-                "platform": getattr(raw, "platform", "bale"),
-                "timestamp": datetime.now(),
-                "media_type": getattr(raw, "media_type", "text"),
-                "file_id": getattr(raw, "file_id", None),
-                "caption": getattr(raw, "caption", None),
-                "reply_to": getattr(raw, "reply_to", None),
-            }
+        منطق دقیق (هم‌راستا با admin_handler):
+          - user_id باید در admin_ids باشد
+          - chat_type ∈ {private, user} → خصوصی
+          - chat_type خالی → فقط اگر chat_id == user_id
+        """
+        if not self._admin_ids:
+            return False
+        user_id = str(raw.get("user_id") or "").strip()
+        if not user_id or user_id not in self._admin_ids:
+            return False
 
-        # 🔒 تفکیکِ مدیر از پایش: اگر این پیامِ خصوصیِ یک «مدیر» روی پلتفرمِ مدیریت است،
-        # سرنخ نیست (دستور است) → ذخیره نکن. (شماره‌ی پایش‌گر هرگز مدیر نیست و برعکس.)
-        _u = str(raw.get("user_id") or "")
-        if (
-            self._admin_ids
-            and raw.get("platform") == self._admin_platform
-            and _u in self._admin_ids
-        ):
-            return  # پیامِ مدیر = دستور برای هوش، نه سرنخ
+        ct = (raw.get("chat_type") or "").lower()
+        chat_id = str(raw.get("chat_id") or "").strip()
 
-        # 🎯 هدف‌گیریِ عقاب: فقط گروه‌های هدف (data/target_groups.txt). گروه‌های تبلیغاتی/
-        # اجباری نادیده گرفته می‌شوند. فقط برای پیام‌رسان‌ها (نه وب/لینکدین). فهرستِ خالی = همه.
-        if raw.get("platform") in ("eitaa", "bale", "rubika", "telegram", "whatsapp"):
+        if ct in ("private", "user"):
+            return True
+        # chat_type خالی → فقط اگر chat_id == user_id
+        if not ct and chat_id == user_id:
+            return True
+        return False
+
+    # ═══════════════════════════════════════════
+    # گارد ۲: گروه هدف
+    # ═══════════════════════════════════════════
+    def _is_target_group(self, raw: dict) -> bool:
+        """گروهِ هدف؟ (وب/لینکدین مستثنا؛ فهرست خالی = همه قبول)."""
+        platform = raw.get("platform")
+        if platform not in self._TARGET_FILTERED_PLATFORMS:
+            return True
+        try:
             from analyzers.target_filter import get_target_groups
-
             tg = get_target_groups()
-            if tg.enabled() and not tg.is_target(
-                raw.get("chat_name"), raw.get("chat_username")
-            ):
-                return  # گروهِ غیرهدف → نادیده
+            if not tg.enabled():
+                return True
+            return tg.is_target(
+                raw.get("chat_name"),
+                raw.get("chat_username"),
+                platform,
+            )
+        except Exception as e:
+            log_warning(
+                f"⚠️ [STORAGE:target] خطا در target_filter | "
+                f"{type(e).__name__}: {e} — پیش‌فرض: قبول"
+            )
+            return True
 
-        # ساخت شیء AnalyzedMessage
-        from core.models import AnalyzedMessage
+    # ═══════════════════════════════════════════
+    # نرمال‌سازی ورودی (کپی از raw — بدون mutate)
+    # ═══════════════════════════════════════════
+    @staticmethod
+    def _to_dict(raw) -> dict:
+        if isinstance(raw, dict):
+            # کپی — جلوگیری از mutate روی event اصلی
+            return dict(raw)
+        return {
+            "id": getattr(raw, "id", None),
+            "text": getattr(raw, "text", ""),
+            "chat_id": getattr(raw, "chat_id", ""),
+            "chat_name": getattr(raw, "chat_name", "Unknown"),
+            "chat_username": getattr(raw, "chat_username", None),
+            "chat_link": getattr(raw, "chat_link", None),
+            "chat_type": getattr(raw, "chat_type", None),
+            "user_id": getattr(raw, "user_id", "unknown"),
+            "sender_name": getattr(raw, "sender_name", None),
+            "platform": getattr(raw, "platform", "bale"),
+            "timestamp": (
+                getattr(raw, "timestamp", None) or datetime.now()
+            ),
+            "media_type": getattr(raw, "media_type", "text"),
+            "file_id": getattr(raw, "file_id", None),
+            "local_file_path": getattr(raw, "local_file_path", None),
+            "caption": getattr(raw, "caption", None),
+            "reply_to": getattr(raw, "reply_to", None),
+            "keywords": getattr(raw, "keywords", None),
+        }
 
-        analyzed = AnalyzedMessage(
-            platform=raw.get("platform"),
-            platform_id=raw.get("id"),
-            chat_id=raw.get("chat_id"),
-            chat_name=raw.get("chat_name"),
-            sender_name=raw.get("user_id"),
-            text=raw.get("text")
-            or raw.get("caption", ""),  # اگر متن نداشت، از caption استفاده کن
-            time=raw.get("timestamp"),
-        )
-        analyzed = await self.keyword_finder.analyze(analyzed)
+    # ═══════════════════════════════════════════
+    # پردازش اصلی
+    # ═══════════════════════════════════════════
+    async def handle(self, event):
+        t0 = time.monotonic()
+        try:
+            await self._handle_inner(event)
+        except Exception as e:
+            self.stats["errors"] += 1
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            log_error(
+                f"❌ [STORAGE:handle] {type(e).__name__}: {e} | "
+                f"{elapsed_ms:.0f}ms — event گم شد"
+            )
 
-        # برخی کلکتورها (مثل لینکدین) خودشان کلیدواژه/عبارتِ مطابقت‌یافته را ست می‌کنند
-        # (مثلاً عبارتِ سرچی که پست با آن پیدا شده). آن‌ها را با یافته‌های finder ادغام کن.
-        preset = raw.get("keywords")
-        if preset:
-            merged = set(analyzed.keywords)
-            merged.update(k.strip() for k in str(preset).split(",") if k.strip())
-            analyzed.keywords = sorted(merged)
+    async def _handle_inner(self, event):
+        raw = self._to_dict(event.data)
 
-        # 🔑 هستهٔ اصلاح: اگر پیام هیچ کلیدواژه‌ای ندارد، اصلاً ذخیره نکن.
-        # (قبلاً همهٔ پیام‌ها — حتی بی‌ربط — در جدول messages ذخیره می‌شدند.)
+        platform = raw.get("platform", "?")
+        chat_name = raw.get("chat_name", "?")
+        text = (raw.get("text") or raw.get("caption") or "").strip()
+
+        # ─── گارد ۱: مدیر ───
+        if self._is_admin_message(raw):
+            self.stats["admin_skipped"] += 1
+            log_info(
+                f"⏭️ [STORAGE:guard1] پیامِ مدیر — رد | "
+                f"platform={platform} user_id={raw.get('user_id')}"
+            )
+            return
+
+        # ─── گارد ۲: گروه هدف ───
+        if not self._is_target_group(raw):
+            self.stats["target_skipped"] += 1
+            log_info(
+                f"⏭️ [STORAGE:guard2] گروهِ غیرهدف — رد | "
+                f"platform={platform} "
+                f"chat={chat_name[:_LOG_PREVIEW_LEN]!r}"
+            )
+            return
+
         self.stats["total"] += 1
+
+        # ─── تحلیل کلیدواژه + tier ───
+        analyzed = await self._analyze(raw)
+
+        # ─── گارد ۳: کلیدواژه ───
         if self.keywords_only and not analyzed.keywords:
             self.stats["dropped"] += 1
             if self.stats["dropped"] % 200 == 0:
-                print(
-                    f"🚮 {self.stats['dropped']} پیام بدون کلیدواژه نادیده گرفته شد (ذخیره نشد)"
+                log_info(
+                    f"🚮 [STORAGE:guard3] تا الان "
+                    f"{self.stats['dropped']} پیام بدون کلیدواژه رد شده"
                 )
             return
 
-        # اضافه کردن کلمات کلیدی و اطلاعات رسانه به raw
-        raw["keywords"] = ",".join(analyzed.keywords) if analyzed.keywords else ""
+        # ─── گارد ۴: tier مجاز ───
+        tier = (getattr(analyzed, "metadata", {}) or {}).get(
+            "tier", "T0"
+        )
+        if self.require_t1 and tier not in self._allowed_tiers:
+            self.stats["t2_only_skipped"] += 1
+            if self.stats["t2_only_skipped"] % 200 == 0:
+                log_info(
+                    f"🚮 [STORAGE:guard4] تا الان "
+                    f"{self.stats['t2_only_skipped']} پیام بدون tier مجاز "
+                    f"رد شده"
+                )
+            log_info(
+                f"⏭️ [STORAGE:guard4] tier={tier} "
+                f"(مجاز={self._allowed_tiers}) — رد | "
+                f"platform={platform} kw={analyzed.keywords}"
+            )
+            return
 
-        # امتیازدهیِ سرنخ بر اساسِ قصدِ خرید (داغ/گرم/سرد) — برای اولویت‌بندیِ فروش
+        # ─── غنی‌سازی + ذخیره ───
+        raw["keywords"] = ",".join(analyzed.keywords)
+        raw = self._apply_score(raw, analyzed)
+        raw = self._make_platform_unique_id(raw)
+
+        if not await self._save_message(raw):
+            return  # لاگ داخل _save_message
+
+        # آمار رسانه
+        mt = raw.get("media_type") or "text"
+        if mt != "text":
+            self.stats["media_messages"] += 1
+            log_info(
+                f"📎 [STORAGE:media] {mt} | platform={platform} "
+                f"chat={chat_name}"
+            )
+
+        await self._save_lead(raw, analyzed.keywords)
+        self._schedule_alert(raw)
+
+        self.stats["messages_with_keywords"] += 1
+        total = self.stats["messages_with_keywords"]
+
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        text_preview = text[:_LOG_PREVIEW_LEN]
+        log_success(
+            f"✅ [STORAGE:handle] #{total} | {platform} | "
+            f"chat={chat_name} | kw={raw['keywords']} | "
+            f"tier={raw.get('priority_tier', 'T0')} | "
+            f"score={raw.get('opportunity_score', 0)} | "
+            f"{elapsed_ms:.0f}ms | text={text_preview!r}"
+        )
+
+        if total % _STATS_INTERVAL == 0:
+            self._log_stats()
+
+        if elapsed_ms > _SLOW_HANDLE_MS:
+            log_warning(
+                f"🐌 [STORAGE:handle] کند | {elapsed_ms:.0f}ms | "
+                f"platform={platform}"
+            )
+
+    # ═══════════════════════════════════════════
+    # گام‌های داخلی
+    # ═══════════════════════════════════════════
+    async def _analyze(self, raw: dict):
+        """ساخت AnalyzedMessage، تحلیل کلیدواژه، ادغام با preset."""
+        from core.kernel.models import AnalyzedMessage
+
+        # متن ممکن است None باشد
+        msg_text = (
+            raw.get("text") or raw.get("caption") or ""
+        ) or ""
+
+        analyzed = AnalyzedMessage(
+            platform=raw.get("platform") or "unknown",
+            platform_id=raw.get("id") or "",
+            chat_id=raw.get("chat_id") or "",
+            chat_name=raw.get("chat_name") or "Unknown",
+            sender_name=(
+                raw.get("sender_name") or raw.get("user_id") or ""
+            ),
+            text=msg_text,
+            time=raw.get("timestamp") or datetime.now(),
+        )
+        analyzed = await self.keyword_finder.analyze(analyzed)
+
+        # سطح‌بندی + نگاشت محصول → برند
+        try:
+            from analyzers.priority_finder import get_priority_finder
+            analyzed.metadata = getattr(analyzed, "metadata", {}) or {}
+            info = get_priority_finder().analyze(analyzed.text)
+            analyzed.metadata["tier"] = info["tier"]
+            analyzed.metadata["products_str"] = info["products_str"]
+            analyzed.metadata["brands_str"] = info["brands_str"]
+        except Exception as e:
+            log_warning(
+                f"⚠️ [STORAGE:analyze] priority_finder | "
+                f"{type(e).__name__}: {e} — tier=T0"
+            )
+            if not getattr(analyzed, "metadata", None):
+                analyzed.metadata = {}
+            analyzed.metadata.setdefault("tier", "T0")
+
+        # ادغام preset از کلکتور (لینکدین و ...)
+        preset = raw.get("keywords")
+        if preset:
+            merged = set(analyzed.keywords or [])
+            merged.update(
+                k.strip()
+                for k in str(preset).split(",")
+                if k.strip()
+            )
+            analyzed.keywords = sorted(merged)
+
+        return analyzed
+
+    @staticmethod
+    def _apply_score(raw: dict, analyzed) -> dict:
+        """امتیازدهی + ذخیره tier و برندها."""
         try:
             from analyzers.lead_scorer import get_lead_scorer
-
-            score, level, _signals = get_lead_scorer().score(
-                analyzed.text, has_keyword=True
+            score, level, _ = get_lead_scorer().score(
+                analyzed.text or "", has_keyword=True
             )
             raw["opportunity_score"] = score
             raw["opportunity_type"] = level
-        except Exception:
-            raw["opportunity_score"], raw["opportunity_type"] = 0, None
+            meta = getattr(analyzed, "metadata", {}) or {}
+            raw["priority_tier"] = meta.get("tier", "T0")
+            raw["matched_products"] = meta.get("products_str", "")
+            raw["brands"] = meta.get("brands_str", "")
+        except Exception as e:
+            log_warning(
+                f"⚠️ [STORAGE:score] {type(e).__name__}: {e} — "
+                f"score=0 tier=T0"
+            )
+            raw["opportunity_score"] = 0
+            raw["opportunity_type"] = None
+            raw["priority_tier"] = "T0"
+            raw["matched_products"] = ""
+            raw["brands"] = ""
+        return raw
 
-        # شناسه‌ی یکتا بین پلتفرم‌ها (جلوگیری از تداخل id دو پیام‌رسان مختلف)
+    @staticmethod
+    def _make_platform_unique_id(raw: dict) -> dict:
+        """شناسه یکتا بین پلتفرم‌ها — idempotent.
+
+        اگر id از قبل prefix دارد → دست نمی‌زند.
+        اگر نه → platform_message_id ذخیره، id = f"{platform}_{id}".
+        """
         platform = raw.get("platform") or "unknown"
-        if raw.get("id") and not str(raw["id"]).startswith(f"{platform}_"):
-            raw["platform_message_id"] = raw["id"]
-            raw["id"] = f"{platform}_{raw['id']}"
+        current_id = raw.get("id")
+        if not current_id:
+            return raw
 
-        # ذخیره در جدول messages (با keywords و media info)
+        current_str = str(current_id)
+        prefix = f"{platform}_"
+
+        if current_str.startswith(prefix):
+            # از قبل prefix دارد — idempotent
+            if not raw.get("platform_message_id"):
+                raw["platform_message_id"] = current_str[len(prefix):]
+            return raw
+
+        raw["platform_message_id"] = current_str
+        raw["id"] = f"{prefix}{current_str}"
+        return raw
+
+    async def _save_message(self, raw: dict) -> bool:
+        t0 = time.monotonic()
         try:
             await self.db.save_message(raw)
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            log_info(
+                f"💾 [STORAGE:save_msg] {elapsed_ms:.0f}ms | "
+                f"id={raw.get('id')} platform={raw.get('platform')}"
+            )
+            return True
         except Exception as e:
-            print(f"⚠️ خطا در save_message: {e}")
-            return
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            log_error(
+                f"❌ [STORAGE:save_msg] {type(e).__name__}: {e} | "
+                f"{elapsed_ms:.0f}ms | id={raw.get('id')} "
+                f"platform={raw.get('platform')}"
+            )
+            return False
 
-        # اگر پیام حاوی رسانه است، آمار را به‌روز کن
-        if raw.get("media_type") and raw["media_type"] != "text":
-            self.stats["media_messages"] += 1
-            print(
-                f"\n📎 پیام حاوی رسانه: {raw['media_type']} از گروه {raw.get('chat_name')}"
+    async def _save_lead(self, raw: dict, keywords):
+        lead = {
+            "id": raw.get("id"),
+            "message_id": raw.get("id"),
+            "platform": raw.get("platform"),
+            "text": raw.get("text") or raw.get("caption", "") or "",
+            "chat_id": raw.get("chat_id"),
+            "chat_name": raw.get("chat_name"),
+            "user_id": raw.get("user_id"),
+            "timestamp": raw.get("timestamp"),
+            "keywords": ",".join(keywords),
+            "media_type": raw.get("media_type", "text"),
+            "file_id": raw.get("file_id"),
+            "opportunity_score": raw.get("opportunity_score", 0),
+            "opportunity_type": raw.get("opportunity_type"),
+            "priority_tier": raw.get("priority_tier", "T0"),
+            "matched_products": raw.get("matched_products", ""),
+            "brands": raw.get("brands", ""),
+        }
+        t0 = time.monotonic()
+        try:
+            await self.db.save_lead(lead)
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            log_info(
+                f"🎯 [STORAGE:save_lead] {elapsed_ms:.0f}ms | "
+                f"id={raw.get('id')} kw={lead['keywords']}"
+            )
+        except Exception as e:
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            log_error(
+                f"❌ [STORAGE:save_lead] {type(e).__name__}: {e} | "
+                f"{elapsed_ms:.0f}ms | id={raw.get('id')}"
             )
 
-        # اگر کلیدواژه‌ای پیدا شد، در جدول leads ذخیره کن
-        if analyzed.keywords:
-            lead = {
-                "id": raw.get("id"),
-                "message_id": raw.get("id"),  # پیوند به رکوردِ پیام (FK + ردگیری در CRM)
-                "platform": raw.get("platform"),
-                "text": raw.get("text") or raw.get("caption", ""),
-                "chat_id": raw.get("chat_id"),
-                "chat_name": raw.get("chat_name"),
-                "user_id": raw.get("user_id"),
-                "timestamp": raw.get("timestamp"),
-                "keywords": ",".join(analyzed.keywords),
-                "media_type": raw.get("media_type", "text"),
-                "file_id": raw.get("file_id"),
-                "opportunity_score": raw.get("opportunity_score", 0),
-                "opportunity_type": raw.get("opportunity_type"),
-            }
-            try:
-                await self.db.save_lead(lead)
-            except Exception as e:
-                print(f"⚠️ خطا در save_lead: {e}")
-
-            # 🔔 هشدارِ زندهٔ سرنخ به مدیر در بله (برای رصدِ زنده/رونمایی) — fire-and-forget
-            try:
-                self._alert_lead(raw, analyzed.keywords)
-            except Exception:
-                pass
-
-            self.stats["messages_with_keywords"] += 1
-
-            # نمایش در کنسول
-            print(f"\n🔑 کلیدواژه پیدا شد: {analyzed.keywords}")
-            print(f"   پلتفرم: {raw.get('platform')}")
-            print(f"   گروه: {raw.get('chat_name')}")
-            if raw.get("media_type") != "text":
-                print(f"   نوع رسانه: {raw.get('media_type')}")
-            print(f"   متن: {raw.get('text', raw.get('caption', ''))[:150]}")
-
-        # هر ۲۵ سرنخ، آمار را نمایش بده
-        if (
-            self.stats["messages_with_keywords"] % 25 == 0
-            and self.stats["messages_with_keywords"] > 0
-        ):
-            print(
-                f"\n📊 آمار StorageHandler: {self.stats['total']} پیام دیده‌شده، "
-                f"{self.stats['messages_with_keywords']} سرنخ ذخیره‌شده، "
-                f"{self.stats['dropped']} بی‌کلیدواژه (نادیده)، "
-                f"{self.stats['media_messages']} رسانه"
-            )
-
-    def _alert_lead(self, raw, keywords):
-        """هشدارِ زندهٔ سرنخ به مدیر در بله — «الان در فلان پلتفرم/گروه کلیدواژه دیده شد»."""
-        import asyncio
+    # ═══════════════════════════════════════════
+    # هشدار زنده
+    # ═══════════════════════════════════════════
+    def _schedule_alert(self, raw: dict):
+        """ارسال هشدار در پس‌زمینه — با نگه‌داشتن task reference."""
         from config import LEAD_ALERTS
 
-        if not LEAD_ALERTS.get("enabled", True):
-            return
-        score = int(raw.get("opportunity_score") or 0)
-        if score < LEAD_ALERTS.get("min_score", 0):
+        if not LEAD_ALERTS.get("enabled", False):
             return
         try:
-            from core.daily_reporter import platform_label
+            # پاک‌سازی taskهای تمام‌شده
+            self._alert_tasks = [
+                t for t in self._alert_tasks if not t.done()
+            ]
+            if len(self._alert_tasks) >= _ALERT_TASK_MAX:
+                log_warning(
+                    f"⚠️ [STORAGE:alert] {len(self._alert_tasks)} task "
+                    f"pending — هشدار جدید skip شد"
+                )
+                return
+            task = asyncio.create_task(self._alert_lead(raw))
+            self._alert_tasks.append(task)
+            task.add_done_callback(self._on_alert_done)
+        except Exception as e:
+            log_warning(
+                f"⚠️ [STORAGE:alert] scheduling | "
+                f"{type(e).__name__}: {e}"
+            )
 
+    def _on_alert_done(self, task: asyncio.Task) -> None:
+        try:
+            self._alert_tasks.remove(task)
+        except ValueError:
+            pass
+        try:
+            exc = task.exception()
+            if exc:
+                log_warning(
+                    f"⚠️ [STORAGE:alert:task] "
+                    f"{type(exc).__name__}: {exc}"
+                )
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    async def _alert_lead(self, raw: dict):
+        """هشدارِ زنده به مدیر — با tier filter از config."""
+        from config import LEAD_ALERTS
+        from core.adapters import messenger_registry
+        from core.services.daily_reporter import platform_label
+
+        # ─── tier check ───
+        tier = raw.get("priority_tier")
+        if tier not in self._alert_tiers:
+            log_info(
+                f"⏭️ [STORAGE:alert] tier={tier} "
+                f"(مجاز={self._alert_tiers}) — رد"
+            )
+            return
+
+        # ─── chat_name check ───
+        chat_name = raw.get("chat_name")
+        if not chat_name or chat_name == "?":
+            log_info(
+                "⏭️ [STORAGE:alert] chat_name خالی — رد"
+            )
+            return
+
+        # ─── score check ───
+        score = int(raw.get("opportunity_score") or 0)
+        min_score = int(LEAD_ALERTS.get("min_score", 0))
+        if score < min_score:
+            log_info(
+                f"⏭️ [STORAGE:alert] score={score} < min={min_score} "
+                f"— رد"
+            )
+            return
+
+        # ─── platform label ───
+        try:
             plabel = platform_label(raw.get("platform"))
-        except Exception:
-            plabel = raw.get("platform")
+        except Exception as e:
+            log_warning(
+                f"⚠️ [STORAGE:alert] platform_label | "
+                f"{type(e).__name__}: {e}"
+            )
+            plabel = raw.get("platform") or "?"
+
         text = (
             "🔔 سرنخ جدید پیدا شد\n"
             f"{plabel}\n"
-            f"👥 گروه: {raw.get('chat_name')}\n"
+            f"👥 گروه: {chat_name}\n"
             f"🔑 کلیدواژه: {raw.get('keywords')}\n"
-            f"🎯 {raw.get('opportunity_type') or '-'} (امتیاز {score})\n"
+            f"🎯 {raw.get('opportunity_type') or '-'} "
+            f"(امتیاز {score})\n"
             f"💬 {(raw.get('text') or raw.get('caption') or '')[:200]}\n"
             f"🕒 {raw.get('timestamp')}"
         )
         if raw.get("chat_link"):
             text += f"\n🔗 {raw.get('chat_link')}"
-        from core import messenger_registry
 
+        t0 = time.monotonic()
         try:
-            asyncio.get_running_loop().create_task(
-                messenger_registry.notify_admins(text)
+            ok = await messenger_registry.notify_admins(text)
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            if ok:
+                log_success(
+                    f"🔔 [STORAGE:alert] هشدار ارسال شد | "
+                    f"{elapsed_ms:.0f}ms | tier={tier} score={score} | "
+                    f"kw={raw.get('keywords')}"
+                )
+            else:
+                log_warning(
+                    f"⚠️ [STORAGE:alert] ارسال نشد (مدیر/فرستنده) | "
+                    f"{elapsed_ms:.0f}ms"
+                )
+        except Exception as e:
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            log_error(
+                f"❌ [STORAGE:alert] notify_admins | "
+                f"{type(e).__name__}: {e} | {elapsed_ms:.0f}ms"
             )
-        except RuntimeError:
-            pass  # خارج از event loop (مثلاً در تست) → بی‌خیال
+
+    # ═══════════════════════════════════════════
+    # آمار خلاصه (هر ۱۰۰ سرنخ)
+    # ═══════════════════════════════════════════
+    def _log_stats(self):
+        """آمار خلاصه — به‌جای print در JSONL."""
+        log_info(
+            f"📊 [STORAGE:stats] total={self.stats['total']} | "
+            f"saved={self.stats['messages_with_keywords']} | "
+            f"dropped={self.stats['dropped']} | "
+            f"t2_only={self.stats['t2_only_skipped']} | "
+            f"target_skip={self.stats['target_skipped']} | "
+            f"admin_skip={self.stats['admin_skipped']} | "
+            f"media={self.stats['media_messages']} | "
+            f"errors={self.stats['errors']}"
+        )
+
+    # ═══════════════════════════════════════════
+    # cleanup
+    # ═══════════════════════════════════════════
+    async def on_stop(self):
+        """cancel taskهای هشدار هنگام خروج."""
+        for task in list(self._alert_tasks):
+            if not task.done():
+                task.cancel()
+        if self._alert_tasks:
+            await asyncio.gather(
+                *self._alert_tasks, return_exceptions=True
+            )
+            self._alert_tasks.clear()
+        await super().on_stop()

@@ -1,8 +1,9 @@
 # tests/test_observability.py
 import json
 import logging
-from core.obs_server import render_prometheus
-from core.logger import JsonFormatter
+
+from core.kernel.logger import JsonFormatter
+from core.ops.obs_server import render_prometheus
 
 
 def test_render_prometheus_format():
