@@ -1799,15 +1799,21 @@ class ManualBrain:
                 )
             )
         if fn == "last_lead":
-            r = self.api.last_lead()
+            r = self.api.last_lead(platform=p)
             if not r:
+                if p:
+                    return f"📭 هنوز سرنخی از {p} نیست."
                 return "📭 هنوز سرنخی نیست."
-            return self._format_lead(r, "آخرین")
+            label = f"آخرین ({p})" if p else "آخرین"
+            return self._format_lead(r, label)
         if fn == "first_lead":
-            r = self.api.first_lead()
+            r = self.api.first_lead(platform=p)
             if not r:
+                if p:
+                    return f"📭 هنوز سرنخی از {p} نیست."
                 return "📭 هنوز سرنخی نیست."
-            return self._format_lead(r, "اولین")
+            label = f"اولین سرنخ {p}" if p else "اولین سرنخ"
+            return self._format_lead(r, label)
         if fn == "recent_logs":
             logs = self.api.recent_logs(10)
             if not logs:

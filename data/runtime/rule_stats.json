@@ -5,14 +5,14 @@
     "last_used": "2026-09-22T15:53:35.816086"
   },
   "today_count": {
-    "success": 27,
+    "success": 30,
     "fail": 0,
-    "last_used": "2026-09-23T09:51:53.120676"
+    "last_used": "2026-09-23T10:16:23.050310"
   },
   "last_lead": {
-    "success": 7,
+    "success": 13,
     "fail": 0,
-    "last_used": "2026-09-23T09:52:36.816102"
+    "last_used": "2026-09-23T10:16:28.668907"
   },
   "error_count": {
     "success": 5,
@@ -45,9 +45,9 @@
     "last_used": "2026-09-19T12:19:21.174140"
   },
   "first_lead": {
-    "success": 2,
+    "success": 3,
     "fail": 0,
-    "last_used": "2026-09-20T13:53:36.717383"
+    "last_used": "2026-09-23T10:12:24.105376"
   },
   "top_keywords_30d": {
     "success": 1,
@@ -105,9 +105,9 @@
     "last_used": "2026-09-20T10:51:28.417697"
   },
   "yesterday_count": {
-    "success": 5,
+    "success": 6,
     "fail": 0,
-    "last_used": "2026-09-23T09:52:05.530333"
+    "last_used": "2026-09-23T10:16:34.618283"
   },
   "user_learned_1789811771": {
     "success": 1,
@@ -128,5 +128,10 @@
     "success": 3,
     "fail": 0,
     "last_used": "2026-09-20T10:51:51.495922"
+  },
+  "high_score": {
+    "success": 1,
+    "fail": 0,
+    "last_used": "2026-09-23T10:02:42.123001"
   }
 }

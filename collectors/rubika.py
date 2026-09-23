@@ -376,6 +376,11 @@ class RubikaCollector(BaseCollector):
             log_success(f"📥 {len(new_msgs)} پیام جدید از روبیکا")
         return new_msgs
 
+    async def fetch_history(
+        self, since: datetime = None
+    ) -> list[dict[str, Any]]:
+        """روبیکا پیام‌ها رو زنده می‌گیره — تاریخچه لازم نیست."""
+        return await self.fetch_messages(since)
     # ==================================================
     # خواندن پیام‌های عقب‌افتاده
     # ==================================================

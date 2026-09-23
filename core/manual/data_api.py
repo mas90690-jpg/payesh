@@ -128,13 +128,13 @@ class DataAPI:
     def leads_today(self) -> int:
         return int(self.scalar(
             "SELECT COUNT(*) FROM messages WHERE keywords!='' "
-            "AND date(timestamp)=date('now')"
+            "AND date(timestamp, 'localtime')=date('now', 'localtime')"
         ) or 0)
 
     def leads_yesterday(self) -> int:
         return int(self.scalar(
             "SELECT COUNT(*) FROM messages WHERE keywords!='' "
-            "AND date(timestamp)=date('now','-1 day')"
+            "AND date(timestamp, 'localtime')=date('now', 'localtime', '-1 day')"
         ) or 0)
 
     def leads_last_n_days(self, n: int) -> int:
@@ -207,20 +207,38 @@ class DataAPI:
             (f"-{int(days)} days", int(limit)),
         )
 
-    def last_lead(self) -> dict | None:
+    def last_lead(self, platform: str | None = None) -> dict | None:
+        """آخرین سرنخ — با فیلتر پلتفرم اختیاری."""
+        if platform:
+            return self.row(
+                "SELECT platform, chat_name, keywords, opportunity_type, "
+                "opportunity_score, text, timestamp, chat_link "
+                "FROM messages WHERE keywords!='' AND platform=? "
+                "ORDER BY timestamp DESC LIMIT 1",
+                (platform,),
+            )
         return self.row(
             "SELECT platform, chat_name, keywords, opportunity_type, "
             "opportunity_score, text, timestamp, chat_link "
             "FROM messages WHERE keywords!='' ORDER BY timestamp DESC LIMIT 1"
         )
-
-    def first_lead(self) -> dict | None:
+        
+    def first_lead(self, platform: str | None = None) -> dict | None:
+        """اولین سرنخ — با فیلتر پلتفرم اختیاری."""
+        if platform:
+            return self.row(
+                "SELECT platform, chat_name, keywords, opportunity_type, "
+                "opportunity_score, text, timestamp, chat_link "
+                "FROM messages WHERE keywords!='' AND platform=? "
+                "ORDER BY timestamp ASC LIMIT 1",
+                (platform,),
+            )
         return self.row(
             "SELECT platform, chat_name, keywords, opportunity_type, "
             "opportunity_score, text, timestamp, chat_link "
             "FROM messages WHERE keywords!='' ORDER BY timestamp ASC LIMIT 1"
         )
-
+        
     def search_leads(self, term: str, limit: int = 10) -> list[dict]:
         like = f"%{term}%"
         return self.sql(
