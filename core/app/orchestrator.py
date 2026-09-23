@@ -488,7 +488,7 @@ class Orchestrator:
             log_info("ℹ️ [ORCH:greet] adminhandler غیرفعال — رد شد")
             return
 
-        from core import messenger_registry
+        from core.adapters import messenger_registry
 
         text = (
             "🤖 سلام مدیر! ربات بالا آمد و آماده‌ام. هر سؤالی داری همین‌جا بپرس "

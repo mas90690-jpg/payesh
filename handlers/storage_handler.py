@@ -7,29 +7,6 @@
   ۲) گروهِ غیرهدف (data/target_groups.txt) → رد.
   ۳) پیامِ بدون کلیدواژه (نه از finder، نه preset از کلکتور) → رد.
   ۴) پیامِ بدون tier مجاز → رد. پیش‌فرض فقط T1.
-
-معیار پذیرش:
-  - مدیر از بله پیام خصوصی بفرستد → هیچ ردیفی در messages ساخته نشود.
-  - یک پیام گروهی حاوی نام محصول (T1) → با keywords و score ذخیره شود.
-  - پیام فقط با کلیدواژهٔ دستی سطح 2 (T2) → ذخیره نشود (مگر config بگوید).
-
-نسخهٔ ۳ (این نسخه):
-  - 🐛 FIX بحرانی: _alert_lead دیگر T1-only هاردکد نیست →
-    از LEAD_ALERTS.get("tiers", ["T1"]) استفاده می‌کند.
-  - 🐛 FIX بحرانی: _schedule_alert حالا task reference نگه می‌دارد
-    (جلوگیری از GC قبل از اتمام).
-  - 🐛 FIX: _is_admin_message منطق دقیق‌تر (chat_type="" فقط با
-    chat_id==user_id).
-  - 🐛 FIX: _make_platform_unique_id حالا idempotent است.
-  - 🐛 FIX: handle حالا try/except کلی دارد — event گم نمی‌شود.
-  - 🐛 FIX: _alert_lead بدون chat_name هشدار نمی‌دهد (بی‌فایده).
-  - 🐛 FIX: _apply_score روی text=None امن شد.
-  - 🐛 FIX: LEAD_ALERTS پیش‌فرض هم‌راستا با config (False).
-  - 🎯 _log_stats هر ۱۰۰ سرنخ (نه ۲۵) + در سطح debug.
-  - 🎯 import platform_label به بالای فایل منتقل شد.
-  - 🎯 raw کپی می‌شود (mutate روی event اصلی نمی‌زنیم).
-  - 🎯 timing کامل + counters.
-  - 🧹 type hints دقیق.
 """
 from __future__ import annotations
 
@@ -44,22 +21,18 @@ from core.kernel.logger import log_error, log_info, log_success, log_warning
 
 # ─── ثابت‌ها ───
 _LOG_PREVIEW_LEN = 100
-_SLOW_HANDLE_MS = 3000          # handle > 3s
-_STATS_INTERVAL = 100           # هر ۱۰۰ سرنخ، آمار خلاصه
-_ALERT_TASK_MAX = 50            # سقف taskهای pending هشدار
+_SLOW_HANDLE_MS = 3000
+_STATS_INTERVAL = 100
+_ALERT_TASK_MAX = 50
 
 
 class StorageHandler(BaseHandler):
     """پیام کلیدواژه‌دار را به‌عنوان سرنخ ذخیره می‌کند (بعد از چهار گارد)."""
 
-    # فیلتر «گروهِ هدف» فقط روی پیام‌رسان‌ها (وب/لینکدین گروه ندارند)
     _TARGET_FILTERED_PLATFORMS = (
         "eitaa", "bale", "rubika", "telegram", "whatsapp",
     )
 
-    # ═══════════════════════════════════════════
-    # __init__
-    # ═══════════════════════════════════════════
     def __init__(self, db, scorer=None, **kwargs):
         super().__init__()
         self.db = db
@@ -70,11 +43,7 @@ class StorageHandler(BaseHandler):
         cfg = PLUGINS_CONFIG.get("storagehandler", {})
         self.keywords_only = cfg.get("keywords_only", True)
         self.require_t1 = cfg.get("require_t1", True)
-
-        # tiers مجاز برای ذخیره (پیش‌فرض T1 فقط)
         self._allowed_tiers = self._parse_allowed_tiers(cfg)
-
-        # tiers مجاز برای هشدار — از LEAD_ALERTS (config.py)
         self._alert_tiers = tuple(
             str(t).upper()
             for t in LEAD_ALERTS.get("tiers", ["T1"])
@@ -85,7 +54,6 @@ class StorageHandler(BaseHandler):
             str(x).strip() for x in _adm.get("admin_ids", []) if x
         }
 
-        # taskهای هشدار pending (جلوگیری از GC)
         self._alert_tasks: list[asyncio.Task] = []
 
         self.stats: dict[str, int] = {
@@ -110,7 +78,6 @@ class StorageHandler(BaseHandler):
 
     @staticmethod
     def _parse_allowed_tiers(cfg: dict[str, Any]) -> tuple:
-        """خواندن tiers مجاز از config (پیش‌فرض T1)."""
         raw = cfg.get("allowed_tiers")
         if raw and isinstance(raw, (list, tuple)):
             tiers = tuple(
@@ -120,9 +87,6 @@ class StorageHandler(BaseHandler):
                 return tiers
         return ("T1",)
 
-    # ═══════════════════════════════════════════
-    # هویت
-    # ═══════════════════════════════════════════
     @property
     def handler_name(self) -> str:
         return "storage_handler"
@@ -134,13 +98,6 @@ class StorageHandler(BaseHandler):
     # گارد ۱: پیام خصوصیِ مدیر
     # ═══════════════════════════════════════════
     def _is_admin_message(self, raw: dict) -> bool:
-        """پیامِ خصوصیِ یک مدیر → دستور است، نه سرنخ.
-
-        منطق دقیق (هم‌راستا با admin_handler):
-          - user_id باید در admin_ids باشد
-          - chat_type ∈ {private, user} → خصوصی
-          - chat_type خالی → فقط اگر chat_id == user_id
-        """
         if not self._admin_ids:
             return False
         user_id = str(raw.get("user_id") or "").strip()
@@ -152,7 +109,6 @@ class StorageHandler(BaseHandler):
 
         if ct in ("private", "user"):
             return True
-        # chat_type خالی → فقط اگر chat_id == user_id
         if not ct and chat_id == user_id:
             return True
         return False
@@ -161,7 +117,6 @@ class StorageHandler(BaseHandler):
     # گارد ۲: گروه هدف
     # ═══════════════════════════════════════════
     def _is_target_group(self, raw: dict) -> bool:
-        """گروهِ هدف؟ (وب/لینکدین مستثنا؛ فهرست خالی = همه قبول)."""
         platform = raw.get("platform")
         if platform not in self._TARGET_FILTERED_PLATFORMS:
             return True
@@ -182,13 +137,9 @@ class StorageHandler(BaseHandler):
             )
             return True
 
-    # ═══════════════════════════════════════════
-    # نرمال‌سازی ورودی (کپی از raw — بدون mutate)
-    # ═══════════════════════════════════════════
     @staticmethod
     def _to_dict(raw) -> dict:
         if isinstance(raw, dict):
-            # کپی — جلوگیری از mutate روی event اصلی
             return dict(raw)
         return {
             "id": getattr(raw, "id", None),
@@ -230,6 +181,14 @@ class StorageHandler(BaseHandler):
     async def _handle_inner(self, event):
         raw = self._to_dict(event.data)
 
+        # ─── لاگ دیباگ ───
+        log_info(
+            f"🔍 [STORAGE:enter] platform={raw.get('platform')} | "
+            f"chat_type={raw.get('chat_type')} | "
+            f"user_id={raw.get('user_id')} | "
+            f"chat_id={raw.get('chat_id')}"
+        )
+
         platform = raw.get("platform", "?")
         chat_name = raw.get("chat_name", "?")
         text = (raw.get("text") or raw.get("caption") or "").strip()
@@ -242,6 +201,7 @@ class StorageHandler(BaseHandler):
                 f"platform={platform} user_id={raw.get('user_id')}"
             )
             return
+        log_info("✅ [STORAGE:guard1] pass")
 
         # ─── گارد ۲: گروه هدف ───
         if not self._is_target_group(raw):
@@ -252,21 +212,26 @@ class StorageHandler(BaseHandler):
                 f"chat={chat_name[:_LOG_PREVIEW_LEN]!r}"
             )
             return
+        log_info("✅ [STORAGE:guard2] pass")
 
         self.stats["total"] += 1
 
         # ─── تحلیل کلیدواژه + tier ───
         analyzed = await self._analyze(raw)
+        log_info(
+            f"🔍 [STORAGE:analyze] kw={analyzed.keywords} | "
+            f"tier={(analyzed.metadata or {}).get('tier', 'T0')}"
+        )
 
         # ─── گارد ۳: کلیدواژه ───
         if self.keywords_only and not analyzed.keywords:
             self.stats["dropped"] += 1
-            if self.stats["dropped"] % 200 == 0:
-                log_info(
-                    f"🚮 [STORAGE:guard3] تا الان "
-                    f"{self.stats['dropped']} پیام بدون کلیدواژه رد شده"
-                )
+            log_info(
+                f"⏭️ [STORAGE:guard3] بدون کلیدواژه — رد | "
+                f"text={text[:_LOG_PREVIEW_LEN]!r}"
+            )
             return
+        log_info(f"✅ [STORAGE:guard3] pass | kw={analyzed.keywords}")
 
         # ─── گارد ۴: tier مجاز ───
         tier = (getattr(analyzed, "metadata", {}) or {}).get(
@@ -274,18 +239,13 @@ class StorageHandler(BaseHandler):
         )
         if self.require_t1 and tier not in self._allowed_tiers:
             self.stats["t2_only_skipped"] += 1
-            if self.stats["t2_only_skipped"] % 200 == 0:
-                log_info(
-                    f"🚮 [STORAGE:guard4] تا الان "
-                    f"{self.stats['t2_only_skipped']} پیام بدون tier مجاز "
-                    f"رد شده"
-                )
             log_info(
                 f"⏭️ [STORAGE:guard4] tier={tier} "
                 f"(مجاز={self._allowed_tiers}) — رد | "
                 f"platform={platform} kw={analyzed.keywords}"
             )
             return
+        log_info(f"✅ [STORAGE:guard4] pass | tier={tier}")
 
         # ─── غنی‌سازی + ذخیره ───
         raw["keywords"] = ",".join(analyzed.keywords)
@@ -293,9 +253,8 @@ class StorageHandler(BaseHandler):
         raw = self._make_platform_unique_id(raw)
 
         if not await self._save_message(raw):
-            return  # لاگ داخل _save_message
+            return
 
-        # آمار رسانه
         mt = raw.get("media_type") or "text"
         if mt != "text":
             self.stats["media_messages"] += 1
@@ -333,10 +292,8 @@ class StorageHandler(BaseHandler):
     # گام‌های داخلی
     # ═══════════════════════════════════════════
     async def _analyze(self, raw: dict):
-        """ساخت AnalyzedMessage، تحلیل کلیدواژه، ادغام با preset."""
         from core.kernel.models import AnalyzedMessage
 
-        # متن ممکن است None باشد
         msg_text = (
             raw.get("text") or raw.get("caption") or ""
         ) or ""
@@ -354,7 +311,6 @@ class StorageHandler(BaseHandler):
         )
         analyzed = await self.keyword_finder.analyze(analyzed)
 
-        # سطح‌بندی + نگاشت محصول → برند
         try:
             from analyzers.priority_finder import get_priority_finder
             analyzed.metadata = getattr(analyzed, "metadata", {}) or {}
@@ -371,7 +327,6 @@ class StorageHandler(BaseHandler):
                 analyzed.metadata = {}
             analyzed.metadata.setdefault("tier", "T0")
 
-        # ادغام preset از کلکتور (لینکدین و ...)
         preset = raw.get("keywords")
         if preset:
             merged = set(analyzed.keywords or [])
@@ -386,7 +341,6 @@ class StorageHandler(BaseHandler):
 
     @staticmethod
     def _apply_score(raw: dict, analyzed) -> dict:
-        """امتیازدهی + ذخیره tier و برندها."""
         try:
             from analyzers.lead_scorer import get_lead_scorer
             score, level, _ = get_lead_scorer().score(
@@ -412,11 +366,6 @@ class StorageHandler(BaseHandler):
 
     @staticmethod
     def _make_platform_unique_id(raw: dict) -> dict:
-        """شناسه یکتا بین پلتفرم‌ها — idempotent.
-
-        اگر id از قبل prefix دارد → دست نمی‌زند.
-        اگر نه → platform_message_id ذخیره، id = f"{platform}_{id}".
-        """
         platform = raw.get("platform") or "unknown"
         current_id = raw.get("id")
         if not current_id:
@@ -426,7 +375,6 @@ class StorageHandler(BaseHandler):
         prefix = f"{platform}_"
 
         if current_str.startswith(prefix):
-            # از قبل prefix دارد — idempotent
             if not raw.get("platform_message_id"):
                 raw["platform_message_id"] = current_str[len(prefix):]
             return raw
@@ -488,17 +436,12 @@ class StorageHandler(BaseHandler):
                 f"{elapsed_ms:.0f}ms | id={raw.get('id')}"
             )
 
-    # ═══════════════════════════════════════════
-    # هشدار زنده
-    # ═══════════════════════════════════════════
     def _schedule_alert(self, raw: dict):
-        """ارسال هشدار در پس‌زمینه — با نگه‌داشتن task reference."""
         from config import LEAD_ALERTS
 
         if not LEAD_ALERTS.get("enabled", False):
             return
         try:
-            # پاک‌سازی taskهای تمام‌شده
             self._alert_tasks = [
                 t for t in self._alert_tasks if not t.done()
             ]
@@ -533,12 +476,10 @@ class StorageHandler(BaseHandler):
             pass
 
     async def _alert_lead(self, raw: dict):
-        """هشدارِ زنده به مدیر — با tier filter از config."""
         from config import LEAD_ALERTS
         from core.adapters import messenger_registry
         from core.services.daily_reporter import platform_label
 
-        # ─── tier check ───
         tier = raw.get("priority_tier")
         if tier not in self._alert_tiers:
             log_info(
@@ -547,15 +488,11 @@ class StorageHandler(BaseHandler):
             )
             return
 
-        # ─── chat_name check ───
         chat_name = raw.get("chat_name")
         if not chat_name or chat_name == "?":
-            log_info(
-                "⏭️ [STORAGE:alert] chat_name خالی — رد"
-            )
+            log_info("⏭️ [STORAGE:alert] chat_name خالی — رد")
             return
 
-        # ─── score check ───
         score = int(raw.get("opportunity_score") or 0)
         min_score = int(LEAD_ALERTS.get("min_score", 0))
         if score < min_score:
@@ -565,7 +502,6 @@ class StorageHandler(BaseHandler):
             )
             return
 
-        # ─── platform label ───
         try:
             plabel = platform_label(raw.get("platform"))
         except Exception as e:
@@ -610,11 +546,7 @@ class StorageHandler(BaseHandler):
                 f"{type(e).__name__}: {e} | {elapsed_ms:.0f}ms"
             )
 
-    # ═══════════════════════════════════════════
-    # آمار خلاصه (هر ۱۰۰ سرنخ)
-    # ═══════════════════════════════════════════
     def _log_stats(self):
-        """آمار خلاصه — به‌جای print در JSONL."""
         log_info(
             f"📊 [STORAGE:stats] total={self.stats['total']} | "
             f"saved={self.stats['messages_with_keywords']} | "
@@ -626,11 +558,7 @@ class StorageHandler(BaseHandler):
             f"errors={self.stats['errors']}"
         )
 
-    # ═══════════════════════════════════════════
-    # cleanup
-    # ═══════════════════════════════════════════
     async def on_stop(self):
-        """cancel taskهای هشدار هنگام خروج."""
         for task in list(self._alert_tasks):
             if not task.done():
                 task.cancel()
