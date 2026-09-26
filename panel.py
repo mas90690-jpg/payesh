@@ -11,20 +11,13 @@ Run: double-click panel.bat  (or: python panel.py)
     13) AI / Admin        14) Feature requests  15) Open local AI chat
     16) Recent reports    17) Pull from GitHub  18) Git status   0) Exit
 
-نسخهٔ ۵ (این نسخه):
-  - ⭐ NEW: github_pull حالا قبل از pull، فایل‌های trackشده‌ای که از
-    دیسک پاک شده‌اند را (با تأیید کاربر) برمی‌گرداند — چون git pull
-    فقط commit می‌آورد، نه فایل working directory پاک‌شده.
-  - ⭐ NEW: github_status — نمایش کامل وضعیت گیت (branch، remote،
-    ahead/behind، تغییرات uncommitted + خلاصه بر اساس نوع).
-  - ⭐ NEW: گزینهٔ ۱۸ در منو — Git status.
-  - 🔴 FIX امنیتی: _is_running حالا اول p.name() را چک می‌کند —
-    جلوگیری از kill فرآیند اشتباه به‌خاطر PID recycling.
-  - 🔴 FIX: _ask_platform لغو کاربر را از «همه پلتفرم‌ها» جدا می‌کند.
-  - 🟠 FIX: _git حالا encoding="utf-8" + errors="replace" دارد.
-  - 🟠 FIX: github_push حالا preview از git status می‌دهد.
-  - 🎯 بهبود: start() ۱ ثانیه صبر می‌کند و بالا آمدن را تأیید می‌کند.
-  - 🧹 ساختار مرتب: بخش‌بندی واضح، type hints کامل، docstring فارسی.
+نسخهٔ ۶ (تمیز + حرفه‌ای):
+  - ⭐ Push به هر دو remote (origin + backup) با گزارش دقیق
+  - ⭐ بازیابی فایل‌های پاک‌شده قبل از pull
+  - ⭐ Git status کامل (branch/remote/ahead-behind/changes)
+  - ⭐ نمایش صریح موفقیت/شکست هر remote
+  - 🔴 امنیت: جلوگیری از push .env
+  - 🟠 همه پیام‌ها با [OK]/[X]/[i] برچسب‌گذاری شده
 """
 from __future__ import annotations
 
@@ -58,16 +51,16 @@ REPORTS_DIR = os.path.join(ROOT, "storage", "reports")
 LOG_FILE = os.path.join(ROOT, "storage", "logs", "app.jsonl")
 REQUESTS_FILE = os.path.join(ROOT, "storage", "requests.jsonl")
 
-# ─── timeoutها ───
 _SQLITE_TIMEOUT_S = 5.0
 _PYTEST_TIMEOUT_S = 300
 _CLEANUP_TIMEOUT_S = 120
-
-# ─── آستانه‌ها ───
 _START_VERIFY_WAIT_S = 1.0
 _LOG_PREVIEW_LEN = 80
 _GIT_PREVIEW_LIMIT = 15
 _GIT_HARD_LIMIT = 20
+
+# ─── remoteهای هدف برای push ───
+_PUSH_REMOTES = ["origin", "backup"]
 
 try:
     import psutil
@@ -84,7 +77,7 @@ class _Cancelled(Exception):
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  پلتفرم‌ها — sync با daily_reporter.PLATFORM_ORDER
+#  پلتفرم‌ها
 # ══════════════════════════════════════════════════════════════════════
 _PLATFORM_LABELS = {
     "eitaa": "📱 ایتا",
@@ -116,13 +109,8 @@ def _print(msg: str = "") -> None:
         pass
 
 
-def _safe_str(val: Any) -> str:
-    """None → ""، بقیه → str."""
-    return "" if val is None else str(val)
-
-
 def _sqlite_connect(path: str) -> sqlite3.Connection:
-    """اتصال SQLite با timeout (جلوگیری از قفل دائمی)."""
+    """اتصال SQLite با timeout."""
     conn = sqlite3.connect(path, timeout=_SQLITE_TIMEOUT_S)
     try:
         conn.execute(
@@ -143,7 +131,7 @@ def _ask_input(prompt: str) -> str | None:
 
 
 def _confirm(prompt: str) -> bool:
-    """پرسش بله/خیر — True اگه کاربر «y»/«yes»/«بله» بزند."""
+    """پرسش بله/خیر."""
     ans = _ask_input(prompt)
     if ans is None:
         return False
@@ -175,16 +163,11 @@ def _clear_pid() -> None:
 
 
 def _is_running() -> bool:
-    """آیا فرآیند ربات در حال اجراست؟
-
-    🔴 FIX: اول `p.name()` را چک می‌کند — جلوگیری از kill اشتباه
-    به‌خاطر PID recycling.
-    """
+    """آیا فرآیند ربات در حال اجراست؟ (با چک نام فرآیند)"""
     pid = _read_pid()
     if not pid:
         return False
 
-    # ─── بدون psutil (fallback) ───
     if psutil is None:
         try:
             os.kill(pid, 0)
@@ -194,16 +177,12 @@ def _is_running() -> bool:
         except Exception:
             return False
 
-    # ─── با psutil ───
     try:
         p = psutil.Process(pid)
     except (psutil.NoSuchProcess, psutil.ZombieProcess):
         return False
     except psutil.AccessDenied:
-        _print(
-            f"[!] PID {pid} قابل بررسی نیست (AccessDenied) — "
-            f"به‌عنوان «نامعلوم» در نظر گرفته شد"
-        )
+        _print(f"[!] PID {pid} قابل بررسی نیست (AccessDenied)")
         return False
     except Exception:
         return False
@@ -214,46 +193,29 @@ def _is_running() -> bool:
     except (psutil.NoSuchProcess, psutil.ZombieProcess):
         return False
 
-    # ─── ۱) نام فرآیند ───
     try:
         proc_name = (p.name() or "").lower()
-    except (psutil.NoSuchProcess, psutil.ZombieProcess):
-        return False
-    except psutil.AccessDenied:
-        proc_name = ""
     except Exception:
         proc_name = ""
 
     if proc_name and "python" not in proc_name:
-        _print(
-            f"[!] PID {pid} متعلق به «{proc_name}» است (نه python) "
-            f"— احتمالاً PID recycling"
-        )
+        _print(f"[!] PID {pid} متعلق به «{proc_name}» است (نه python)")
         return False
 
-    # ─── ۲) cmdline ───
     try:
         cmdline = p.cmdline() or []
-    except (psutil.NoSuchProcess, psutil.ZombieProcess):
-        return False
-    except psutil.AccessDenied:
-        return True
     except Exception:
         return True
 
     if cmdline:
         cmd_str = " ".join(cmdline).lower()
-        if "main.py" in cmd_str:
-            return True
-        if "python" in cmd_str:
-            return True
-        return False
+        return "main.py" in cmd_str or "python" in cmd_str
 
     return True
 
 
 def start() -> None:
-    """شروع ربات در پنجره/سشن جدید — با تأیید راه‌اندازی."""
+    """شروع ربات."""
     if _is_running():
         _print(f"[!] Bot is already running (PID: {_read_pid()})")
         return
@@ -279,8 +241,7 @@ def start() -> None:
         time.sleep(_START_VERIFY_WAIT_S)
         if proc.poll() is not None:
             _print(
-                f"[!] Bot exited immediately (rc={proc.returncode}) "
-                f"— check logs in storage/logs/app.jsonl"
+                f"[!] Bot exited immediately (rc={proc.returncode})"
             )
             _clear_pid()
             return
@@ -291,7 +252,7 @@ def start() -> None:
 
 
 def stop() -> None:
-    """توقف ربات — ابتدا SIGTERM، سپس SIGKILL بعد از timeout."""
+    """توقف ربات."""
     pid = _read_pid()
     if not _is_running():
         _print("[i] Bot is not running.")
@@ -357,7 +318,7 @@ def stop() -> None:
 
 
 def restart() -> None:
-    """ری‌استارت — با پاک‌سازی PID قبل از start."""
+    """ری‌استارت."""
     _print("[..] Restarting...")
     stop()
     _clear_pid()
@@ -421,7 +382,7 @@ def status() -> None:
 #  ورودی‌های تعاملی
 # ══════════════════════════════════════════════════════════════════════
 def _ask_days(default: int = 30) -> int:
-    """بازهٔ روز را می‌پرسد. «۰» = همه. پیش‌فرض = default."""
+    """بازهٔ روز."""
     s = _ask_input(f"بازه روز [{default}] (۰ = همه): ")
     if s is None:
         return default
@@ -436,15 +397,7 @@ def _ask_days(default: int = 30) -> int:
 
 
 def _ask_platform() -> str | None:
-    """زیرمنوی انتخاب پلتفرم.
-
-    Returns:
-        str: کد پلتفرم انتخاب‌شده
-        None: «همه پلتفرم‌ها»
-
-    Raises:
-        _Cancelled: کاربر لغو کرد
-    """
+    """زیرمنوی انتخاب پلتفرم."""
     _print("\n  انتخاب پلتفرم:")
     _print("    [0] همه پلتفرم‌ها (پیش‌فرض)")
     for i, (_code, label) in enumerate(_PLATFORM_CHOICES, 1):
@@ -470,17 +423,12 @@ def _ask_platform() -> str | None:
 
 
 def _ask_crm_mode() -> tuple[str | None, bool, bool] | None:
-    """حالت خروجی CRM: (platform, split, multi_sheet).
-
-    Returns:
-        tuple: (platform, split, multi_sheet)
-        None: لغو کاربر
-    """
+    """حالت خروجی CRM."""
     _print("\n  حالت خروجی CRM:")
     _print("    [1] همه پلتفرم‌ها در یک فایل (پیش‌فرض)")
     _print("    [2] فقط یک پلتفرم مشخص")
     _print("    [3] هر پلتفرم، فایل جدا (split)")
-    _print("    [4] یک فایل Excel با شیت جدا برای هر پلتفرم (multi_sheet)")
+    _print("    [4] یک فایل Excel با شیت جدا (multi_sheet)")
 
     c = _ask_input("شماره [1]: ")
     if c is None:
@@ -500,7 +448,7 @@ def _ask_crm_mode() -> tuple[str | None, bool, bool] | None:
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  ابزارها: Start/Login/Backup/Reports/CRM/Tests/Cleanup/Health/AI
+#  ابزارها
 # ══════════════════════════════════════════════════════════════════════
 def login() -> None:
     """ورود تعاملی به پلتفرم‌ها."""
@@ -515,7 +463,7 @@ def login() -> None:
 
 
 def backup() -> None:
-    """پشتیبان امن از DB با sqlite3.backup() (نه copy فایل)."""
+    """پشتیبان امن از DB."""
     os.makedirs(BACKUP_DIR, exist_ok=True)
 
     if not os.path.exists(DB_PATH):
@@ -541,7 +489,7 @@ def backup() -> None:
 
 
 def report() -> None:
-    """گزارش‌گیری با پلتفرم اختیاری."""
+    """گزارش‌گیری."""
     days = _ask_days(default=7)
 
     try:
@@ -575,10 +523,7 @@ def report() -> None:
             platform=platform, date_from=date_from, limit=200,
         )
         if exec_path or detail_path:
-            _print(
-                f"[OK] گزارش‌ها ساخته شدند "
-                f"(platform={platform or 'all'})"
-            )
+            _print(f"[OK] گزارش‌ها ساخته شدند (platform={platform or 'all'})")
             if exec_path:
                 _print(f"     • مدیریتی: {exec_path}")
             if detail_path:
@@ -590,7 +535,7 @@ def report() -> None:
 
 
 def crm() -> None:
-    """خروجی CRM با حالت‌های چندگانه."""
+    """خروجی CRM."""
     days = _ask_days(default=30)
 
     mode = _ask_crm_mode()
@@ -626,15 +571,13 @@ def crm() -> None:
 
 
 def _print_crm_result(res: dict[str, Any], split: bool) -> None:
-    """نمایش خروجی CRM — چه split چه عادی."""
+    """نمایش خروجی CRM."""
     if split or "by_platform" in res:
         by = res.get("by_platform") or {}
         if not by:
             _print("[i] هیچ پلتفرمی سرنخ نداشت.")
             return
-        _print(
-            f"\n[OK] {res.get('count', 0)} سرنخ در {len(by)} پلتفرم:"
-        )
+        _print(f"\n[OK] {res.get('count', 0)} سرنخ در {len(by)} پلتفرم:")
         for p, info in by.items():
             _print(f"   • {p}: {info.get('count', 0)} سرنخ")
             if info.get("csv"):
@@ -653,7 +596,7 @@ def _print_crm_result(res: dict[str, Any], split: bool) -> None:
 
 
 def recent_reports() -> None:
-    """نمایش آخرین فایل‌های تولیدشده در storage/reports."""
+    """آخرین فایل‌های reports."""
     if not os.path.isdir(REPORTS_DIR):
         _print("[!] پوشهٔ reports وجود ندارد.")
         return
@@ -666,9 +609,7 @@ def recent_reports() -> None:
         if not os.path.isfile(p):
             continue
         try:
-            files.append(
-                (os.path.getmtime(p), name, os.path.getsize(p))
-            )
+            files.append((os.path.getmtime(p), name, os.path.getsize(p)))
         except OSError:
             continue
 
@@ -704,7 +645,7 @@ def tests() -> None:
 
 
 def cleanup() -> None:
-    """پاک‌سازی خودکار — با asyncio.new_event_loop (امن برای Windows)."""
+    """پاک‌سازی خودکار."""
     _print("[..] Cleaning old files...")
 
     loop = None
@@ -782,8 +723,7 @@ def ai_status() -> None:
             tags = json.loads(r.read().decode("utf-8"))
         models = [m.get("name") for m in tags.get("models", [])]
         _print(
-            f"  Ollama: UP at {AI['url']}  |  "
-            f"model in use: {AI['model']}"
+            f"  Ollama: UP at {AI['url']}  |  model in use: {AI['model']}"
         )
         _print(f"  installed models: {', '.join(models) or 'none'}")
     except Exception as e:
@@ -792,9 +732,7 @@ def ai_status() -> None:
             f"launch Ollama or check OLLAMA_URL"
         )
 
-    ids = PLUGINS_CONFIG.get("adminhandler", {}).get(
-        "admin_ids", []
-    )
+    ids = PLUGINS_CONFIG.get("adminhandler", {}).get("admin_ids", [])
     if ids:
         _print(f"  Admins (ADMIN_IDS): {', '.join(ids)}")
     else:
@@ -805,12 +743,10 @@ def ai_status() -> None:
 
 
 def open_chat() -> None:
-    """باز کردن چت AI لوکال در مرورگر."""
+    """باز کردن چت AI لوکال."""
     port = os.getenv("OBS_PORT", "8787")
     url = f"http://localhost:{port}/chat"
-    _print(
-        "[..] Local AI chat (works offline, no internet/Bale needed):"
-    )
+    _print("[..] Local AI chat (works offline, no internet/Bale needed):")
     _print(f"     {url}")
     _print("     (ربات باید روشن باشد — گزینهٔ ۱)")
     try:
@@ -821,7 +757,7 @@ def open_chat() -> None:
 
 
 def requests_and_errors() -> None:
-    """نمایش درخواست‌های قابلیت + خطاهای اخیر."""
+    """درخواست‌های قابلیت + خطاهای اخیر."""
     _print("[..] Feature requests & recent errors")
 
     if os.path.exists(REQUESTS_FILE):
@@ -857,24 +793,13 @@ def requests_and_errors() -> None:
         except Exception as e:
             _print(f"  [X] could not read log: {e}")
     _print(f"  recent errors in log: {errs}")
-    _print(
-        "  (self-monitor auto-alerts admins on Bale "
-        "while the bot runs)"
-    )
 
 
 # ══════════════════════════════════════════════════════════════════════
 #  Git helpers
 # ══════════════════════════════════════════════════════════════════════
 def _git(args: list[str]) -> tuple[int, str]:
-    """اجرای دستور git در ریشهٔ پروژه.
-
-    🟠 FIX: encoding="utf-8" + errors="replace" — خروجی فارسی git روی
-    Windows دیگر خراب نمی‌شود.
-
-    Returns:
-        (returncode, stdout+stderr)
-    """
+    """اجرای دستور git. خروجی UTF-8."""
     try:
         r = subprocess.run(
             ["git"] + args,
@@ -895,38 +820,34 @@ def _git(args: list[str]) -> tuple[int, str]:
 
 
 def _git_branch() -> str:
-    """نام شاخهٔ فعلی (پیش‌فرض: main)."""
+    """نام شاخهٔ فعلی."""
     rc, out = _git(["rev-parse", "--abbrev-ref", "HEAD"])
     if rc != 0:
         return "main"
     return (out or "main").strip() or "main"
 
 
-def _git_has_remote(name: str = "origin") -> bool:
+def _git_has_remote(name: str) -> bool:
     """آیا remote با این نام وجود دارد؟"""
     rc, out = _git(["remote"])
     return rc == 0 and name in (out or "")
 
 
 def _git_is_repo() -> bool:
-    """آیا در یک مخزن گیت هستیم؟"""
+    """آیا در مخزن گیت هستیم؟"""
     rc, _ = _git(["rev-parse", "--is-inside-work-tree"])
     return rc == 0
 
 
 def _git_ahead_behind(branch: str) -> tuple[int, int]:
-    """تعداد commitهای (ahead, behind) نسبت به origin/<branch>."""
-    rc, behind = _git([
-        "rev-list", "--count", f"HEAD..origin/{branch}"
-    ])
+    """تعداد (ahead, behind) نسبت به origin/<branch>."""
+    rc, behind = _git(["rev-list", "--count", f"HEAD..origin/{branch}"])
     try:
         behind_n = int((behind or "0").strip() or "0")
     except ValueError:
         behind_n = 0
 
-    rc, ahead = _git([
-        "rev-list", "--count", f"origin/{branch}..HEAD"
-    ])
+    rc, ahead = _git(["rev-list", "--count", f"origin/{branch}..HEAD"])
     try:
         ahead_n = int((ahead or "0").strip() or "0")
     except ValueError:
@@ -936,48 +857,26 @@ def _git_ahead_behind(branch: str) -> tuple[int, int]:
 
 
 def _git_deleted_tracked_files() -> list[str]:
-    """فایل‌های trackشده‌ای که از working directory پاک شده‌اند.
-
-    مقایسهٔ HEAD با working tree — هر دو حالت staged و unstaged.
-
-    Returns:
-        لیست نام فایل‌ها (نسبی به ROOT).
-    """
-    rc, out = _git([
-        "diff", "--name-only", "--diff-filter=D", "HEAD"
-    ])
+    """فایل‌های trackشده‌ای که از دیسک پاک شده‌اند."""
+    rc, out = _git(["diff", "--name-only", "--diff-filter=D", "HEAD"])
     if rc != 0:
         return []
-    return [
-        f.strip() for f in (out or "").splitlines() if f.strip()
-    ]
+    return [f.strip() for f in (out or "").splitlines() if f.strip()]
 
 
 def _git_restore_files(files: list[str]) -> int:
-    """برگرداندن فایل‌های پاک‌شده از HEAD به working directory.
-
-    سه لایهٔ fallback:
-      ۱) git restore (Git 2.23+)
-      ۲) git checkout HEAD -- (قدیمی)
-      ۳) تکتک (اگر دسته‌ای خطا داد)
-
-    Returns:
-        تعداد فایل‌های برگردانده‌شده.
-    """
+    """برگرداندن فایل‌های پاک‌شده از HEAD."""
     if not files:
         return 0
 
-    # ─── لایهٔ ۱: git restore ───
     rc, _ = _git(["restore"] + files)
     if rc == 0:
         return len(files)
 
-    # ─── لایهٔ ۲: git checkout ───
     rc, _ = _git(["checkout", "HEAD", "--"] + files)
     if rc == 0:
         return len(files)
 
-    # ─── لایهٔ ۳: تکتک ───
     restored = 0
     for f in files:
         rc, _ = _git(["restore", f])
@@ -993,7 +892,7 @@ def _git_restore_files(files: list[str]) -> int:
 def _git_print_status_lines(
     status_out: str, limit: int = _GIT_PREVIEW_LIMIT
 ) -> None:
-    """نمایش خطوط status --short با بریدن امن."""
+    """نمایش خطوط status --short."""
     lines = [ln for ln in (status_out or "").strip().splitlines() if ln]
     for line in lines[:limit]:
         _print(f"    {line}")
@@ -1002,16 +901,18 @@ def _git_print_status_lines(
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  Git — Push
+#  Git — Push (هر دو remote)
 # ══════════════════════════════════════════════════════════════════════
 def github_push() -> None:
-    """Stage, commit and push to GitHub.
+    """Stage, commit, push به همه remoteهای _PUSH_REMOTES.
 
-    امنیت: اگر .env توسط git track شده باشد، abort می‌کند.
+    - فقط remoteهایی که وجود دارند پوش می‌شوند.
+    - گزارش دقیق موفقیت/شکست هر remote.
+    - امنیت: اگر .env توسط git track شده باشد، abort.
     """
     _print("[..] Push to GitHub")
 
-    # ─── امنیت: هرگز secrets push نشود ───
+    # ─── امنیت ───
     rc, tracked = _git(["ls-files", ".env"])
     if ".env" in (tracked or ""):
         _print(
@@ -1024,13 +925,19 @@ def github_push() -> None:
         _print("[X] Not a git repository.")
         return
 
-    if not _git_has_remote("origin"):
-        _print("[X] No 'origin' remote. Add it once:")
+    # ─── چک remoteها ───
+    available_remotes = [
+        r for r in _PUSH_REMOTES if _git_has_remote(r)
+    ]
+    if not available_remotes:
+        _print("[X] No remote found. Add one:")
         _print(
             "    git remote add origin "
             "https://github.com/<you>/<repo>.git"
         )
         return
+
+    _print(f"  remoteهای موجود: {', '.join(available_remotes)}")
 
     # ─── preview تغییرات ───
     rc, status_out = _git(["status", "--short"])
@@ -1067,39 +974,40 @@ def github_push() -> None:
     else:
         _print("[OK] Committed.")
 
+    # ─── پوش به همه remoteها ───
     branch = _git_branch()
-    rc, out = _git(["push", "-u", "origin", branch])
-    if rc == 0:
-        _print(f"[OK] Pushed to origin/{branch}.")
-    else:
+    results: dict[str, bool] = {}
+
+    for remote in available_remotes:
+        _print(f"\n  [..] Pushing to {remote}/{branch}...")
+        rc, out = _git(["push", "-u", remote, branch])
+        if rc == 0:
+            _print(f"[OK] Pushed to {remote}/{branch}.")
+            results[remote] = True
+        else:
+            _print(f"[X] Push to {remote} failed:")
+            _print(f"     {out.strip()[:300]}")
+            results[remote] = False
+
+    # ─── خلاصه ───
+    ok = [r for r, v in results.items() if v]
+    fail = [r for r, v in results.items() if not v]
+    _print("\n  ═══ خلاصه ═══")
+    if ok:
+        _print(f"  ✅ موفق: {', '.join(ok)}")
+    if fail:
+        _print(f"  ❌ ناموفق: {', '.join(fail)}")
         _print(
-            f"[X] Push to origin failed (check internet/credentials):\n{out}"
+            "  💡 اگر SSL error بود، VPN/فیلترشکن روشن کن "
+            "و دوباره امتحان کن."
         )
 
-    # ── پوش به رپوی دوم (backup) ──
-    if _git_has_remote("backup"):
-        rc2, out2 = _git(["push", "-u", "backup", branch])
-        if rc2 == 0:
-            _print(f"[OK] Pushed to backup/{branch}.")
-        else:
-            _print(
-                f"[X] Push to backup failed:\n{out2}"
-            )
-
 
 # ══════════════════════════════════════════════════════════════════════
-#  Git — Pull (با بازیابی فایل‌های پاک‌شده)
+#  Git — Pull
 # ══════════════════════════════════════════════════════════════════════
 def github_pull() -> None:
-    """Pull از GitHub.
-
-    ⭐ NEW: قبل از pull، فایل‌های trackشده‌ای که از working directory
-    پاک شده‌اند را (با تأیید کاربر) برمی‌گرداند. دلیل: git pull فقط
-    commitهای remote را می‌آورد — نه فایل‌های working directory.
-
-    محافظ: اگر تغییرات uncommitted یا commitهای محلی جلوتر بود،
-    هشدار می‌دهد و گزینهٔ stash ارائه می‌کند.
-    """
+    """Pull از origin + بازیابی فایل‌های پاک‌شده قبل از pull."""
     _print("[..] Pull from GitHub")
 
     if not _git_is_repo():
@@ -1107,16 +1015,12 @@ def github_pull() -> None:
         return
 
     if not _git_has_remote("origin"):
-        _print("[X] No 'origin' remote. Add it once:")
-        _print(
-            "    git remote add origin "
-            "https://github.com/<you>/<repo>.git"
-        )
+        _print("[X] No 'origin' remote.")
         return
 
     branch = _git_branch()
 
-    # ─── ۱) بازیابی فایل‌های پاک‌شده (قبل از pull) ───
+    # ─── ۱) بازیابی فایل‌های پاک‌شده ───
     deleted = _git_deleted_tracked_files()
     if deleted:
         _print(
@@ -1126,10 +1030,7 @@ def github_pull() -> None:
         for f in deleted[:_GIT_PREVIEW_LIMIT]:
             _print(f"    D  {f}")
         if len(deleted) > _GIT_PREVIEW_LIMIT:
-            _print(
-                f"    ... و {len(deleted) - _GIT_PREVIEW_LIMIT} "
-                f"فایل دیگر"
-            )
+            _print(f"    ... و {len(deleted) - _GIT_PREVIEW_LIMIT} فایل دیگر")
 
         if _confirm("\n  برگردانم؟ [y/N]: "):
             n = _git_restore_files(deleted)
@@ -1164,12 +1065,10 @@ def github_pull() -> None:
         _git_print_status_lines(status_out, _GIT_PREVIEW_LIMIT)
 
     if ahead_n > 0:
-        _print(
-            f"\n  ⚠️ شما {ahead_n} commit محلی دارید که در GitHub نیست."
-        )
+        _print(f"\n  ⚠️ شما {ahead_n} commit محلی دارید که در GitHub نیست.")
         _print("     Pull ممکن است باعث merge یا conflict شود.")
 
-    # ─── ۵) تأیید pull ───
+    # ─── ۵) تأیید ───
     if not _confirm(
         f"\n  Pull {behind_n} commit از origin/{branch}؟ [y/N]: "
     ):
@@ -1198,32 +1097,18 @@ def github_pull() -> None:
     if rc == 0:
         _print(f"[OK] Pull موفق — {behind_n} commit به‌روز شد.")
         if stashed:
-            _print(
-                "  💡 تغییرات شما در stash است. "
-                "برای برگرداندن: git stash pop"
-            )
+            _print("  💡 تغییرات شما در stash است: git stash pop")
     else:
         _print(f"[X] Pull failed:\n{out}")
         if stashed:
-            _print(
-                "  💡 تغییرات شما در stash است. "
-                "برای برگرداندن: git stash pop"
-            )
+            _print("  💡 تغییرات شما در stash است: git stash pop")
 
 
 # ══════════════════════════════════════════════════════════════════════
 #  Git — Status
 # ══════════════════════════════════════════════════════════════════════
 def github_status() -> None:
-    """نمایش وضعیت کامل گیت.
-
-    شامل:
-      - branch فعلی
-      - remoteها
-      - آخرین commit
-      - ahead/behind نسبت به origin
-      - تغییرات uncommitted + خلاصه بر اساس نوع (D/M/A)
-    """
+    """نمایش وضعیت کامل گیت."""
     _print("[..] Git status")
 
     if not _git_is_repo():
@@ -1234,10 +1119,10 @@ def github_status() -> None:
     branch = _git_branch()
     _print(f"\n  🌿 Branch: {branch}")
 
-    # ─── ۲) remote ───
+    # ─── ۲) remoteها ───
     rc, remotes = _git(["remote", "-v"])
     if (remotes or "").strip():
-        for line in remotes.strip().splitlines()[:4]:
+        for line in remotes.strip().splitlines()[:6]:
             _print(f"  🔗 {line.strip()}")
     else:
         _print("  🔗 Remote: (none)")
@@ -1253,9 +1138,7 @@ def github_status() -> None:
         rc, _ = _git(["fetch", "origin", branch])
         if rc == 0:
             ahead_n, behind_n = _git_ahead_behind(branch)
-            icon = (
-                "✅" if (ahead_n == 0 and behind_n == 0) else "⚠️"
-            )
+            icon = "✅" if (ahead_n == 0 and behind_n == 0) else "⚠️"
             _print(
                 f"  {icon} {ahead_n} ahead، {behind_n} "
                 f"behind origin/{branch}"
@@ -1266,19 +1149,14 @@ def github_status() -> None:
     # ─── ۵) تغییرات uncommitted ───
     rc, status_out = _git(["status", "--short"])
     if not status_out.strip():
-        _print(
-            "\n  ✅ Working tree clean "
-            "(هیچ تغییر uncommitted نیست)."
-        )
+        _print("\n  ✅ Working tree clean (هیچ تغییر uncommitted نیست).")
         return
 
-    lines = [
-        ln for ln in status_out.strip().splitlines() if ln
-    ]
+    lines = [ln for ln in status_out.strip().splitlines() if ln]
     _print(f"\n  📝 تغییرات uncommitted ({len(lines)} فایل):")
     _git_print_status_lines(status_out, _GIT_HARD_LIMIT)
 
-    # ─── ۶) خلاصه بر اساس نوع ───
+    # ─── ۶) خلاصه ───
     deleted: list[str] = []
     modified = 0
     added = 0
@@ -1323,19 +1201,19 @@ MENU: list[tuple[str, str, Callable[[], None]]] = [
     ("8", "Export CRM (platform/split/sheet)", crm),
     ("9", "Run tests", tests),
     ("10", "Cleanup old files", cleanup),
-    ("11", "Push to GitHub", github_push),
+    ("11", "Push to GitHub (origin + backup)", github_push),
     ("12", "Health & metrics", health),
     ("13", "AI / Admin status", ai_status),
     ("14", "Feature requests & errors", requests_and_errors),
     ("15", "Open local AI chat (offline)", open_chat),
     ("16", "Recent reports & CRM files", recent_reports),
     ("17", "Pull from GitHub (restore + pull)", github_pull),
-    ("18", "Git status (branch/changes)", github_status),
+    ("18", "Git status (branch/changes)", git_status_full := github_status),
 ]
 
 
 def show_menu() -> None:
-    """نمایش منو — شماره‌های دو رقمی راست‌چین."""
+    """نمایش منو."""
     _print("\n" + "=" * 55)
     _print("   Srooyesh Lead-Monitor  |  Control Panel")
     _print("=" * 55)
@@ -1346,7 +1224,7 @@ def show_menu() -> None:
 
 
 def _cleanup_on_exit() -> None:
-    """atexit: فقط برای رعایت اصول (ربات مستقل است)."""
+    """atexit."""
     pass
 
 
