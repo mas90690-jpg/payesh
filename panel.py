@@ -1073,8 +1073,18 @@ def github_push() -> None:
         _print(f"[OK] Pushed to origin/{branch}.")
     else:
         _print(
-            f"[X] Push failed (check internet/credentials):\n{out}"
+            f"[X] Push to origin failed (check internet/credentials):\n{out}"
         )
+
+    # ── پوش به رپوی دوم (backup) ──
+    if _git_has_remote("backup"):
+        rc2, out2 = _git(["push", "-u", "backup", branch])
+        if rc2 == 0:
+            _print(f"[OK] Pushed to backup/{branch}.")
+        else:
+            _print(
+                f"[X] Push to backup failed:\n{out2}"
+            )
 
 
 # ══════════════════════════════════════════════════════════════════════
