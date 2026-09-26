@@ -159,6 +159,21 @@ class EitaaCollector(BaseCollector):
     # اتصال
     # ═══════════════════════════════════════════════════
     async def connect(self, headless: bool | None = None) -> bool:
+        # 🎯 اگر از قبل وصل هستیم، رد کن
+        if self._connected and self._context:
+            log_info("ℹ️ [eitaa:connect] از قبل متصل — connect تکراری رد شد")
+            return True
+        
+        # اگر context قبلی مرده، پاکش کن
+        if self._context:
+            log_warning("⚠️ [eitaa:connect] context قدیمی باز — بستن")
+            try:
+                await self._context.close()
+            except Exception:
+                pass
+            self._context = None
+            self._page = None
+        
         try:
             if async_playwright is None:
                 log_error(
@@ -211,7 +226,7 @@ class EitaaCollector(BaseCollector):
         from config import get_browser_proxy
 
         last_err = None
-        for channel in ("chrome", "msedge", None):
+        for channel in ("chrome", "msedge"):
             try:
                 kwargs = dict(
                     user_data_dir=self._user_data_dir,
@@ -348,13 +363,22 @@ class EitaaCollector(BaseCollector):
             await self._scrape_current_chat()
             return
 
-        limit = min(total_chats, self._max_chats)
+        limit = (
+            total_chats
+            if self._max_chats <= 0
+            else min(total_chats, self._max_chats)
+        )
         log_info(f"🔍 {limit} چت برای اسکرپ پیدا شد")
 
         for idx in range(limit):
             try:
+                # 🐛 FIX 1: چک کن idx معتبر است (SPA ممکن است تغییر کند)
+                cnt = await page.locator(used_sel).count()
+                if idx >= cnt:
+                    log_info(f"   ⏭️ [ایتا] چت {idx} وجود ندارد (total={cnt}) — توقف")
+                    break
+
                 # 🎯 هر بار locator جدید (نه element قدیمی)
-                # چون صفحهٔ ایتا SPA است و لیست re-render می‌شود
                 locator = page.locator(used_sel).nth(idx)
 
                 # ─── نام چت ───
@@ -363,6 +387,9 @@ class EitaaCollector(BaseCollector):
                         ".peer-title, .user-title, .dialog-title"
                     ).first.inner_text()
                     chat_name = (chat_name or "").strip()
+                    # 🎯 فقط خط اول
+                    if chat_name:
+                        chat_name = chat_name.split("\n")[0].strip()
                     if not chat_name:
                         chat_name = "ایتا"
                 except Exception:
@@ -555,7 +582,7 @@ class EitaaCollector(BaseCollector):
     # دریافت نام چت باز
     # ═══════════════════════════════════════════════════
     async def _get_open_chat_title(self) -> str:
-        """دریافت نام چت باز فعلی با انتخابگرهای دقیق ایتا."""
+        """دریافت نام چت باز فعلی — فقط خط اول."""
         for sel in [
             ".peer-title",
             ".dialog-title .peer-title",
@@ -569,11 +596,14 @@ class EitaaCollector(BaseCollector):
                 if el:
                     t = (await el.inner_text() or "").strip()
                     if t:
-                        return t
+                        # 🎯 فقط خط اول
+                        first_line = t.split("\n")[0].strip()
+                        if first_line:
+                            return first_line
             except Exception:
                 continue
         return "ایتا"
-
+        
     # ═══════════════════════════════════════════════════
     # ابزار عیب‌یابی
     # ═══════════════════════════════════════════════════

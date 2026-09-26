@@ -22,12 +22,11 @@ from __future__ import annotations
 import os
 import sys
 from typing import Any
-
+from data import paths as data_paths
 from dotenv import load_dotenv
 
-# ─── Load .env (idempotent) ───
-load_dotenv()
-
+# ─── Load .env (force override) ───
+load_dotenv(override=True)
 
 # ══════════════════════════════════════════════════════════
 # helpers (type-safe env readers)
@@ -652,9 +651,7 @@ def _build_plugins_config() -> dict[str, Any]:
             "session_path": os.path.join(
                 SESSIONS_DIR, "linkedin_v2"
             ),
-            "searches_file": os.path.join(
-                BASE_DIR, "data", "linkedin_searches.txt"
-            ),
+            "searches_file": str(data_paths.LINKEDIN_SEARCHES),
             "poll_seconds": _env_int(
                 "LINKEDIN_POLL_SECONDS", 900,
                 min_val=60, max_val=86400,
@@ -682,9 +679,7 @@ def _build_plugins_config() -> dict[str, Any]:
 
         # ═══ وب ═══
         "webcollector": {
-            "sources_file": os.path.join(
-                BASE_DIR, "data", "web_sources.txt"
-            ),
+            "sources_file": str(data_paths.WEB_SOURCES),
             "max_pages": _env_int(
                 "WEB_MAX_PAGES", 40, min_val=1, max_val=1000
             ),
@@ -694,7 +689,7 @@ def _build_plugins_config() -> dict[str, Any]:
             "translate": _env_bool("WEB_TRANSLATE", False),
             "enabled": _env_bool("WEB_ENABLED", False),
         },
-
+        
         # ═══ کلیدواژه‌یاب ═══
         "keywordsfinder": {
             "brand_token_enabled": _env_bool(
@@ -773,7 +768,7 @@ AI: dict[str, Any] = {
     ),
     "priority": AI_PRIORITY,
     "url": _env_str(
-        "OLLAMA_URL", "http://localhost:11434"
+        "OLLAMA_URL", "http://127.0.0.1:11434"
     ).rstrip("/"),
     "model": _env_str("OLLAMA_MODEL", "gemma3:1b") or "gemma3:1b",
     "keep_alive": _env_str("OLLAMA_KEEP_ALIVE", "60s") or "60s",
@@ -1203,7 +1198,7 @@ def reload() -> None:
         ),
         "priority": AI_PRIORITY,
         "url": _env_str(
-            "OLLAMA_URL", "http://localhost:11434"
+            "OLLAMA_URL", "http://127.0.0.1:11434"
         ).rstrip("/"),
         "model": (
             _env_str("OLLAMA_MODEL", "gemma3:1b") or "gemma3:1b"

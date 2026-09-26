@@ -1,12 +1,14 @@
-# collectors/rubika.py
+﻿# collectors/rubika.py
 """
 کلکتور روبیکا (Rubika) در حالت «کاربر عادی» (Userbot) با کتابخانه rubpy.
 
-نسخهٔ ۶ (این نسخه):
-  - 🐛 FIX: fetch_messages حالا از get_chats + get_messages استفاده می‌کنه
-    (چون on_message_updates پیام گروهی رو نمی‌گیره)
-  - ✅ صف زنده هنوز کار می‌کنه
+نسخهٔ ۷ (این نسخه):
+  - 🐛 FIX: fetch_messages حالا از get_chats + get_messages استفاده می‌کند
+  - ✅ صف زنده هنوز کار می‌کند
   - ✅ fetch_history کامل
+  - 🎯 FIX: لاگ‌های debug حالا log_debug هستند (نه log_info)
+    → در LOG_LEVEL=INFO نمایش داده نمی‌شوند
+    → در LOG_LEVEL=DEBUG نمایش داده می‌شوند
 """
 from __future__ import annotations
 
@@ -16,7 +18,9 @@ from datetime import datetime
 from typing import Any
 
 from core.contracts.base_collector import BaseCollector, ConnectionStatus
-from core.kernel.logger import log_error, log_info, log_success, log_warning
+from core.kernel.logger import (
+    log_debug, log_error, log_info, log_success, log_warning
+)
 
 try:
     from rubpy import Client
@@ -146,6 +150,11 @@ class RubikaCollector(BaseCollector):
             self._connected = True
             self._set_status(ConnectionStatus.CONNECTED)
             log_success("✅ اتصال به روبیکا با موفقیت برقرار شد")
+            try:
+                await self._preload_chats()
+            except Exception as e:
+                log_warning(f"⚠️ [rubika:preload] {type(e).__name__}: {e}")
+
             return True
 
         except (EOFError, OSError):
@@ -181,7 +190,6 @@ class RubikaCollector(BaseCollector):
         object_guid = getattr(update, "object_guid", None)
         text = getattr(update, "text", None) or ""
 
-        # 🐛 FIX: پیام‌های بدون متن رو رد کن
         if not text.strip():
             return None
 
@@ -191,6 +199,19 @@ class RubikaCollector(BaseCollector):
                 chat_type = "group"
             elif getattr(update, "is_channel", False):
                 chat_type = "channel"
+            else:
+                obj_type = str(
+                    getattr(update, "object_type", "") or
+                    getattr(update, "type", "") or ""
+                ).lower()
+                if "group" in obj_type:
+                    chat_type = "group"
+                elif "channel" in obj_type:
+                    chat_type = "channel"
+                elif object_guid and object_guid in self._chat_cache:
+                    cached_type = self._chat_cache[object_guid].get("type")
+                    if cached_type:
+                        chat_type = cached_type
         except Exception:
             pass
 
@@ -224,7 +245,7 @@ class RubikaCollector(BaseCollector):
             "id": str(getattr(update, "message_id", "") or ""),
             "platform": "rubika",
             "text": text,
-            "chat_id": str(object_guid or ""),
+            "chat_id": chat_name or str(object_guid or ""),
             "chat_name": chat_name,
             "chat_type": chat_type,
             "chat_username": chat_username,
@@ -258,30 +279,62 @@ class RubikaCollector(BaseCollector):
         return None
 
     async def _resolve_chat(self, object_guid: str | None, update) -> tuple:
+        """اسم چت را با تلاش‌های چندگانه می‌گیرد."""
         if not object_guid:
             return (getattr(update, "title", None) or "نامشخص", None)
 
         if object_guid in self._chat_cache:
             c = self._chat_cache[object_guid]
-            return (c["name"], c["username"])
+            if c.get("name") and c["name"] != str(object_guid):
+                return (c["name"], c.get("username"))
+
+        name = None
+        username = None
 
         name = getattr(update, "title", None)
-        username = None
-        try:
-            obj = await update.get_object()
-            data = obj.to_dict() if hasattr(obj, "to_dict") else {}
-            name = (
-                data.get("title")
-                or data.get("first_name")
-                or data.get("name")
-                or name
-            )
-            username = data.get("username")
-        except Exception:
-            pass
+        if not name:
+            first = getattr(update, "first_name", None)
+            last = getattr(update, "last_name", None)
+            if first:
+                name = f"{first} {last or ''}".strip()
+        username = getattr(update, "username", None)
 
-        name = name or str(object_guid)
+        if not name:
+            try:
+                obj = await update.get_object()
+                data = obj.to_dict() if hasattr(obj, "to_dict") else {}
+                name = (
+                    data.get("title")
+                    or data.get("first_name")
+                    or data.get("name")
+                )
+                username = username or data.get("username")
+            except Exception:
+                pass
+
+        if not name and self._client:
+            try:
+                chat_obj = await self._client.get_chat(object_guid)
+                data = chat_obj.to_dict() if hasattr(chat_obj, "to_dict") else {}
+                name = (
+                    data.get("title")
+                    or data.get("first_name")
+                    or data.get("name")
+                )
+                username = username or data.get("username")
+            except Exception:
+                pass
+
+        if not name:
+            cached = self._chat_cache.get(object_guid)
+            if cached and cached.get("name"):
+                name = cached["name"]
+
+        if not name:
+            name = str(object_guid)[:20]
+
         self._chat_cache[object_guid] = {"name": name, "username": username}
+        log_debug(f"🔍 [rubika:resolve] {str(object_guid)[:10]}... → «{name}»")
         return (name, username)
 
     @staticmethod
@@ -301,20 +354,15 @@ class RubikaCollector(BaseCollector):
             return "0" + p
         return p
 
-    # ═══════════════════════════════════════════
-    # fetch_messages — صف زنده + get_chats fallback
-    # ═══════════════════════════════════════════
     async def fetch_messages(
         self, since: datetime = None
     ) -> list[dict[str, Any]]:
         if not self._connected or not self._client:
             return []
 
-        # ۱) صف زنده
         new_msgs = self._messages_queue.copy()
         self._messages_queue.clear()
 
-        # ۲) اگه صف خالی بود، از get_chats بخون
         if not new_msgs:
             try:
                 new_msgs = await self._fetch_from_chats(since)
@@ -330,10 +378,124 @@ class RubikaCollector(BaseCollector):
             log_success(f"📥 {len(new_msgs)} پیام جدید از روبیکا")
         return new_msgs
 
+    async def _preload_chats(self):
+        """همه چت‌ها را cache می‌کند تا اسم‌ها زودتر لود شوند."""
+        if not self._client:
+            return
+        try:
+            chats_resp = await self._client.get_chats()
+            chats = self._extract_list(chats_resp, "chats")
+
+            if chats and not getattr(self, "_chats_debugged", False):
+                self._chats_debugged = True
+                try:
+                    sample = chats[0]
+                    sample_dict = (
+                        sample.to_dict()
+                        if hasattr(sample, "to_dict")
+                        else sample
+                    )
+                    log_debug(
+                        f"🔍 [rubika:debug:chat] fields="
+                        f"{list(sample_dict.keys())[:20]}"
+                    )
+                    log_debug(
+                        f"🔍 [rubika:debug:chat] sample="
+                        f"{str(sample_dict)[:500]}"
+                    )
+                except Exception as e:
+                    log_warning(f"⚠️ [rubika:debug] {type(e).__name__}: {e}")
+
+            count = 0
+            for ch in chats:
+                guid = self._dig(ch, "object_guid")
+                if not guid:
+                    continue
+                ch_name = (
+                    self._dig(ch, "title")
+                    or self._dig(ch, "first_name")
+                    or self._dig(ch, "name")
+                )
+                if not ch_name and self._client:
+                    for method_name in ("get_chat_info", "get_chat", "get_object"):
+                        if ch_name:
+                            break
+                        method = getattr(self._client, method_name, None)
+                        if method is None:
+                            continue
+                        try:
+                            info = await method(guid)
+                            if hasattr(info, "to_dict") and callable(info.to_dict):
+                                d = info.to_dict()
+                            elif hasattr(info, "to_dict"):
+                                d = info.to_dict
+                            elif isinstance(info, dict):
+                                d = info
+                            else:
+                                d = {}
+
+                            if not isinstance(d, dict):
+                                d = {}
+
+                            cd = (
+                                d.get("chat")
+                                or d.get("abs_object")
+                                or d.get("object")
+                                or d
+                            )
+                            if isinstance(cd, dict):
+                                ch_name = (
+                                    cd.get("title")
+                                    or cd.get("first_name")
+                                    or cd.get("name")
+                                )
+                            if not ch_name:
+                                ch_name = (
+                                    getattr(info, "title", None)
+                                    or getattr(info, "first_name", None)
+                                    or getattr(info, "name", None)
+                                )
+                            if ch_name:
+                                log_debug(
+                                    f"✅ [rubika:preload] {str(guid)[:10]}... "
+                                    f"→ «{ch_name}» (via {method_name})"
+                                )
+                        except Exception as e:
+                            log_warning(
+                                f"⚠️ [rubika:preload:{method_name}] "
+                                f"{str(guid)[:10]}... | "
+                                f"{type(e).__name__}: {e}"
+                            )
+                if not ch_name:
+                    ch_name = str(guid)[:20]
+                ch_username = self._dig(ch, "username")
+                ch_type = str(
+                    self._dig(ch, "abs_object", "type")
+                    or self._dig(ch, "type")
+                    or ""
+                ).lower()
+
+                entry = self._chat_cache.get(str(guid), {})
+                entry["name"] = ch_name
+                if ch_username:
+                    entry["username"] = ch_username
+                if "channel" in ch_type:
+                    entry["type"] = "channel"
+                elif "group" in ch_type:
+                    entry["type"] = "group"
+                elif "user" in ch_type or "private" in ch_type:
+                    entry["type"] = "private"
+                self._chat_cache[str(guid)] = entry
+                count += 1
+
+            log_success(f"♻️ [rubika:preload] {count} چت cache شد")
+        except Exception as e:
+            log_warning(f"⚠️ [rubika:preload] {type(e).__name__}: {e}")
+
     async def _fetch_from_chats(
         self, since: datetime = None
     ) -> list[dict[str, Any]]:
-        """خوندن پیام‌های جدید از get_chats + get_messages."""
+        """خواندن پیام‌های جدید از get_chats + get_messages."""
         if not self._client:
             return []
 
@@ -350,6 +512,62 @@ class RubikaCollector(BaseCollector):
 
             chats_resp = await self._client.get_chats()
             chats = self._extract_list(chats_resp, "chats")[:30]
+
+            # ─── debug: get_chats ───
+            try:
+                log_debug(
+                    f"🔍 [rubika:debug:get_chats] "
+                    f"type={type(chats_resp).__name__}"
+                )
+                attrs = [
+                    a for a in dir(chats_resp)
+                    if not a.startswith("_") and a != "to_dict"
+                ]
+                log_debug(
+                    f"🔍 [rubika:debug:get_chats] attrs={attrs[:20]}"
+                )
+                td = getattr(chats_resp, "to_dict", None)
+                if isinstance(td, dict):
+                    log_debug(
+                        f"🔍 [rubika:debug:get_chats] "
+                        f"to_dict_keys={list(td.keys())[:20]}"
+                    )
+                    log_debug(
+                        f"🔍 [rubika:debug:get_chats] "
+                        f"to_dict_sample={str(td)[:500]}"
+                    )
+                chats_attr = getattr(chats_resp, "chats", None)
+                log_debug(
+                    f"🔍 [rubika:debug:get_chats] "
+                    f"chats_attr_type={type(chats_attr).__name__} | "
+                    f"len={len(chats_attr) if isinstance(chats_attr, list) else 'N/A'}"
+                )
+                log_debug(
+                    f"🔍 [rubika:debug:get_chats] "
+                    f"chats_extracted={len(chats)}"
+                )
+            except Exception as e:
+                log_warning(
+                    f"⚠️ [rubika:debug:get_chats] "
+                    f"{type(e).__name__}: {e}"
+                )
+
+            for ch in chats:
+                guid = self._dig(ch, "object_guid")
+                if not guid:
+                    continue
+                ch_name = (
+                    self._dig(ch, "title")
+                    or self._dig(ch, "first_name")
+                    or self._dig(ch, "name")
+                )
+                if ch_name:
+                    existing = self._chat_cache.get(str(guid), {})
+                    existing["name"] = ch_name
+                    ch_username = self._dig(ch, "username")
+                    if ch_username:
+                        existing["username"] = ch_username
+                    self._chat_cache[str(guid)] = existing
 
             for ch in chats:
                 guid = self._dig(ch, "object_guid")
@@ -394,8 +612,8 @@ class RubikaCollector(BaseCollector):
                             "id": mid,
                             "platform": "rubika",
                             "text": text,
-                            "chat_id": str(guid),
-                            "chat_name": str(guid),
+                            "chat_id": self._chat_cache.get(str(guid), {}).get("name") or str(guid),
+                            "chat_name": self._chat_cache.get(str(guid), {}).get("name", str(guid)),
                             "chat_type": "channel" if "channel" in ctype else "group",
                             "chat_username": None,
                             "chat_link": None,
@@ -422,27 +640,52 @@ class RubikaCollector(BaseCollector):
     async def fetch_history(
         self, since: datetime = None
     ) -> list[dict[str, Any]]:
-        """fetch_history از get_chats استفاده می‌کنه."""
+        """fetch_history از get_chats استفاده می‌کند."""
         return await self.fetch_messages(since)
 
     @staticmethod
     def _extract_list(resp, key: str):
+        """استخراج لیست از پاسخ rubpy — Update یا dict یا attribute."""
+        data = {}
+
         try:
-            data = (
-                resp.to_dict()
-                if hasattr(resp, "to_dict")
-                else (resp or {})
-            )
+            td = getattr(resp, "to_dict", None)
+            if td is not None:
+                if callable(td):
+                    result = td()
+                    if isinstance(result, dict):
+                        data = result
+                elif isinstance(td, dict):
+                    data = td
         except Exception:
-            data = {}
+            pass
+
+        if not data and isinstance(resp, dict):
+            data = resp
 
         if isinstance(data, dict):
             val = data.get(key)
             if isinstance(val, list):
                 return val
             for v in data.values():
-                if isinstance(v, dict) and isinstance(v.get(key), list):
-                    return v[key]
+                if isinstance(v, dict):
+                    inner = v.get(key)
+                    if isinstance(inner, list):
+                        return inner
+
+        try:
+            val = getattr(resp, key, None)
+            if isinstance(val, list):
+                return val
+            for attr in ("update", "data", "result", "message"):
+                inner = getattr(resp, attr, None)
+                if inner is not None:
+                    inner_val = getattr(inner, key, None)
+                    if isinstance(inner_val, list):
+                        return inner_val
+        except Exception:
+            pass
+
         return []
 
     @staticmethod

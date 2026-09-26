@@ -55,18 +55,27 @@ class Brain(
         db: Any | None = None,
         read_only: bool = False,
         api_key: str | None = None,
-        model: str = DEFAULT_MODEL,
+        model: str | None = None,
         full_access: bool = False,
         use_api_memory: bool = False,
         memory_api_url: str = "",
         memory_api_key: str = "",
     ):
+        t0 = time.monotonic()
+
+        # 🎯 انتخاب هوشمند مدل
+        if model is None:
+            model = (
+                (AI or {}).get("model")
+                or DEFAULT_MODEL
+                or "qwen2.5:3b"
+            )
+
         log_info(
             f"🧠 [BRAIN:init] شروع | model={model} "
             f"read_only={read_only} full_access={full_access}"
         )
-        t0 = time.monotonic()
-
+            
         PersianBrainHandler.setup_environment()
 
         self.event_bus = event_bus

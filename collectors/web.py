@@ -424,7 +424,7 @@ class WebCollector(BaseCollector):
         attempts = []
         if CHROME_PATH:
             attempts.append({**base, "executable_path": CHROME_PATH})
-        for ch in ("chrome", "msedge", None):
+        for ch in ("chrome", "msedge"):
             attempts.append({**base, **({"channel": ch} if ch else {})})
 
         for opt in attempts:

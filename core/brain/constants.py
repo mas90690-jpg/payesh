@@ -30,10 +30,10 @@ except ImportError as _cfg_err:
     LOGS_DIR = STORAGE_DIR / "logs"
     AI = {
         "enabled": True,
-        "model": "deepseek-chat",
-        "url": "https://api.deepseek.com/v1",
+        "model": "qwen2.5:3b",
+        "url": "http://127.0.0.1:11434",
         "timeout": 120,
-        "priority": "auto",
+        "priority": "ollama",
     }
     AI_ENABLED = True
     PLUGINS_CONFIG = {}
@@ -56,7 +56,10 @@ MAX_CONTENT_LENGTH = 100_000
 MAX_AGENT_STEPS = 30
 MAX_CONTEXT_TOKENS = 16384
 CACHE_TTL_DAYS = 14
-DEFAULT_MODEL = "deepseek-chat"
+# 🎯 اولویت: config.AI → fallback امن
+DEFAULT_MODEL = (AI or {}).get("model") or "qwen2.5:3b"
+DEFAULT_PROVIDER = (AI or {}).get("priority") or "ollama"
+DEFAULT_BASE_URL = (AI or {}).get("url") or "http://127.0.0.1:11434"
 
 # ─── سقف‌های داخلی ───
 LOG_TAIL_BYTES = 256 * 1024

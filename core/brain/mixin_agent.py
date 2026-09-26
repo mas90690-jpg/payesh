@@ -5,7 +5,7 @@ import json
 import re
 import time
 from typing import Any
-
+from core.brain.constants import DEFAULT_MODEL
 from core.brain.constants import (
     AI,
     AI_ENABLED,
@@ -333,16 +333,14 @@ class AgentMixin:
                     )
                     if (
                         self._ai_priority != "ollama"
-                        and selected_model != "deepseek-chat"
-                        and fallback_count < max_fallback
+                        and selected_model != DEFAULT_MODEL
                     ):
-                        fallback_count += 1
                         log_warning(
                             f"⚠️ [BRAIN:agent] fallback به "
-                            f"deepseek-chat "
+                            f"{DEFAULT_MODEL} "
                             f"({fallback_count}/{max_fallback})"
                         )
-                        selected_model = "deepseek-chat"
+                        selected_model = DEFAULT_MODEL
                         continue
                     final_answer = f"❌ خطای API: {e}"
                     break

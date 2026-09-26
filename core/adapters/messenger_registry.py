@@ -155,10 +155,6 @@ async def notify_admins(text: str) -> bool:
 
     sender = get_sender(platform)
     if not sender:
-        log_warning(
-            f"⚠️ [MSGR:notify] sender نیست برای platform={platform} | "
-            f"registered={get_registered_platforms()}"
-        )
         return False
 
     # ─── ارسال به هر admin (با timeout per-admin) ───

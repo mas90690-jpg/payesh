@@ -22,7 +22,14 @@ main.py — نقطهٔ ورود ربات پایش سرنخ.
   - ✅ حفظ همهٔ FIXهای نسخهٔ ۵.
 """
 from __future__ import annotations
-
+import sys, os
+if sys.platform == "win32":
+    os.system("chcp 65001 > nul 2>&1")
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 import asyncio
 import os
 import platform
@@ -677,7 +684,7 @@ async def main() -> None:
         # ═══════════════════════════════════════
         # گزارش ری‌استارت — async + منتظر Bale
         # ═══════════════════════════════════════
-        bale_ready = await _wait_for_bale_sender()
+        bale_ready = False   # بله فقط پایشگر است — نیازی به sender نیست
 
         if bale_ready:
             try:

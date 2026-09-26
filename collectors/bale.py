@@ -2,16 +2,16 @@
 """
 کلکتور بله (Bale) — کاربر عادی روی web.bale.ai
 
-نسخهٔ ۷ (استاندارد + دقیق):
-  - 🎯 _launch_context استاندارد با تصمیم‌گیری صریح (channel یا executable_path)
-  - 🎯 cleanup خودکار قفل‌های پروفایل قبل از launch
+نسخهٔ ۸ (فقط‌خواندن):
+  - 🎯 _launch_context استاندارد (channel یا executable_path)
+  - 🎯 cleanup خودکار قفل‌های پروفایل
   - 🎯 recovery خودکار در صورت «profile in use»
-  - 🎯 حذف کامل CHROME_PATH از fallback زنجیره‌ای
-  - 🎯 ترتیب درست ارسال: اول اسم، بعد URL عددی
-  - 🎯 گارد گروه هدف (مثل ایتا)
+  - 🎯 گارد گروه هدف
   - 🎯 استخراج sender_id/sender_name در چت گروهی
   - 🎯 نگاشت پایدار peer_id → name
-  - 🎯 استخراج chat_username/chat_link
+  - ❌ send_message حذف شد — ربات API جداگانه ارسال می‌کند
+  - ❌ چک «چت مدیر» حذف شد — همه چت‌ها اسکرپ می‌شوند
+  - ❌ تب دوم ارسال حذف شد — فقط یک تب (سریع‌تر)
 """
 import asyncio
 import hashlib
@@ -154,9 +154,13 @@ class BaleCollector(BaseCollector):
         self._targets = get_target_groups()
         self._kw = get_keyword_finder()
         self._page_lock = asyncio.Lock()
-        # ── قفل سراسری برای ارسال (جلوگیری از تداخل بین تسک‌ها) ──
+        # ── قفل سراسری برای ارسال (نگه داشته شد، ولی استفاده نمی‌شود) ──
         if not hasattr(BaleCollector, "_send_lock"):
             BaleCollector._send_lock = asyncio.Lock()
+
+        # ── قفل سراسری برای connect (جلوگیری از race) ──
+        if not hasattr(BaleCollector, "_connect_lock"):
+            BaleCollector._connect_lock = asyncio.Lock()
 
         from config import STORAGE_DIR
 
@@ -270,12 +274,10 @@ class BaleCollector(BaseCollector):
             return
         peer_id = str(peer_id).strip()
         chat_name = str(chat_name).strip()
-        # ── فقط اگه چت خصوصی و معتبر بود ──
-        # (از آلودگی نگاشت با چت‌های غیرمرتبط جلوگیری می‌کنه)
         if peer_id in self._chat_id_map:
-            # اگه قبلاً ذخیره شده، بازنویسی نکن
             return
         self._chat_id_map[peer_id] = chat_name
+
     # ═══════════════════════════════════════════════════
     # خواص
     # ═══════════════════════════════════════════════════
@@ -324,63 +326,82 @@ class BaleCollector(BaseCollector):
     # اتصال
     # ═══════════════════════════════════════════════════
     async def connect(self, headless: bool | None = None) -> bool:
-        try:
-            if async_playwright is None:
-                log_error("playwright نصب نیست")
+        # 🎯 اگر از قبل وصل هستیم، رد کن
+        if self._connected and self._context:
+            log_info("ℹ️ [bale:connect] از قبل متصل — connect تکراری رد شد")
+            return True
+
+        # 🎯 قفل: فقط یکی در آنِ واحد connect بزند
+        async with BaleCollector._connect_lock:
+            if self._connected and self._context:
+                log_info("ℹ️ [bale:connect] توی قفل — از قبل متصل")
+                return True
+
+            if self._context:
+                log_warning("⚠️ [bale:connect] context قدیمی باز — بستن")
+                try:
+                    await self._context.close()
+                except Exception:
+                    pass
+                self._context = None
+                self._page = None
+                self._send_page = None
+
+            try:
+                if async_playwright is None:
+                    log_error("playwright نصب نیست")
+                    return False
+
+                use_headless = (
+                    self.headless if headless is None else headless
+                )
+                self._pw = await async_playwright().start()
+                self._context = await self._launch_context(use_headless)
+
+                # ── فقط یک تب برای خواندن پیام‌ها ──
+                self._page = (
+                    self._context.pages[0]
+                    if self._context.pages
+                    else await self._context.new_page()
+                )
+                await self._page.goto(
+                    BALE_WEB_URL, wait_until="domcontentloaded"
+                )
+
+                # 🎯 تب دوم حذف شد — فقط‌خواندن
+                self._send_page = None
+
+                for i in range(20):
+                    await asyncio.sleep(2)
+                    if await self._is_logged_in():
+                        self._connected = True
+                        self._needs_backfill = True
+                        self._set_status(ConnectionStatus.CONNECTED)
+                        log_success(
+                            f"✅ اتصال بله‌وب برقرار شد — "
+                            f"بعد از {i+1} تلاش (فقط‌خواندن)"
+                        )
+                        # 🎯 register_sender غیرفعال شد
+                        log_info(
+                            "ℹ️ [bale:connect] send_message غیرفعال — "
+                            "ربات API جداگانه ارسال می‌کند"
+                        )
+                        return True
+
+                await self.dump_dom()
+                log_error("نشست بله‌وب تشخیص داده نشد.")
+                await self.disconnect()
                 return False
 
-            use_headless = (
-                self.headless if headless is None else headless
-            )
-            self._pw = await async_playwright().start()
-            self._context = await self._launch_context(use_headless)
-
-            # ── تب اصلی برای خواندن پیام‌ها ──
-            self._page = (
-                self._context.pages[0]
-                if self._context.pages
-                else await self._context.new_page()
-            )
-            await self._page.goto(
-                BALE_WEB_URL, wait_until="domcontentloaded"
-            )
-
-            # ── تب دوم برای ارسال پیام (جدا از تب خواندن) ──
-            self._send_page = await self._context.new_page()
-            await self._send_page.goto(
-                BALE_WEB_URL, wait_until="domcontentloaded"
-            )
-
-            for i in range(20):
-                await asyncio.sleep(2)
-                if await self._is_logged_in():
-                    self._connected = True
-                    self._needs_backfill = True
-                    self._set_status(ConnectionStatus.CONNECTED)
-                    log_success(
-                        f"✅ اتصال بله‌وب برقرار شد — "
-                        f"بعد از {i+1} تلاش"
-                    )
-                    messenger_registry.register_sender(
-                        _PLATFORM, self.send_message
-                    )
-                    return True
-
-            await self.dump_dom()
-            log_error("نشست بله‌وب تشخیص داده نشد.")
-            await self.disconnect()
-            return False
-
-        except Exception as e:
-            log_error(f"خطا در اتصال بله‌وب: {e}")
-            self._set_error(str(e))
-            return False
+            except Exception as e:
+                log_error(f"خطا در اتصال بله‌وب: {e}")
+                self._set_error(str(e))
+                return False
 
     # ═══════════════════════════════════════════════════
     # 🎯 launch context — استاندارد
     # ═══════════════════════════════════════════════════
     async def _cleanup_profile_locks(self):
-        """پاک کردن فایل‌های قفل پروفایل."""
         for name in _PROFILE_LOCK_FILES:
             path = os.path.join(self._user_data_dir, name)
             try:
@@ -394,7 +415,6 @@ class BaleCollector(BaseCollector):
                 pass
 
     def _force_kill_chrome(self):
-        """کشتن پروسه‌های Chrome."""
         try:
             subprocess.run(
                 ["taskkill", "/F", "/IM", "chrome.exe"],
@@ -404,7 +424,6 @@ class BaleCollector(BaseCollector):
             pass
 
     async def _launch_context(self, use_headless: bool):
-        """باز کردن context با تصمیم‌گیری صریح (فقط یک منبع)."""
         from config import CHROME_PATH, get_browser_proxy
 
         base_args = [
@@ -532,14 +551,73 @@ class BaleCollector(BaseCollector):
         return ""
 
     async def _detect_chat_type(self) -> str:
+        """
+        تشخیص نوع چت بله — فقط در چت باز فعلی (header).
+        
+        ترتیب:
+          ۱) نشانه‌های گروه (اول)
+          ۲) آیکن‌های چت (Tv/Bot/Group) — فقط در header
+          ۳) پیش‌فرض: private
+        """
         try:
-            url = (self._page.url or "").lower()
-            if "/g" in url or "group" in url:
-                return "group"
-        except Exception:
-            pass
-        return "private"
+            # ═══ مرحله ۱: نشانه‌های گروه ═══
+            group_markers = [
+                "button[aria-label*='اعضا']",
+                "button[aria-label*='Members']",
+                "button[aria-label*='عضو']",
+                "[class*='member-count']",
+                "[class*='subscriber']",
+                "[class*='group-info']",
+                "[class*='groupMembers']",
+            ]
+            for sel in group_markers:
+                try:
+                    el = await self._page.query_selector(sel)
+                    if el:
+                        return "group"
+                except Exception:
+                    continue
 
+            # ═══ مرحله ۲: آیکن‌ها — فقط در header چت باز ═══
+            header = None
+            for header_sel in (
+                '[class*="chat-header"]',
+                '[class*="conversation-header"]',
+                '[class*="topbar"]',
+                '[data-testid="chat-header"]',
+                '[class*="header"]',
+            ):
+                try:
+                    header = await self._page.query_selector(header_sel)
+                    if header:
+                        break
+                except Exception:
+                    continue
+
+            if header:
+                icon_checks = [
+                    ('svg[aria-label="Tv-icon"]', "channel"),
+                    ('svg[aria-label="Bot-icon"]', "bot"),
+                    ('svg[aria-label="Group-icon"]', "group"),
+                ]
+                for sel, ctype in icon_checks:
+                    try:
+                        el = await header.query_selector(sel)
+                        if el:
+                            return ctype
+                    except Exception:
+                        continue
+
+            # ═══ پیش‌فرض: private ═══
+            return "private"
+
+        except Exception as e:
+            log_warning(
+                f"⚠️ [bale:detect_chat_type] "
+                f"{type(e).__name__}: {e} — پیش‌فرض private"
+            )
+            return "private"
+            
     async def _extract_sender_from_bubble(
         self, msg
     ) -> tuple[str, str]:
@@ -633,7 +711,7 @@ class BaleCollector(BaseCollector):
     async def _should_skip_chat(
         self, chat, chat_name: str, idx: int
     ) -> bool:
-        # رد بات‌ها
+        # 🎯 فقط بات‌ها رد می‌شوند — چت مدیر دیگر skip نمی‌شود
         try:
             bot_icon = await chat.query_selector(
                 'svg[aria-label="Bot-icon"]'
@@ -643,14 +721,6 @@ class BaleCollector(BaseCollector):
                 return True
         except Exception:
             pass
-        # ── 🎯 skip چت مدیر ──
-        admin_name_env = os.getenv("BALE_ADMIN_CHAT", "").strip()
-        if (
-            admin_name_env
-            and chat_name.strip() == admin_name_env.strip()
-        ):
-            log_info(f"   ⏭️ [{idx+1}] چت مدیر — رد شد")
-            return True            
 
         # گارد گروه هدف
         if self._is_valid_chat_name(chat_name):
@@ -706,9 +776,25 @@ class BaleCollector(BaseCollector):
         skipped_bot = 0
         failed = 0
 
-        for idx, chat in enumerate(chat_items[: self._max_chats]):
+        chats_to_process = (
+            chat_items
+            if self._max_chats <= 0
+            else chat_items[: self._max_chats]
+        )
+        for idx, chat in enumerate(chats_to_process):
             try:
                 chat_name = await self._extract_item_title(chat)
+
+                # 🎯 skip چت‌های با پیام قدیمی
+                try:
+                    preview = (await chat.inner_text() or "").strip()
+                    old_markers = ("دیروز", "هفته", "ماه", "سال", "روز پیش")
+                    if any(m in preview for m in old_markers):
+                        skipped_old = getattr(self, "_skipped_old", 0) + 1
+                        self._skipped_old = skipped_old
+                        continue
+                except Exception:
+                    pass
 
                 if await self._should_skip_chat(chat, chat_name, idx):
                     try:
@@ -748,8 +834,10 @@ class BaleCollector(BaseCollector):
         log_success(
             f"🏁 [bale:scrape] کامل | پردازش={processed} | "
             f"غیرهدف={skipped_target} | بات={skipped_bot} | "
+            f"قدیمی={getattr(self, '_skipped_old', 0)} | "
             f"خطا={failed}"
         )
+        self._skipped_old = 0
 
     async def _extract_item_title(self, chat_item) -> str:
         for sel in TITLE_SELECTORS:
@@ -781,6 +869,7 @@ class BaleCollector(BaseCollector):
         if not chat_name or chat_name == "بله":
             return
 
+        # 🐛 FIX: تشخیص درست chat_type
         chat_type = await self._detect_chat_type()
         if not peer_id:
             peer_id = await self._get_current_peer_id()
@@ -914,295 +1003,17 @@ class BaleCollector(BaseCollector):
         return "بله"
 
     # ═══════════════════════════════════════════════════
-    # ارسال پیام
+    # ارسال پیام — غیرفعال
     # ═══════════════════════════════════════════════════
     async def send_message(
         self, chat_id, chat_type, text: str
     ) -> bool:
-        if not self._page or not chat_id or not text:
-            return False
-        if not self._connected:
-            return False
-
-        # ── قفل سراسری: فقط یکی می‌تونه پیام بفرسته ──
-        async with BaleCollector._send_lock:
-            try:
-                return await asyncio.wait_for(
-                    self._send_message_inner(chat_id, chat_type, text),
-                    timeout=60,
-                )
-            except TimeoutError:
-                log_warning(
-                    f"⏰ [bale:send] timeout 60s | chat_id={chat_id}"
-                )
-                try:
-                    await self._return_to_main()
-                except Exception:
-                    pass
-                return False
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                log_warning(
-                    f"⚠️ [bale:send] {type(e).__name__}: {e} | "
-                    f"chat_id={chat_id}"
-                )
-                return False
-                
-    async def _send_message_inner(
-        self, chat_id, chat_type, text: str
-    ) -> bool:
-        original_chat_id = str(chat_id)
-        is_numeric = original_chat_id.isdigit()
-        admin_name_env = os.getenv("BALE_ADMIN_CHAT", "").strip()
-
-        async with self._page_lock:
-            chunks = [
-                text[i:i + 4000]
-                for i in range(0, len(text), 4000)
-            ] or [text]
-
-            opened = False
-            for chunk in chunks:
-                opened = False
-
-                if is_numeric:
-                    cached = self._chat_id_map.get(original_chat_id)
-                    if cached and self._is_valid_chat_name(cached):
-                        log_info(
-                            f"🔁 نگاشت پایدار: "
-                            f"{original_chat_id} → «{cached}»"
-                        )
-                        opened = await self._open_chat_by_scrolling(
-                            cached
-                        )
-                    if not opened and admin_name_env:
-                        log_info(
-                            f"🔍 تلاش با BALE_ADMIN_CHAT: "
-                            f"«{admin_name_env}»"
-                        )
-                        opened = await self._open_chat_by_scrolling(
-                            admin_name_env
-                        )
-                    if not opened:
-                        log_info(
-                            f"🔍 تلاش نهایی با URL عددی: "
-                            f"{original_chat_id}"
-                        )
-                        opened = await self._open_chat_direct_strict(
-                            original_chat_id
-                        )
-                    if not opened:
-                        log_warning(
-                            f"❌ چت «{original_chat_id}» پیدا نشد. "
-                            f"در .env مقدار BALE_ADMIN_CHAT را "
-                            f"دقیقاً برابر نامِ چتِ مدیر در بله "
-                            f"قرار بده."
-                        )
-                        await self._return_to_main()
-                        return False
-                else:
-                    opened = await self._open_chat_direct(chat_id)
-                    if not opened:
-                        opened = await self._open_chat_by_scrolling(
-                            chat_id
-                        )
-                    if not opened:
-                        log_warning(f"❌ چت «{chat_id}» پیدا نشد")
-                        await self._return_to_main()
-                        return False
-
-                if not await self._type_and_send(chunk):
-                    log_warning("❌ ارسال ناموفق")
-                    await self._return_to_main()
-                    return False
-                await asyncio.sleep(0.5)
-
-            if is_numeric and opened:
-                opened_title = await self._get_open_chat_title()
-                # فقط اگه عنوان معتبر بود AND با admin_name_env هماهنگ بود
-                if (
-                    opened_title
-                    and opened_title != "بله"
-                    and self._is_valid_chat_name(opened_title)
-                    and (
-                        not admin_name_env
-                        or opened_title.strip() == admin_name_env.strip()
-                    )
-                ):
-                    self._chat_id_map[original_chat_id] = opened_title
-                    self._save_private_chats()
-                    
-            await self._return_to_main()
-            log_success(
-                f"📤 بله: پیام به «{original_chat_id}» ارسال شد"
-            )
-            return True
-
-    async def _open_chat_direct_strict(self, chat_id) -> bool:
-        try:
-            cid = str(chat_id).strip()
-            if not cid.isdigit():
-                return False
-            prev_url = self._page.url or ""
-            url = f"https://web.bale.ai/#/chat/{cid}"
-            await self._page.goto(url, wait_until="domcontentloaded")
-            await asyncio.sleep(2.5)
-            new_url = self._page.url or ""
-            if new_url == prev_url:
-                log_warning(
-                    f"⚠️ URL تغییر نکرد — بله آی‌دی {cid} را "
-                    f"در URL پشتیبانی نمی‌کند"
-                )
-                return False
-            if cid not in new_url:
-                log_warning(f"⚠️ آی‌دی {cid} در URL نیست: {new_url}")
-                return False
-            if not await self._has_composer():
-                log_warning(f"⚠️ composer در چت {cid} پیدا نشد")
-                return False
-            title = await self._get_open_chat_title()
-            if title == "بله":
-                log_warning(
-                    "⚠️ عنوان چت «بله» شد — به چت نرسیدیم"
-                )
-                return False
-            
-            # ── چک نهایی: عنوان باید با admin_name_env یکی باشه ──
-            admin_name_env = os.getenv("BALE_ADMIN_CHAT", "").strip()
-            if admin_name_env and title.strip() != admin_name_env.strip():
-                log_warning(
-                    f"⚠️ چت اشتباه در URL: «{title}» "
-                    f"(انتظار: «{admin_name_env}»)"
-                )
-                return False
-            log_success(
-                f"✅ چت «{title}» (آی‌دی {cid}) با URL باز شد"
-            )
-            return True
-        except Exception as e:
-            log_warning(f"_open_chat_direct_strict خطا: {e}")
-            return False
-
-    async def _return_to_main(self):
-        try:
-            await self._page.goto(
-                BALE_WEB_URL, wait_until="domcontentloaded"
-            )
-            await asyncio.sleep(1)
-        except Exception:
-            pass
-
-    async def _has_composer(self) -> bool:
-        for sel in COMPOSER_SELECTORS:
-            try:
-                el = await self._page.query_selector(sel)
-                if el and await el.is_visible():
-                    return True
-            except Exception:
-                continue
+        """🎯 غیرفعال — پایشگر فقط می‌خواند؛ ارسال با ربات API."""
+        log_info(
+            f"⏭️ [bale:send] غیرفعال (فقط‌خواندن) | "
+            f"chat_id={chat_id}"
+        )
         return False
-
-    async def _open_chat_direct(self, chat_id) -> bool:
-        from urllib.parse import quote
-        try:
-            cid = str(chat_id).strip()
-            if cid.startswith("@"):
-                url = f"https://web.bale.ai/#/@{quote(cid[1:])}"
-            elif cid.isdigit():
-                url = f"https://web.bale.ai/#/chat/{cid}"
-            else:
-                return False
-            await self._page.goto(url, wait_until="domcontentloaded")
-            await asyncio.sleep(2)
-            return await self._has_composer()
-        except Exception:
-            return False
-
-    async def _open_chat_by_scrolling(self, chat_id) -> bool:
-        try:
-            await self._page.goto(
-                BALE_WEB_URL, wait_until="domcontentloaded"
-            )
-            await asyncio.sleep(1.5)
-            cid = str(chat_id).strip().lower()
-            for _ in range(3):
-                try:
-                    await self._page.mouse.wheel(0, 600)
-                except Exception:
-                    pass
-                await asyncio.sleep(0.4)
-            items, _ = await self._find_chat_items()
-            for it in items[:60]:
-                try:
-                    title = await self._extract_item_title(it)
-                    if not title or title == "بله":
-                        continue
-                    tl = title.lower()
-                    # فقط تطبیق دقیق یا تطبیق کامل کلمه
-                    if cid == tl:
-                        try:
-                            await self._page.evaluate(
-                                "(el) => el.click()", it
-                            )
-                        except Exception:
-                            continue
-                        await asyncio.sleep(1.5)
-                        if await self._has_composer():
-                            opened_title = (
-                                await self._get_open_chat_title()
-                            )
-                            log_success(
-                                f"✅ چت باز شد: «{opened_title}» "
-                                f"(جستجو با «{chat_id}»)"
-                            )
-                            return True
-                        try:
-                            await self._page.keyboard.press("Escape")
-                            await asyncio.sleep(0.3)
-                        except Exception:
-                            pass
-                except Exception:
-                    continue
-            return False
-        except Exception as e:
-            log_warning(f"_open_chat_by_scrolling ناموفق: {e}")
-            return False
-
-    async def _type_and_send(self, text: str) -> bool:
-        try:
-            composer = None
-            for sel in COMPOSER_SELECTORS:
-                try:
-                    el = await self._page.query_selector(sel)
-                    if el and await el.is_visible():
-                        composer = el
-                        break
-                except Exception:
-                    continue
-            if not composer:
-                return False
-            await composer.click()
-            await asyncio.sleep(0.3)
-            try:
-                await composer.fill("")
-            except Exception:
-                await self._page.keyboard.press("Control+A")
-                await self._page.keyboard.press("Delete")
-            await asyncio.sleep(0.2)
-            lines = text.split("\n")
-            for i, line in enumerate(lines):
-                if line:
-                    await composer.type(line, delay=8)
-                if i < len(lines) - 1:
-                    await self._page.keyboard.press("Shift+Enter")
-                    await asyncio.sleep(0.05)
-            await asyncio.sleep(0.3)
-            await self._page.keyboard.press("Enter")
-            await asyncio.sleep(0.6)
-            return True
-        except Exception:
-            return False
 
     async def dump_dom(self, path: str = None) -> str:
         path = path or os.path.join(

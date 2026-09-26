@@ -46,9 +46,8 @@ class LearningEngine:
             self.failed_interactions = data.get("failed", [])
             log_info(
                 f"📚 [BRAIN:learn] بارگذاری | "
-                f"patterns={len(self.learned_patterns)} "
-                f"success={len(self.successful_interactions)} "
-                f"failed={len(self.failed_interactions)}"
+                f"patterns={len(self.learned_patterns)} | "
+                f"history={len(self.successful_interactions)}/{len(self.failed_interactions)}"
             )
         except json.JSONDecodeError as e:
             log_warning(

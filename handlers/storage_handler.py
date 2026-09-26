@@ -67,6 +67,7 @@ class StorageHandler(BaseHandler):
             "admin_skipped": 0,
             "target_skipped": 0,
             "t2_only_skipped": 0,
+            "self_skipped": 0,
             "errors": 0,
         }
 
@@ -155,6 +156,44 @@ class StorageHandler(BaseHandler):
                 return True
 
         return False
+  
+    # ═══════════════════════════════════════════
+    # گارد ۰: پیام خودی / Saved Messages
+    # ═══════════════════════════════════════════
+    _SAVED_MARKERS = (
+        "پیام‌های ذخیره شده",
+        "پیامهای ذخیره شده",
+        "Saved Messages",
+        "فضای شخصی",
+        "ذخیره‌شده",
+    )
+
+    def _is_self_or_saved(self, raw: dict) -> bool:
+        """تشخیص پیام خودی یا Saved Messages — باید رد شود.
+
+        سه شرط:
+          ۱) chat_name یکی از نشانه‌های Saved باشد.
+          ۲) chat_id == user_id (چت با خودت).
+          ۳) chat_name == user_id (چت با خودت — روبیکا).
+        """
+        chat_name = str(raw.get("chat_name") or "").strip()
+        chat_id = str(raw.get("chat_id") or "").strip()
+        user_id = str(raw.get("user_id") or "").strip()
+
+        # شرط ۱: Saved Messages
+        for marker in self._SAVED_MARKERS:
+            if marker in chat_name:
+                return True
+
+        # شرط ۲: chat_id == user_id
+        if chat_id and user_id and chat_id == user_id:
+            return True
+
+        # شرط ۳: chat_name == user_id (روبیکا)
+        if chat_name and user_id and chat_name == user_id:
+            return True
+
+        return False
         
     # ═══════════════════════════════════════════
     # گارد ۲: گروه هدف
@@ -236,6 +275,16 @@ class StorageHandler(BaseHandler):
         platform = raw.get("platform", "?")
         chat_name = raw.get("chat_name", "?")
         text = (raw.get("text") or raw.get("caption") or "").strip()
+
+        # ─── گارد ۰: پیام خودی/Saved ───
+        if self._is_self_or_saved(raw):
+            self.stats["self_skipped"] += 1
+            log_info(
+                f"⏭️ [STORAGE:guard0] پیام خودی/Saved — رد | "
+                f"platform={platform} "
+                f"chat={chat_name[:_LOG_PREVIEW_LEN]!r}"
+            )
+            return
 
         # ─── گارد ۱: مدیر ───
         if self._is_admin_message(raw):
@@ -594,6 +643,7 @@ class StorageHandler(BaseHandler):
             f"t2_only={self.stats['t2_only_skipped']} | "
             f"target_skip={self.stats['target_skipped']} | "
             f"admin_skip={self.stats['admin_skipped']} | "
+            f"self_skip={self.stats['self_skipped']} | "
             f"media={self.stats['media_messages']} | "
             f"errors={self.stats['errors']}"
         )
