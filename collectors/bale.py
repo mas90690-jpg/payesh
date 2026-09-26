@@ -146,6 +146,7 @@ class BaleCollector(BaseCollector):
         self._pw = None
         self._context = None
         self._page = None
+        self._send_page = None
         self._connected = False
         self._messages_queue: list[dict[str, Any]] = []
         self._seen_ids = set()
@@ -153,6 +154,9 @@ class BaleCollector(BaseCollector):
         self._targets = get_target_groups()
         self._kw = get_keyword_finder()
         self._page_lock = asyncio.Lock()
+        # ── قفل سراسری برای ارسال (جلوگیری از تداخل بین تسک‌ها) ──
+        if not hasattr(BaleCollector, "_send_lock"):
+            BaleCollector._send_lock = asyncio.Lock()
 
         from config import STORAGE_DIR
 
@@ -330,12 +334,20 @@ class BaleCollector(BaseCollector):
             )
             self._pw = await async_playwright().start()
             self._context = await self._launch_context(use_headless)
+
+            # ── تب اصلی برای خواندن پیام‌ها ──
             self._page = (
                 self._context.pages[0]
                 if self._context.pages
                 else await self._context.new_page()
             )
             await self._page.goto(
+                BALE_WEB_URL, wait_until="domcontentloaded"
+            )
+
+            # ── تب دوم برای ارسال پیام (جدا از تب خواندن) ──
+            self._send_page = await self._context.new_page()
+            await self._send_page.goto(
                 BALE_WEB_URL, wait_until="domcontentloaded"
             )
 
@@ -912,29 +924,31 @@ class BaleCollector(BaseCollector):
         if not self._connected:
             return False
 
-        try:
-            return await asyncio.wait_for(
-                self._send_message_inner(chat_id, chat_type, text),
-                timeout=30,
-            )
-        except TimeoutError:
-            log_warning(
-                f"⏰ [bale:send] timeout 30s | chat_id={chat_id}"
-            )
+        # ── قفل سراسری: فقط یکی می‌تونه پیام بفرسته ──
+        async with BaleCollector._send_lock:
             try:
-                await self._return_to_main()
-            except Exception:
-                pass
-            return False
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            log_warning(
-                f"⚠️ [bale:send] {type(e).__name__}: {e} | "
-                f"chat_id={chat_id}"
-            )
-            return False
-
+                return await asyncio.wait_for(
+                    self._send_message_inner(chat_id, chat_type, text),
+                    timeout=60,
+                )
+            except TimeoutError:
+                log_warning(
+                    f"⏰ [bale:send] timeout 60s | chat_id={chat_id}"
+                )
+                try:
+                    await self._return_to_main()
+                except Exception:
+                    pass
+                return False
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log_warning(
+                    f"⚠️ [bale:send] {type(e).__name__}: {e} | "
+                    f"chat_id={chat_id}"
+                )
+                return False
+                
     async def _send_message_inner(
         self, chat_id, chat_type, text: str
     ) -> bool:
