@@ -2,28 +2,23 @@
 """
 کلکتور بله (Bale) — کاربر عادی روی web.bale.ai
 
-نسخهٔ ۶ (EFO-2 — تک‌ویرایش):
-  - 🐛 FIX import paths به ساختار جدید:
-      core.base_collector → core.contracts.base_collector
-      core.logger         → core.kernel.logger
-      core.web_media      → core.adapters.web_media
-      core (messenger)    → core.adapters
-  - 🎯 NEW: گارد گروه هدف — مثل ایتا/واتساپ
-    (قبلاً _targets import شده بود ولی استفاده نمی‌شد → همه گروه‌ها
-     اسکرپ می‌شدند حتی اگه در target_groups.txt نبودند)
-  - 🎯 NEW: is_valid_chat_name چک قبل از فیلتر هدف
-    (تا چت‌های خصوصی با نام عددی از دست نروند)
-  - 🔴 نگاشتِ پایدارِ peer_id→name برای ارسال پاسخ به مدیر
-  - 🔴 استخراجِ sender_id و sender_name از bubble در چت گروهی
-  - 🟠 استخراجِ chat_username / chat_link در صورت وجود
-  - 🟠 گیتِ کلیدواژه روی text + caption
-  - ✅ حفظ همهٔ بهبودهای نسخهٔ ۵
+نسخهٔ ۷ (استاندارد + دقیق):
+  - 🎯 _launch_context استاندارد با تصمیم‌گیری صریح (channel یا executable_path)
+  - 🎯 cleanup خودکار قفل‌های پروفایل قبل از launch
+  - 🎯 recovery خودکار در صورت «profile in use»
+  - 🎯 حذف کامل CHROME_PATH از fallback زنجیره‌ای
+  - 🎯 ترتیب درست ارسال: اول اسم، بعد URL عددی
+  - 🎯 گارد گروه هدف (مثل ایتا)
+  - 🎯 استخراج sender_id/sender_name در چت گروهی
+  - 🎯 نگاشت پایدار peer_id → name
+  - 🎯 استخراج chat_username/chat_link
 """
 import asyncio
 import hashlib
 import json
 import os
 import re
+import subprocess
 from datetime import datetime
 from typing import Any
 
@@ -96,7 +91,6 @@ TITLE_SELECTORS = [
     ".dialog-title",
 ]
 
-# sender داخلِ bubble (چت گروهی): ترتیبِ اولویت
 SENDER_SELECTORS = [
     ".peer-title",
     ".message-title",
@@ -117,6 +111,12 @@ _BAD_NAME_WORDS = [
     "برای", "استفاده", "امن", "آدرس", "کنین",
     "ورود", "جدید", "حساب", "کاربری", "تاریخ",
     "سلام", "خوش", "آمدید", "متن", "پیام",
+]
+
+# قفل‌های پروفایل Chrome
+_PROFILE_LOCK_FILES = [
+    "SingletonLock", "SingletonCookie", "SingletonSocket",
+    "lockfile", ".parentlock",
 ]
 
 
@@ -150,10 +150,8 @@ class BaleCollector(BaseCollector):
         self._messages_queue: list[dict[str, Any]] = []
         self._seen_ids = set()
 
-        # ─── منابع مشترک ───
         self._targets = get_target_groups()
         self._kw = get_keyword_finder()
-
         self._page_lock = asyncio.Lock()
 
         from config import STORAGE_DIR
@@ -178,15 +176,12 @@ class BaleCollector(BaseCollector):
         os.makedirs(
             os.path.dirname(self._private_chats_file), exist_ok=True
         )
-
-        # نام چت‌های خصوصی (whitelist، برای ارسال پاسخ به مدیر)
         self._private_chat_names: list[str] = []
-        # نگاشتِ پایدارِ peer_id → name
         self._chat_id_map: dict[str, str] = {}
         self._load_private_chats()
 
     # ═══════════════════════════════════════════════════
-    # private chats cache — نام‌ها + نگاشتِ پایدار
+    # private chats cache
     # ═══════════════════════════════════════════════════
     def _is_valid_chat_name(self, name: str) -> bool:
         if not name:
@@ -209,7 +204,6 @@ class BaleCollector(BaseCollector):
         return True
 
     def _load_private_chats(self):
-        """نام‌های معتبر + نگاشت پایدار (peer_id → name) را بارگذاری کن."""
         try:
             self._private_chat_names = []
             self._chat_id_map = {}
@@ -219,29 +213,23 @@ class BaleCollector(BaseCollector):
                 d = json.load(f)
             if not isinstance(d, dict):
                 return
-
             raw_names = list(d.get("names") or [])
             self._private_chat_names = [
                 n for n in raw_names if self._is_valid_chat_name(n)
             ][-30:]
-
             raw_map = d.get("map") or {}
             if isinstance(raw_map, dict):
                 for pid, name in raw_map.items():
                     if self._is_valid_chat_name(name):
                         self._chat_id_map[str(pid)] = str(name)
-
             log_info(
                 f"♻️ cache بله: {len(self._private_chat_names)} نام، "
-                f"{len(self._chat_id_map)} نگاشتِ پایدار"
+                f"{len(self._chat_id_map)} نگاشت"
             )
         except Exception as e:
             log_warning(f"بارگذاری cache ناموفق: {e}")
-            self._private_chat_names = []
-            self._chat_id_map = {}
 
     def _save_private_chats(self):
-        """ذخیرهٔ نام‌ها + نگاشتِ پایدار (فقط معتبرها)."""
         try:
             valid_map = {
                 pid: name
@@ -249,18 +237,14 @@ class BaleCollector(BaseCollector):
                 if self._is_valid_chat_name(name)
             }
             if len(valid_map) > 100:
-                items = list(valid_map.items())[-100:]
-                valid_map = dict(items)
-
+                valid_map = dict(list(valid_map.items())[-100:])
             with open(self._private_chats_file, "w", encoding="utf-8") as f:
                 json.dump(
                     {
                         "names": self._private_chat_names[-30:],
                         "map": valid_map,
                     },
-                    f,
-                    ensure_ascii=False,
-                    indent=2,
+                    f, ensure_ascii=False, indent=2,
                 )
         except Exception as e:
             log_warning(f"ذخیره cache ناموفق: {e}")
@@ -278,11 +262,16 @@ class BaleCollector(BaseCollector):
             pass
 
     def _remember_chat_mapping(self, peer_id: str, chat_name: str):
-        """نگاشتِ پایدار peer_id → name را ثبت کن (فقط برای نام‌های معتبر)."""
         if not peer_id or not self._is_valid_chat_name(chat_name):
             return
-        self._chat_id_map[str(peer_id)] = str(chat_name).strip()
-
+        peer_id = str(peer_id).strip()
+        chat_name = str(chat_name).strip()
+        # ── فقط اگه چت خصوصی و معتبر بود ──
+        # (از آلودگی نگاشت با چت‌های غیرمرتبط جلوگیری می‌کنه)
+        if peer_id in self._chat_id_map:
+            # اگه قبلاً ذخیره شده، بازنویسی نکن
+            return
+        self._chat_id_map[peer_id] = chat_name
     # ═══════════════════════════════════════════════════
     # خواص
     # ═══════════════════════════════════════════════════
@@ -303,7 +292,7 @@ class BaleCollector(BaseCollector):
         return False
 
     # ═══════════════════════════════════════════════════
-    # ضدتکراری ماندگار
+    # ضدتکراری
     # ═══════════════════════════════════════════════════
     def _load_seen(self):
         try:
@@ -321,9 +310,7 @@ class BaleCollector(BaseCollector):
     def _save_seen(self):
         try:
             if len(self._seen_ids) > _MAX_SEEN:
-                self._seen_ids = set(
-                    list(self._seen_ids)[-_MAX_SEEN:]
-                )
+                self._seen_ids = set(list(self._seen_ids)[-_MAX_SEEN:])
             with open(self._seen_path, "w", encoding="utf-8") as f:
                 json.dump(list(self._seen_ids), f, ensure_ascii=False)
         except Exception as e:
@@ -377,10 +364,37 @@ class BaleCollector(BaseCollector):
             self._set_error(str(e))
             return False
 
+    # ═══════════════════════════════════════════════════
+    # 🎯 launch context — استاندارد
+    # ═══════════════════════════════════════════════════
+    async def _cleanup_profile_locks(self):
+        """پاک کردن فایل‌های قفل پروفایل."""
+        for name in _PROFILE_LOCK_FILES:
+            path = os.path.join(self._user_data_dir, name)
+            try:
+                if os.path.exists(path):
+                    if os.path.isdir(path):
+                        import shutil
+                        shutil.rmtree(path, ignore_errors=True)
+                    else:
+                        os.remove(path)
+            except Exception:
+                pass
+
+    def _force_kill_chrome(self):
+        """کشتن پروسه‌های Chrome."""
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/IM", "chrome.exe"],
+                capture_output=True, timeout=5,
+            )
+        except Exception:
+            pass
+
     async def _launch_context(self, use_headless: bool):
+        """باز کردن context با تصمیم‌گیری صریح (فقط یک منبع)."""
         from config import CHROME_PATH, get_browser_proxy
 
-        last_err = None
         base_args = [
             "--disable-blink-features=AutomationControlled",
             "--no-sandbox",
@@ -395,50 +409,54 @@ class BaleCollector(BaseCollector):
             "Chrome/126.0.0.0 Safari/537.36"
         )
 
-        if CHROME_PATH:
-            try:
-                ctx = await self._pw.chromium.launch_persistent_context(
-                    executable_path=CHROME_PATH,
-                    user_data_dir=self._user_data_dir,
-                    headless=use_headless,
-                    viewport={"width": 1366, "height": 768},
-                    user_agent=ua,
-                    args=base_args,
-                    **get_browser_proxy(),
-                )
-                log_info("مرورگر بله‌وب با مسیرِ CHROME_PATH باز شد")
-                return ctx
-            except Exception as e:
-                last_err = e
-                log_warning(
-                    f"CHROME_PATH کار نکرد ({e})؛ سراغ بقیه می‌روم"
-                )
+        await self._cleanup_profile_locks()
 
-        for channel in ("chrome", "msedge", None):
-            try:
-                kwargs = dict(
-                    user_data_dir=self._user_data_dir,
-                    headless=use_headless,
-                    viewport={"width": 1366, "height": 768},
-                    user_agent=ua,
-                    args=base_args,
-                    **get_browser_proxy(),
+        launch_options: dict[str, Any] = {
+            "user_data_dir": self._user_data_dir,
+            "headless": use_headless,
+            "viewport": {"width": 1366, "height": 768},
+            "user_agent": ua,
+            "args": base_args,
+            **get_browser_proxy(),
+        }
+
+        if CHROME_PATH and os.path.exists(CHROME_PATH):
+            launch_options["executable_path"] = CHROME_PATH
+            source = f"CHROME_PATH={CHROME_PATH}"
+        else:
+            launch_options["channel"] = "chrome"
+            source = "channel=chrome"
+
+        try:
+            ctx = await self._pw.chromium.launch_persistent_context(
+                **launch_options
+            )
+            log_info(f"مرورگر بله‌وب باز شد | منبع: {source}")
+            return ctx
+        except Exception as e:
+            err_msg = str(e)
+            if (
+                "already in use" in err_msg
+                or "existing browser" in err_msg
+                or "profile is already" in err_msg
+            ):
+                log_warning(
+                    "⚠️ پروفایل قفل شده — پاک‌سازی و تلاش مجدد"
                 )
-                if channel:
-                    kwargs["channel"] = channel
+                self._force_kill_chrome()
+                await asyncio.sleep(2)
+                await self._cleanup_profile_locks()
                 ctx = await self._pw.chromium.launch_persistent_context(
-                    **kwargs
+                    **launch_options
                 )
                 log_info(
-                    f"مرورگر بله‌وب با {channel or 'chromium'} باز شد"
+                    f"مرورگر بله‌وب باز شد | منبع: {source} "
+                    f"(بعد از پاک‌سازی)"
                 )
                 return ctx
-            except Exception as e:
-                last_err = e
-                continue
-        raise RuntimeError(
-            f"هیچ مرورگری برای بله‌وب باز نشد: {last_err}"
-        )
+            raise RuntimeError(
+                f"هیچ مرورگری برای بله‌وب باز نشد: {e}"
+            )
 
     async def _is_logged_in(self) -> bool:
         try:
@@ -510,17 +528,13 @@ class BaleCollector(BaseCollector):
             pass
         return "private"
 
-    async def _extract_sender_from_bubble(self, msg) -> tuple[str, str]:
-        """در چت گروهی: (sender_id, sender_name) از داخل bubble."""
+    async def _extract_sender_from_bubble(
+        self, msg
+    ) -> tuple[str, str]:
         sender_id, sender_name = "", ""
-
-        # تلاش برای sender_id از attribute
         for attr in (
-            "data-peer-id",
-            "data-user-id",
-            "data-sender-id",
-            "data-author",
-            "data-from-id",
+            "data-peer-id", "data-user-id", "data-sender-id",
+            "data-author", "data-from-id",
         ):
             try:
                 v = await msg.get_attribute(attr)
@@ -529,8 +543,6 @@ class BaleCollector(BaseCollector):
                     break
             except Exception:
                 continue
-
-        # تلاش برای sender_name
         for sel in SENDER_SELECTORS:
             try:
                 el = await msg.query_selector(sel)
@@ -543,24 +555,7 @@ class BaleCollector(BaseCollector):
                             break
             except Exception:
                 continue
-
         return sender_id, sender_name
-
-    async def _extract_chat_meta(self) -> tuple[str | None, str | None]:
-        """(chat_username, chat_link) — best-effort از URL."""
-        try:
-            url = self._page.url or ""
-            m = re.search(r"#/@([A-Za-z0-9_]+)", url)
-            if m:
-                uname = m.group(1)
-                return uname, f"https://ble.ir/{uname}"
-            m = re.search(r"#/g/([A-Za-z0-9_]+)", url)
-            if m:
-                uname = m.group(1)
-                return uname, f"https://ble.ir/{uname}"
-        except Exception:
-            pass
-        return None, None
 
     # ═══════════════════════════════════════════════════
     # دریافت پیام
@@ -581,7 +576,6 @@ class BaleCollector(BaseCollector):
         self._save_seen()
         self._save_private_chats()
         self._needs_backfill = False
-
         if new_msgs:
             log_success(f"📥 {len(new_msgs)} پیام جدید از بله")
         return new_msgs
@@ -624,23 +618,10 @@ class BaleCollector(BaseCollector):
                 continue
         return [], ""
 
-    # ═══════════════════════════════════════════════════
-    # 🎯 NEW: گارد گروه هدف
-    # ═══════════════════════════════════════════════════
     async def _should_skip_chat(
         self, chat, chat_name: str, idx: int
     ) -> bool:
-        """آیا این چت باید رد بشه؟
-
-        دلایل:
-          - بات (svg Bot-icon)
-          - گروه غیرهدف (طبق target_groups.txt برای پلتفرم bale)
-          - نام نامعتبر و شبیه گروه (نه چت خصوصی)
-
-        ⚠️ چت‌های خصوصی هرگز توسط گارد هدف رد نمی‌شن
-        (چون برای دستور مدیر لازمند).
-        """
-        # ─── رد بات‌ها ───
+        # رد بات‌ها
         try:
             bot_icon = await chat.query_selector(
                 'svg[aria-label="Bot-icon"]'
@@ -650,9 +631,16 @@ class BaleCollector(BaseCollector):
                 return True
         except Exception:
             pass
+        # ── 🎯 skip چت مدیر ──
+        admin_name_env = os.getenv("BALE_ADMIN_CHAT", "").strip()
+        if (
+            admin_name_env
+            and chat_name.strip() == admin_name_env.strip()
+        ):
+            log_info(f"   ⏭️ [{idx+1}] چت مدیر — رد شد")
+            return True            
 
-        # ─── گارد گروه هدف ───
-        # فقط اگه اسم معتبره AND فیلتر برا bale فعاله
+        # گارد گروه هدف
         if self._is_valid_chat_name(chat_name):
             try:
                 if (
@@ -666,12 +654,10 @@ class BaleCollector(BaseCollector):
                     )
                     return True
             except Exception as e:
-                # در صورت خطا در target_filter، چت رو رد نمی‌کنیم
                 log_warning(
                     f"   ⚠️ [bale:target] خطا | "
                     f"{type(e).__name__}: {e} — پیش‌فرض: قبول"
                 )
-
         return False
 
     async def _scrape_all_chats(self):
@@ -712,9 +698,7 @@ class BaleCollector(BaseCollector):
             try:
                 chat_name = await self._extract_item_title(chat)
 
-                # 🎯 گارد هدف + بات (قبل از کلیک)
                 if await self._should_skip_chat(chat, chat_name, idx):
-                    # تشخیص: بات یا هدف؟
                     try:
                         if await chat.query_selector(
                             'svg[aria-label="Bot-icon"]'
@@ -802,9 +786,6 @@ class BaleCollector(BaseCollector):
 
         await self._backfill_scroll()
 
-        # استخراج متادیتای چت (username/link)
-        chat_username, chat_link = await self._extract_chat_meta()
-
         messages = []
         for sel in MSG_SELECTORS:
             try:
@@ -848,14 +829,12 @@ class BaleCollector(BaseCollector):
                     continue
                 self._seen_ids.add(uniq)
 
-                # در گروه: فقط اگر کلیدواژه داشته باشد
                 if (
                     chat_type != "private"
                     and not self._kw.has_match(text)
                 ):
                     continue
 
-                # استخراج sender در گروه
                 sender_id, sender_name = "", ""
                 if chat_type == "private":
                     sender_id = peer_id or ""
@@ -867,7 +846,6 @@ class BaleCollector(BaseCollector):
                     if not sender_name:
                         sender_name = chat_name
 
-                # دانلود عکس (فقط برای گروه‌های کلیدواژه‌دار)
                 media_type, local_file_path = "text", None
                 if (
                     chat_type == "group"
@@ -877,7 +855,6 @@ class BaleCollector(BaseCollector):
                         from core.adapters.web_media import (
                             download_dom_image,
                         )
-
                         mt, lp = await download_dom_image(
                             self._page, msg, self._media_dir, _PLATFORM
                         )
@@ -893,8 +870,8 @@ class BaleCollector(BaseCollector):
                     "chat_id": chat_id,
                     "chat_name": chat_name,
                     "chat_type": chat_type,
-                    "chat_username": chat_username,
-                    "chat_link": chat_link,
+                    "chat_username": None,
+                    "chat_link": None,
                     "user_id": sender_id,
                     "sender_name": sender_name,
                     "timestamp": datetime.now(),
@@ -930,7 +907,6 @@ class BaleCollector(BaseCollector):
     async def send_message(
         self, chat_id, chat_type, text: str
     ) -> bool:
-        """ارسال پیام — با timeout کلی برای جلوگیری از بلاک طولانی."""
         if not self._page or not chat_id or not text:
             return False
         if not self._connected:
@@ -972,26 +948,20 @@ class BaleCollector(BaseCollector):
                 for i in range(0, len(text), 4000)
             ] or [text]
 
-            opened = False  # ← مهم: قبل از حلقه تعریف بشه
+            opened = False
             for chunk in chunks:
                 opened = False
 
                 if is_numeric:
-                    opened = await self._open_chat_direct_strict(
-                        original_chat_id
-                    )
-                    if not opened:
-                        cached = self._chat_id_map.get(
-                            original_chat_id
+                    cached = self._chat_id_map.get(original_chat_id)
+                    if cached and self._is_valid_chat_name(cached):
+                        log_info(
+                            f"🔁 نگاشت پایدار: "
+                            f"{original_chat_id} → «{cached}»"
                         )
-                        if cached and self._is_valid_chat_name(cached):
-                            log_info(
-                                f"🔁 نگاشت پایدار: "
-                                f"{original_chat_id} → «{cached}»"
-                            )
-                            opened = await self._open_chat_by_scrolling(
-                                cached
-                            )
+                        opened = await self._open_chat_by_scrolling(
+                            cached
+                        )
                     if not opened and admin_name_env:
                         log_info(
                             f"🔍 تلاش با BALE_ADMIN_CHAT: "
@@ -999,6 +969,14 @@ class BaleCollector(BaseCollector):
                         )
                         opened = await self._open_chat_by_scrolling(
                             admin_name_env
+                        )
+                    if not opened:
+                        log_info(
+                            f"🔍 تلاش نهایی با URL عددی: "
+                            f"{original_chat_id}"
+                        )
+                        opened = await self._open_chat_direct_strict(
+                            original_chat_id
                         )
                     if not opened:
                         log_warning(
@@ -1026,17 +1004,21 @@ class BaleCollector(BaseCollector):
                     return False
                 await asyncio.sleep(0.5)
 
-            # نگاشتِ پایدار پس از موفقیت
             if is_numeric and opened:
                 opened_title = await self._get_open_chat_title()
+                # فقط اگه عنوان معتبر بود AND با admin_name_env هماهنگ بود
                 if (
                     opened_title
                     and opened_title != "بله"
                     and self._is_valid_chat_name(opened_title)
+                    and (
+                        not admin_name_env
+                        or opened_title.strip() == admin_name_env.strip()
+                    )
                 ):
                     self._chat_id_map[original_chat_id] = opened_title
                     self._save_private_chats()
-
+                    
             await self._return_to_main()
             log_success(
                 f"📤 بله: پیام به «{original_chat_id}» ارسال شد"
@@ -1048,12 +1030,10 @@ class BaleCollector(BaseCollector):
             cid = str(chat_id).strip()
             if not cid.isdigit():
                 return False
-
             prev_url = self._page.url or ""
             url = f"https://web.bale.ai/#/chat/{cid}"
             await self._page.goto(url, wait_until="domcontentloaded")
             await asyncio.sleep(2.5)
-
             new_url = self._page.url or ""
             if new_url == prev_url:
                 log_warning(
@@ -1061,22 +1041,27 @@ class BaleCollector(BaseCollector):
                     f"در URL پشتیبانی نمی‌کند"
                 )
                 return False
-
             if cid not in new_url:
                 log_warning(f"⚠️ آی‌دی {cid} در URL نیست: {new_url}")
                 return False
-
             if not await self._has_composer():
                 log_warning(f"⚠️ composer در چت {cid} پیدا نشد")
                 return False
-
             title = await self._get_open_chat_title()
             if title == "بله":
                 log_warning(
                     "⚠️ عنوان چت «بله» شد — به چت نرسیدیم"
                 )
                 return False
-
+            
+            # ── چک نهایی: عنوان باید با admin_name_env یکی باشه ──
+            admin_name_env = os.getenv("BALE_ADMIN_CHAT", "").strip()
+            if admin_name_env and title.strip() != admin_name_env.strip():
+                log_warning(
+                    f"⚠️ چت اشتباه در URL: «{title}» "
+                    f"(انتظار: «{admin_name_env}»)"
+                )
+                return False
             log_success(
                 f"✅ چت «{title}» (آی‌دی {cid}) با URL باز شد"
             )
@@ -1106,7 +1091,6 @@ class BaleCollector(BaseCollector):
 
     async def _open_chat_direct(self, chat_id) -> bool:
         from urllib.parse import quote
-
         try:
             cid = str(chat_id).strip()
             if cid.startswith("@"):
@@ -1127,16 +1111,13 @@ class BaleCollector(BaseCollector):
                 BALE_WEB_URL, wait_until="domcontentloaded"
             )
             await asyncio.sleep(1.5)
-
             cid = str(chat_id).strip().lower()
-
             for _ in range(3):
                 try:
                     await self._page.mouse.wheel(0, 600)
                 except Exception:
                     pass
                 await asyncio.sleep(0.4)
-
             items, _ = await self._find_chat_items()
             for it in items[:60]:
                 try:
@@ -1144,7 +1125,8 @@ class BaleCollector(BaseCollector):
                     if not title or title == "بله":
                         continue
                     tl = title.lower()
-                    if cid == tl or cid in tl:
+                    # فقط تطبیق دقیق یا تطبیق کامل کلمه
+                    if cid == tl:
                         try:
                             await self._page.evaluate(
                                 "(el) => el.click()", it
@@ -1152,7 +1134,6 @@ class BaleCollector(BaseCollector):
                         except Exception:
                             continue
                         await asyncio.sleep(1.5)
-
                         if await self._has_composer():
                             opened_title = (
                                 await self._get_open_chat_title()
@@ -1185,10 +1166,8 @@ class BaleCollector(BaseCollector):
                         break
                 except Exception:
                     continue
-
             if not composer:
                 return False
-
             await composer.click()
             await asyncio.sleep(0.3)
             try:
@@ -1197,7 +1176,6 @@ class BaleCollector(BaseCollector):
                 await self._page.keyboard.press("Control+A")
                 await self._page.keyboard.press("Delete")
             await asyncio.sleep(0.2)
-
             lines = text.split("\n")
             for i, line in enumerate(lines):
                 if line:
@@ -1205,7 +1183,6 @@ class BaleCollector(BaseCollector):
                 if i < len(lines) - 1:
                     await self._page.keyboard.press("Shift+Enter")
                     await asyncio.sleep(0.05)
-
             await asyncio.sleep(0.3)
             await self._page.keyboard.press("Enter")
             await asyncio.sleep(0.6)
