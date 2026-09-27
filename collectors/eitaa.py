@@ -159,11 +159,17 @@ class EitaaCollector(BaseCollector):
     # اتصال
     # ═══════════════════════════════════════════════════
     async def connect(self, headless: bool | None = None) -> bool:
+        """🎯 قفل سراسری مرورگر — جلوگیری از تداخل."""
+        from core.adapters.browser_lock import BROWSER_LOCK
+        async with BROWSER_LOCK:
+            return await self._connect_locked(headless)
+
+    async def _connect_locked(self, headless: bool | None = None) -> bool:
         # 🎯 اگر از قبل وصل هستیم، رد کن
         if self._connected and self._context:
             log_info("ℹ️ [eitaa:connect] از قبل متصل — connect تکراری رد شد")
             return True
-        
+               
         # اگر context قبلی مرده، پاکش کن
         if self._context:
             log_warning("⚠️ [eitaa:connect] context قدیمی باز — بستن")
@@ -220,11 +226,8 @@ class EitaaCollector(BaseCollector):
             log_error(f"خطا در اتصال ایتا‌وب: {e}")
             self._set_error(str(e))
             return False
-
+            
     async def _launch_context(self, use_headless: bool):
-        """مرورگر را با اولویت مرورگر نصب‌شده‌ی سیستم باز می‌کند."""
-        from config import get_browser_proxy
-
         last_err = None
         for channel in ("chrome", "msedge"):
             try:
@@ -261,7 +264,6 @@ class EitaaCollector(BaseCollector):
                 )
                 if channel:
                     kwargs["channel"] = channel
-                kwargs.update(get_browser_proxy())
                 ctx = await self._pw.chromium.launch_persistent_context(
                     **kwargs
                 )

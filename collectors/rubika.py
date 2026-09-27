@@ -53,6 +53,14 @@ class RubikaCollector(BaseCollector):
         **kwargs,
     ):
         super().__init__()
+        # 🎯 اگه phone پاس نشد، از config بخون
+        if not phone:
+            try:
+                from config import get_rubika_config
+                cfg = get_rubika_config()
+                phone = cfg.get("phone", "") or ""
+            except Exception:
+                phone = ""
         self.phone = phone
         self.password = password
         self._poll_seconds = int(poll_seconds)

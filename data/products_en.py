@@ -28,7 +28,7 @@ PRODUCTS_EN = {
         "Yaraliva Nitrabor",
         "Yaramila Complex",
     ],
-    "Thio": [
+    "Tessenderlo": [
         "Thio-K",
         "Thio-Cal",
     ],

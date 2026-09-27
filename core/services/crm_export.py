@@ -62,6 +62,8 @@ CRM_HEADERS = [
     "سطح فرصت",
     "امتیاز",
     "علاقه‌مندی (کلیدواژه)",
+    "برند",
+    "محصولات",
     "متن پیام",
     "لینک",
     "رسانه",
@@ -180,7 +182,8 @@ def _rows(days: int, platform: str | None = None) -> list[Any]:
                 f"""
                 SELECT platform, chat_name, chat_link, sender_name, user_id,
                        text, keywords, media_type, timestamp, id,
-                       opportunity_score, opportunity_type
+                       opportunity_score, opportunity_type,
+                       brands, matched_products
                 FROM messages
                 WHERE {where}
                 ORDER BY opportunity_score DESC, timestamp DESC
@@ -237,6 +240,10 @@ def _record(r) -> dict[str, Any]:
         "level": _safe_str(_safe_row_get(r, "opportunity_type", "")),
         "score": score_int,
         "keywords": _safe_str(_safe_row_get(r, "keywords", "")),
+        "brands": _safe_str(_safe_row_get(r, "brands", "")),
+        "matched_products": _safe_str(
+            _safe_row_get(r, "matched_products", "")
+        ),
         "text": _safe_str(_safe_row_get(r, "text", "")).strip(),
         "link": _safe_str(_safe_row_get(r, "chat_link", "")),
         "media": (
@@ -259,13 +266,14 @@ def _row_cells(rec: dict[str, Any]) -> list[Any]:
         rec["level"],
         rec["score"],
         rec["keywords"],
+        rec.get("brands", ""),
+        rec.get("matched_products", ""),
         (rec["text"] or "")[:_TEXT_CELL_MAX],
         rec["link"],
         rec["media"],
         rec["id"],
     ]
-
-
+    
 def _atomic_write_text_with_encoding(
     path: str,
     write_fn: Callable[[IO], None],
@@ -383,7 +391,7 @@ def _style_sheet(ws) -> None:
         except Exception:
             pass
         ws.freeze_panes = "A2"
-        widths = [12, 22, 16, 20, 10, 8, 24, 60, 30, 10, 18]
+        widths = [12, 22, 16, 20, 10, 8, 24, 20, 30, 60, 30, 10, 18]
         for i, wd in enumerate(widths, 1):
             try:
                 col_letter = ws.cell(row=1, column=i).column_letter

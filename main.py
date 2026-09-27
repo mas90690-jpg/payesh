@@ -51,9 +51,7 @@ _BOOT_BANNER_WIDTH = 60
 _OBS_CLEANUP_TIMEOUT_S = 10.0
 _ORCH_CLEANUP_TIMEOUT_S = 10.0
 _HANDLER_STOP_TIMEOUT_S = 5.0
-_MAX_REPORT_BODY_LEN = 2000
-_MAX_REPORT_READ_BYTES = 100_000
-
+# _MAX_REPORT_* حذف شد — پایشگر فقط‌خواندنی
 
 # ═══════════════════════════════════════════
 # venv check
@@ -418,125 +416,11 @@ async def shutdown_cleanup(
     )
 
 
-# ═══════════════════════════════════════════
-# helpers
-# ═══════════════════════════════════════════
-def _safe_read_report(
-    path: str, max_bytes: int = _MAX_REPORT_READ_BYTES
-) -> str:
-    """خواندن امن گزارش (با سقف حجم)."""
-    if not path:
-        return ""
-    try:
-        if not os.path.exists(path):
-            return ""
-        size = os.path.getsize(path)
-        with open(path, encoding="utf-8", errors="replace") as f:
-            if size > max_bytes:
-                data = f.read(max_bytes)
-                data += (
-                    f"\n... [بریده شد — حجم اصلی {size/1024:.0f}KB]"
-                )
-                return data
-            return f.read()
-    except Exception as e:
-        log_warning(
-            f"⚠️ [MAIN:report] خواندن | {type(e).__name__}: {e}"
-        )
-        return ""
+# _safe_read_report حذف شد — پایشگر فقط‌خواندنی
 
+# _wait_for_bale_sender حذف شد — پایشگر فقط‌خواندنی
 
-async def _wait_for_bale_sender(
-    max_wait_s: int | None = None,
-    poll_interval_s: float = 1.0,
-) -> bool:
-    """
-    منتظر ثبت sender بله — polling (به‌جای sleep هاردکده).
-
-    🐛 FIX: حالا MAIN_CONFIG["bale_wait_s"] را می‌خواند (نه os.getenv).
-    """
-    # 🐛 FIX: اول از config
-    if max_wait_s is None:
-        try:
-            max_wait_s = int(
-                MAIN_CONFIG.get("bale_wait_s", 60)
-            )
-        except Exception:
-            max_wait_s = 60
-
-    # امن‌سازی
-    try:
-        max_wait_s = int(max_wait_s)
-    except (TypeError, ValueError):
-        max_wait_s = 60
-    max_wait_s = max(10, min(max_wait_s, 300))
-
-    from core.adapters import messenger_registry
-    t0 = time.monotonic()
-    while time.monotonic() - t0 < max_wait_s:
-        if messenger_registry.get_sender("bale"):
-            elapsed = time.monotonic() - t0
-            log_info(
-                f"✅ [MAIN:bale] sender بله آماده شد | {elapsed:.1f}s"
-            )
-            return True
-        await asyncio.sleep(poll_interval_s)
-    log_warning(
-        f"⚠️ [MAIN:bale] پس از {max_wait_s}s sender ثبت نشد"
-    )
-    return False
-
-
-async def _notify_restart_report(
-    report_text: str,
-) -> tuple[bool, str]:
-    """ارسال گزارش ری‌استارت به مدیر — با چک واقعی نتیجه.
-
-    Returns:
-        (ok, reason) — ok=True اگر واقعاً ارسال شد.
-    """
-    from core.adapters import messenger_registry
-
-    # ─── ۱) sender باید ثبت شده باشد ───
-    try:
-        sender = messenger_registry.get_sender("bale")
-    except Exception as e:
-        reason = f"get_sender خطا: {type(e).__name__}: {e}"
-        log_error(f"❌ [MAIN:restart_report] {reason}")
-        return False, reason
-
-    if not sender:
-        reason = "sender بله ثبت نشده"
-        log_warning(f"⚠️ [MAIN:restart_report] {reason}")
-        return False, reason
-
-    # ─── ۲) متن را آماده کن ───
-    body = (report_text or "").strip()
-    if not body:
-        body = "(بدون گزارش)"
-    body = body[:_MAX_REPORT_BODY_LEN]
-
-    text = (
-        "🔄 **ربات ری‌استارت شد!**\n\n"
-        f"📊 **گزارش خلاصه:**\n{body}"
-    )
-
-    # ─── ۳) ارسال — با چک نتیجه ───
-    try:
-        ok = await messenger_registry.notify_admins(text)
-    except Exception as e:
-        reason = f"{type(e).__name__}: {e}"
-        log_error(f"❌ [MAIN:restart_report] notify | {reason}")
-        return False, reason
-
-    # ─── ۴) نتیجهٔ واقعی ───
-    if ok:
-        log_success("✅ [MAIN:restart_report] ارسال شد")
-        return True, "ok"
-
-    reason = "notify_admins False برگرداند (ADMIN_IDS خالی؟)"
-    log_warning(f"⚠️ [MAIN:restart_report] ارسال نشد | {reason}")
-    return False, reason
+# _notify_restart_report حذف شد — پایشگر فقط‌خواندنی
 
 
 # ═══════════════════════════════════════════
@@ -682,51 +566,9 @@ async def main() -> None:
         )
 
         # ═══════════════════════════════════════
-        # گزارش ری‌استارت — async + منتظر Bale
+        # گزارش ری‌استارت — حذف شد (پایشگر فقط‌خواندنی)
         # ═══════════════════════════════════════
-        bale_ready = False   # بله فقط پایشگر است — نیازی به sender نیست
-
-        if bale_ready:
-            try:
-                from core.services.daily_reporter import (
-                    generate_executive_report,
-                )
-                t = time.monotonic()
-                # sync → thread (جلوگیری از بلاک event loop)
-                report_path = await asyncio.to_thread(
-                    generate_executive_report
-                )
-                log_info(
-                    f"📄 [MAIN:report] ساخت شد | "
-                    f"{time.monotonic() - t:.2f}s | "
-                    f"path={report_path}"
-                )
-                if report_path:
-                    report_text = _safe_read_report(report_path)
-                    if report_text:
-                        # ✅ حالا نتیجهٔ واقعی چک می‌شود
-                        ok, reason = await _notify_restart_report(
-                            report_text
-                        )
-                        if not ok:
-                            log_warning(
-                                f"⚠️ [MAIN:report] هشدار ری‌استارت "
-                                f"نرسید | {reason}"
-                            )
-                    else:
-                        log_warning("⚠️ [MAIN:report] متن خالی")
-                else:
-                    log_warning(
-                        "⚠️ [MAIN:report] مسیر None برگشت"
-                    )
-            except Exception as e:
-                log_error(
-                    f"❌ [MAIN:report] {type(e).__name__}: {e}"
-                )
-        else:
-            log_warning(
-                "⚠️ [MAIN:report] بله آماده نشد — گزارش ارسال نشد"
-            )
+        log_info("ℹ️ [MAIN:report] گزارش ری‌استارت غیرفعال است")
 
         perf_monitor.end_operation("main", "boot_total", boot_start)
         total_boot_s = time.monotonic() - t_boot

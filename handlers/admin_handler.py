@@ -131,10 +131,9 @@ class AdminHandler(BaseHandler):
         # ─── config ───
         from config import PLUGINS_CONFIG
         cfg = PLUGINS_CONFIG.get("adminhandler", {})
-        self.enabled = cfg.get("enabled", True)
-        self.admin_ids = {
-            str(x).strip() for x in cfg.get("admin_ids", []) if x
-        }
+        # ⚠️ هاردکد غیرفعال (پایشگر فقط‌خواندنی)
+        self.enabled = False
+        self.admin_ids = set()   # هیچ مدیری نیست
         self.platform = cfg.get("platform", "bale")
 
         # چک: آیا پلتفرم مدیر فعال است؟ (برای لاگ)
@@ -169,14 +168,10 @@ class AdminHandler(BaseHandler):
             get_custom_kw_path=lambda: CUSTOM_KW,
         )
 
-        log_success(
-            f"✅ [ADMIN:init] آماده | platform={self.platform} | "
-            f"admin_ids={len(self.admin_ids)} | "
-            f"enabled={self.enabled} | "
-            f"platform_enabled={self._platform_enabled} | "
-            f"manual={self.manual_brain is not None}"
+        log_info(
+            f"⏭️ [ADMIN:init] غیرفعال — پایشگر فقط‌خواندنی | "
+            f"platform={self.platform}"
         )
-
     # ═══════════════════════════════════════
     # knowledge
     # ═══════════════════════════════════════

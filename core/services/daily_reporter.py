@@ -419,10 +419,12 @@ class DailyReporter:
                 conn.row_factory = aiosqlite.Row
                 cursor = await conn.execute(
                     f"""
-                    SELECT id, platform, chat_name, text, keywords, timestamp
+                    SELECT id, platform, chat_name, user_id, text, keywords,
+                           media_type, opportunity_score, opportunity_type,
+                           timestamp, brands, matched_products
                     FROM messages
                     WHERE {where}
-                    ORDER BY timestamp DESC
+                    ORDER BY opportunity_score DESC, timestamp DESC
                     """,
                     params,
                 )
@@ -560,6 +562,17 @@ class DailyReporter:
                     base_params,
                 )
                 top_keywords = cur.fetchall()
+
+                cur.execute(
+                    f"""
+                    SELECT brands, COUNT(*) AS cnt FROM messages
+                    WHERE {where} AND brands != ''
+                    GROUP BY brands
+                    ORDER BY cnt DESC LIMIT 10
+                    """,
+                    base_params,
+                )
+                top_brands = cur.fetchall()
             finally:
                 conn.close()
         except Exception as e:
@@ -614,6 +627,14 @@ class DailyReporter:
                     f.write(f"   • {kw}: {cnt} بار\n")
                 f.write("\n")
 
+                f.write("🔸 برندهای داغ:\n")
+                if top_brands:
+                    for brand, cnt in top_brands:
+                        f.write(f"   • {brand}: {cnt} بار\n")
+                else:
+                    f.write("   (برندی ثبت نشده)\n")
+                f.write("\n")
+
                 f.write(
                     "📌 توصیه: برای مشاهده جزئیات کامل، "
                     "گزارش تخصصی را درخواست کنید.\n"
@@ -654,10 +675,11 @@ class DailyReporter:
         query = """
             SELECT id, platform, chat_name, chat_link, chat_username,
                    chat_type, text, timestamp, keywords, media_type,
-                   file_id, caption, reply_to
+                   file_id, caption, reply_to, brands, matched_products
             FROM messages
             WHERE keywords != ''
         """
+        
         params: list[Any] = []
         conditions: list[str] = []
 
@@ -726,7 +748,7 @@ class DailyReporter:
                     "شناسه پیام", "پلتفرم", "نام گروه", "لینک گروه",
                     "یوزرنیم گروه", "نوع گروه", "متن پیام", "زمان",
                     "کلیدواژه‌ها", "نوع رسانه", "فایل ID", "توضیحات",
-                    "پاسخ به",
+                    "پاسخ به", "برند", "محصولات",
                 ])
                 for row in rows:
                     writer.writerow(row)
@@ -751,7 +773,7 @@ class DailyReporter:
                     (
                         msg_id, plat, chat, chat_link, chat_username,
                         chat_type, text, ts, keywords, media_type,
-                        file_id, caption, reply_to,
+                        file_id, caption, reply_to, brands, products,
                     ) = row
                     f.write(
                         f"[{idx}] "
@@ -768,6 +790,10 @@ class DailyReporter:
                         f.write(f"🔗 لینک گروه: {chat_link}\n")
                     f.write(f"🕒 زمان: {ts}\n")
                     f.write(f"🔑 کلیدواژه‌ها: {keywords}\n")
+                    if brands:
+                        f.write(f"🏢 برند: {brands}\n")
+                    if products:
+                        f.write(f"🌿 محصولات: {products}\n")
                     if media_type:
                         f.write(f"📎 نوع پیام: {media_type}\n")
                     if file_id:
@@ -775,6 +801,7 @@ class DailyReporter:
                     if caption:
                         f.write(f"📝 توضیحات: {caption}\n")
                     f.write(f"💬 متن پیام:\n{text}\n\n")
+                    
 
             # JSON
             data = []
@@ -782,7 +809,7 @@ class DailyReporter:
                 (
                     msg_id, plat, chat, chat_link, chat_username,
                     chat_type, text, ts, keywords, media_type,
-                    file_id, caption, reply_to,
+                    file_id, caption, reply_to, brands, products,
                 ) = row
                 data.append({
                     "id": msg_id,
@@ -796,11 +823,14 @@ class DailyReporter:
                     "keywords": (
                         keywords.split(",") if keywords else []
                     ),
+                    "brands": brands,
+                    "matched_products": products,
                     "media_type": media_type,
                     "file_id": file_id,
                     "caption": caption,
                     "reply_to": reply_to,
                 })
+                
             with open(json_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
@@ -884,11 +914,13 @@ class DailyReporter:
                 self.db_path, timeout=_SQL_TIMEOUT_S
             ) as conn:
                 conn.row_factory = aiosqlite.Row
+
+                # ─── ۱) پیام‌ها (با brands) ───
                 cursor = await conn.execute(
                     f"""
                     SELECT id, platform, chat_name, user_id, text, keywords,
                            media_type, opportunity_score, opportunity_type,
-                           timestamp
+                           timestamp, brands, matched_products
                     FROM messages
                     WHERE {where}
                     ORDER BY opportunity_score DESC, timestamp DESC
@@ -897,6 +929,7 @@ class DailyReporter:
                 )
                 messages = await cursor.fetchall()
 
+                # ─── ۲) آمار گروه‌ها ───
                 cursor = await conn.execute(
                     f"""
                     SELECT chat_name, platform, COUNT(*) AS count
@@ -909,6 +942,7 @@ class DailyReporter:
                 )
                 group_stats = await cursor.fetchall()
 
+                # ─── ۳) آمار کلیدواژه‌ها (نه پیام‌ها!) ───
                 cursor = await conn.execute(
                     f"""
                     SELECT keywords, COUNT(*) AS count
@@ -942,7 +976,7 @@ class DailyReporter:
                 "group_stats": [],
                 "keyword_stats": [],
             }
-
+            
     @staticmethod
     def _count_top(items, key, limit=8):
         counts: dict[str, int] = {}
@@ -1010,6 +1044,7 @@ class DailyReporter:
                     for i, msg in enumerate(dedup_rows(rows), 1):
                         chat = _safe_get(msg, "chat_name", "?")
                         kw = _safe_get(msg, "keywords", "")
+                        brands = _safe_get(msg, "brands", "")
                         score = _safe_get(msg, "opportunity_score", 0)
                         lvl = _safe_get(msg, "opportunity_type", "")
                         ts = _safe_get(msg, "timestamp", "")
@@ -1018,6 +1053,8 @@ class DailyReporter:
                         f.write(
                             f"[{i}] گروه: {chat}  |  🔑 {kw}"
                         )
+                        if brands:
+                            f.write(f"  |  🏢 {brands}")
                         if score:
                             f.write(
                                 f"  |  🎯 {lvl or ''} (امتیاز {score})"
@@ -1124,7 +1161,8 @@ class DailyReporter:
             ) as f:
                 writer = csv.writer(f)
                 writer.writerow([
-                    "پلتفرم", "شناسه", "گروه", "متن", "کلیدواژه", "زمان",
+                    "پلتفرم", "شناسه", "گروه", "متن", "کلیدواژه",
+                    "برند", "محصولات", "زمان",
                 ])
                 for plat, rows in group_by_platform(data["messages"]):
                     for msg in rows:
@@ -1134,13 +1172,15 @@ class DailyReporter:
                             _safe_get(msg, "chat_name", ""),
                             str(_safe_get(msg, "text", "") or "")[:500],
                             _safe_get(msg, "keywords", ""),
+                            _safe_get(msg, "brands", ""),
+                            _safe_get(msg, "matched_products", ""),
                             _safe_get(msg, "timestamp", ""),
                         ])
         except Exception as e:
             log_error(f"❌ [REPORT:csv] {type(e).__name__}: {e}")
             return ""
         return filename
-
+        
     async def _save_json_report(self, data, date, platform=None):
         suffix = self._filename_suffix(platform)
         filename = os.path.join(
@@ -1160,6 +1200,10 @@ class DailyReporter:
                             _safe_get(msg, "text", "") or ""
                         )[:500],
                         "keywords": _safe_get(msg, "keywords", ""),
+                        "brands": _safe_get(msg, "brands", ""),
+                        "matched_products": _safe_get(
+                            msg, "matched_products", ""
+                        ),
                         "timestamp": _safe_get(msg, "timestamp", ""),
                     }
                     for msg in rows

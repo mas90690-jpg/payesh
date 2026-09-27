@@ -726,15 +726,13 @@ def _build_plugins_config() -> dict[str, Any]:
             "telegram_chat_id": _env_str("NOTIFY_TELEGRAM_CHAT_ID"),
         },
 
-        # ═══ ChatOps (مدیریت از پیام‌رسان) ═══
+        # ═══ ChatOps — غیرفعال کامل (پایشگر فقط‌خواندنی) ═══
         "adminhandler": {
-            "admin_ids": _env_list("ADMIN_IDS"),
-            "platform": (
-                _env_str("ADMIN_PLATFORM", "bale").lower() or "bale"
-            ),
-            "enabled": _env_bool("ADMIN_ENABLED", True),
-            "admin_phone": _env_str("BALE_ADMIN_PHONE"),
-            "admin_chat": _env_str("BALE_ADMIN_CHAT"),
+            "admin_ids": [],
+            "platform": "bale",
+            "enabled": False,
+            "admin_phone": "",
+            "admin_chat": "",
         },
 
         # ═══ پایشگر خودکار ═══
@@ -821,13 +819,9 @@ def _parse_tiers(raw: str, default: list[str]) -> list[str]:
 
 
 LEAD_ALERTS: dict[str, Any] = {
-    "enabled": _env_bool("LEAD_ALERTS_ENABLED", True),
-    "min_score": _env_int(
-        "LEAD_ALERT_MIN_SCORE", 0, min_val=0, max_val=100
-    ),
-    "tiers": _parse_tiers(
-        _env_str("LEAD_ALERT_TIERS", "T1"), ["T1"]
-    ),
+    "enabled": False,   # ← هاردکد غیرفعال
+    "min_score": 0,
+    "tiers": ["T1"],
 }
 
 
@@ -927,18 +921,8 @@ def log_config_summary() -> None:
         else:
             log_info("⚠️ [config] هیچ پلتفرمی فعال نیست")
 
-        # admin_ids
-        adm_ids = PLUGINS_CONFIG.get(
-            "adminhandler", {}
-        ).get("admin_ids", [])
-        if adm_ids:
-            log_info(
-                f"⚙️ [config] admin_ids={len(adm_ids)} | "
-                f"platform="
-                f"{PLUGINS_CONFIG['adminhandler']['platform']}"
-            )
-        else:
-            log_info("⚠️ [config] ADMIN_IDS خالی — pairing mode")
+        # admin_ids — حذف شد (پایشگر فقط‌خواندنی)
+        log_info("⚙️ [config] admin=غیرفعال (پایشگر فقط‌خواندنی)")
 
         # retention
         log_info(
@@ -949,16 +933,9 @@ def log_config_summary() -> None:
             f"{'∞' if RETENTION['messages_days'] == 0 else str(RETENTION['messages_days'])+'d'}"
         )
 
-        # lead alerts
-        if LEAD_ALERTS["enabled"]:
-            log_info(
-                f"⚙️ [config] lead_alerts | "
-                f"tiers={LEAD_ALERTS['tiers']} | "
-                f"min_score={LEAD_ALERTS['min_score']}"
-            )
-        else:
-            log_info("⚙️ [config] lead_alerts خاموش")
-
+        # lead alerts — همیشه خاموش
+        log_info("⚙️ [config] lead_alerts خاموش (پایشگر فقط‌خواندنی)")
+        
         # report schedule
         if REPORT["enabled"]:
             log_info(
@@ -1224,13 +1201,9 @@ def reload() -> None:
     })
 
     LEAD_ALERTS.update({
-        "enabled": _env_bool("LEAD_ALERTS_ENABLED", True),
-        "min_score": _env_int(
-            "LEAD_ALERT_MIN_SCORE", 0, min_val=0, max_val=100
-        ),
-        "tiers": _parse_tiers(
-            _env_str("LEAD_ALERT_TIERS", "T1"), ["T1"]
-        ),
+        "enabled": False,
+        "min_score": 0,
+        "tiers": ["T1"],
     })
 
     # PLUGINS_CONFIG: rebuild کامل

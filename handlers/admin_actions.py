@@ -533,6 +533,7 @@ class AdminActions:
             cur = conn.cursor()
             row = cur.execute(
                 f"SELECT platform, chat_name, chat_link, keywords, "
+                f"brands, matched_products, "
                 f"opportunity_type, opportunity_score, text, timestamp "
                 f"FROM messages WHERE keywords!='' "
                 f"ORDER BY timestamp {order} LIMIT 1"
@@ -551,16 +552,26 @@ class AdminActions:
             return "هنوز هیچ سرنخی ثبت نشده."
 
         label = "اولین" if which == "first" else "آخرین"
+        # برند را هم بگیر
+        try:
+            brand_info = row["brands"] if "brands" in row.keys() else ""
+        except Exception:
+            brand_info = ""
+        brand_line = (
+            f"🏢 برند: {brand_info}\n" if brand_info else ""
+        )
         detail = (
             f"🔎 {label} سرنخ:\n"
             f"📱 پلتفرم: {row['platform']}\n"
             f"👥 گروه: {row['chat_name']}\n"
             f"🔑 کلیدواژه: {row['keywords']}\n"
+            f"{brand_line}"
             f"🎯 {row['opportunity_type'] or '-'} "
             f"(امتیاز {row['opportunity_score'] or 0})\n"
             f"🕒 {row['timestamp']}\n"
             f"💬 {(row['text'] or '')[:300]}"
         )
+        
         if row["chat_link"]:
             detail += f"\n🔗 {row['chat_link']}"
 

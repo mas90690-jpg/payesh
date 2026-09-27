@@ -10,7 +10,6 @@
 """
 from __future__ import annotations
 
-import asyncio
 import time
 from datetime import datetime
 from typing import Any
@@ -19,11 +18,10 @@ from analyzers.keyword_finder import get_keyword_finder
 from core.contracts.base_handler import BaseHandler
 from core.kernel.logger import log_error, log_info, log_success, log_warning
 
-# ─── ثابتها ───
+# ─── ثابت‌ها ───
 _LOG_PREVIEW_LEN = 100
 _SLOW_HANDLE_MS = 3000
 _STATS_INTERVAL = 100
-_ALERT_TASK_MAX = 50
 
 
 class StorageHandler(BaseHandler):
@@ -41,23 +39,20 @@ class StorageHandler(BaseHandler):
         self.db = db
         self.keyword_finder = get_keyword_finder()
 
-        from config import LEAD_ALERTS, PLUGINS_CONFIG
+        from config import PLUGINS_CONFIG
 
         cfg = PLUGINS_CONFIG.get("storagehandler", {})
         self.keywords_only = cfg.get("keywords_only", True)
         self.require_t1 = cfg.get("require_t1", True)
         self._allowed_tiers = self._parse_allowed_tiers(cfg)
-        self._alert_tiers = tuple(
-            str(t).upper()
-            for t in LEAD_ALERTS.get("tiers", ["T1"])
-        )
+        # _alert_tiers حذف شد (پایشگر فقط‌خواندنی)
 
         _adm = PLUGINS_CONFIG.get("adminhandler", {})
         self._admin_ids = {
             str(x).strip() for x in _adm.get("admin_ids", []) if x
         }
 
-        self._alert_tasks: list[asyncio.Task] = []
+        # _alert_tasks حذف شد (پایشگر فقط‌خواندنی)
 
         self.stats: dict[str, int] = {
             "total": 0,
@@ -76,7 +71,6 @@ class StorageHandler(BaseHandler):
             f"keywords_only={self.keywords_only} | "
             f"require_t1={self.require_t1} | "
             f"allowed_tiers={self._allowed_tiers} | "
-            f"alert_tiers={self._alert_tiers} | "
             f"admin_ids={len(self._admin_ids)}"
         )
 
@@ -350,7 +344,7 @@ class StorageHandler(BaseHandler):
             )
 
         await self._save_lead(raw, analyzed.keywords)
-        self._schedule_alert(raw)
+        # self._schedule_alert(raw)   ← غیرفعال (پایشگر فقط‌خواندنی)
 
         self.stats["messages_with_keywords"] += 1
         total = self.stats["messages_with_keywords"]
@@ -522,119 +516,6 @@ class StorageHandler(BaseHandler):
                 f"{elapsed_ms:.0f}ms | id={raw.get('id')}"
             )
 
-    # ═══════════════════════════════════════════
-    # هشدار زنده
-    # ═══════════════════════════════════════════
-    def _schedule_alert(self, raw: dict):
-        from config import LEAD_ALERTS
-
-        if not LEAD_ALERTS.get("enabled", False):
-            return
-        try:
-            self._alert_tasks = [
-                t for t in self._alert_tasks if not t.done()
-            ]
-            if len(self._alert_tasks) >= _ALERT_TASK_MAX:
-                log_warning(
-                    f"⚠️ [STORAGE:alert] {len(self._alert_tasks)} task "
-                    f"pending — هشدار جدید skip شد"
-                )
-                return
-            task = asyncio.create_task(self._alert_lead(raw))
-            self._alert_tasks.append(task)
-            task.add_done_callback(self._on_alert_done)
-        except Exception as e:
-            log_warning(
-                f"⚠️ [STORAGE:alert] scheduling | "
-                f"{type(e).__name__}: {e}"
-            )
-
-    def _on_alert_done(self, task: asyncio.Task) -> None:
-        try:
-            self._alert_tasks.remove(task)
-        except ValueError:
-            pass
-        try:
-            exc = task.exception()
-            if exc:
-                log_warning(
-                    f"⚠️ [STORAGE:alert:task] "
-                    f"{type(exc).__name__}: {exc}"
-                )
-        except (asyncio.CancelledError, Exception):
-            pass
-
-    async def _alert_lead(self, raw: dict):
-        from config import LEAD_ALERTS
-        from core.adapters import messenger_registry
-        from core.services.daily_reporter import platform_label
-
-        tier = raw.get("priority_tier")
-        if tier not in self._alert_tiers:
-            log_info(
-                f"⏭️ [STORAGE:alert] tier={tier} "
-                f"(مجاز={self._alert_tiers}) — رد"
-            )
-            return
-
-        chat_name = raw.get("chat_name")
-        if not chat_name or chat_name == "?":
-            log_info("⏭️ [STORAGE:alert] chat_name خالی — رد")
-            return
-
-        score = int(raw.get("opportunity_score") or 0)
-        min_score = int(LEAD_ALERTS.get("min_score", 0))
-        if score < min_score:
-            log_info(
-                f"⏭️ [STORAGE:alert] score={score} < min={min_score} "
-                f"— رد"
-            )
-            return
-
-        try:
-            plabel = platform_label(raw.get("platform"))
-        except Exception as e:
-            log_warning(
-                f"⚠️ [STORAGE:alert] platform_label | "
-                f"{type(e).__name__}: {e}"
-            )
-            plabel = raw.get("platform") or "?"
-
-        text = (
-            "🔔 سرنخ جدید پیدا شد\n"
-            f"{plabel}\n"
-            f"👥 گروه: {chat_name}\n"
-            f"🔑 کلیدواژه: {raw.get('keywords')}\n"
-            f"🎯 {raw.get('opportunity_type') or '-'} "
-            f"(امتیاز {score})\n"
-            f"💬 {(raw.get('text') or raw.get('caption') or '')[:200]}\n"
-            f"🕒 {raw.get('timestamp')}"
-        )
-        if raw.get("chat_link"):
-            text += f"\n🔗 {raw.get('chat_link')}"
-
-        t0 = time.monotonic()
-        try:
-            ok = await messenger_registry.notify_admins(text)
-            elapsed_ms = (time.monotonic() - t0) * 1000
-            if ok:
-                log_success(
-                    f"🔔 [STORAGE:alert] هشدار ارسال شد | "
-                    f"{elapsed_ms:.0f}ms | tier={tier} score={score} | "
-                    f"kw={raw.get('keywords')}"
-                )
-            else:
-                log_warning(
-                    f"⚠️ [STORAGE:alert] ارسال نشد (مدیر/فرستنده) | "
-                    f"{elapsed_ms:.0f}ms"
-                )
-        except Exception as e:
-            elapsed_ms = (time.monotonic() - t0) * 1000
-            log_error(
-                f"❌ [STORAGE:alert] notify_admins | "
-                f"{type(e).__name__}: {e} | {elapsed_ms:.0f}ms"
-            )
-
     def _log_stats(self):
         log_info(
             f"📊 [STORAGE:stats] total={self.stats['total']} | "
@@ -649,12 +530,4 @@ class StorageHandler(BaseHandler):
         )
 
     async def on_stop(self):
-        for task in list(self._alert_tasks):
-            if not task.done():
-                task.cancel()
-        if self._alert_tasks:
-            await asyncio.gather(
-                *self._alert_tasks, return_exceptions=True
-            )
-            self._alert_tasks.clear()
         await super().on_stop()
