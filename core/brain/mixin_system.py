@@ -1,6 +1,5 @@
 """ابزارهای سیستم — git, command, processes, tests, python."""
 from __future__ import annotations
-
 import ast
 import asyncio
 import os
@@ -369,13 +368,12 @@ class SystemMixin:
     # ─── Tests ───
     async def _run_tests(self, path: str = "") -> str:
         try:
-            cmd = (
-                f"python -m pytest {path} -v --tb=short -x"
-                if path
-                else "python -m pytest -v --tb=short -x"
-            )
+            cmd = [sys.executable, "-m", "pytest"]
+            if path:
+                cmd.append(path)
+            cmd += ["-v", "--tb=short", "-x"]
             r = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True,
+                cmd, shell=False, capture_output=True, text=True,
                 timeout=TESTS_TIMEOUT_S, cwd=PROJECT_BASE,
             )
             return (
@@ -387,12 +385,13 @@ class SystemMixin:
             return "⏰ زمان تست به پایان رسید."
         except Exception as e:
             return f"❌ خطا: {e}"
-
+            
     async def _run_tests_with_coverage(self, path: str) -> str:
         try:
-            cmd = f"pytest {path} --cov=. --cov-report=html"
+            cmd = [sys.executable, "-m", "pytest", path,
+                   "--cov=.", "--cov-report=html"]
             r = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True,
+                cmd, shell=False, capture_output=True, text=True,
                 timeout=PYTEST_COVERAGE_TIMEOUT_S, cwd=PROJECT_BASE,
             )
             return (
@@ -401,7 +400,7 @@ class SystemMixin:
             )
         except Exception as e:
             return f"❌ خطا: {e}"
-
+            
     async def _analyze_security(self, path: str) -> str:
         try:
             r = subprocess.run(

@@ -394,15 +394,29 @@ class ReportsMixin:
             log_info(
                 f"🔍 [BRAIN:kw-check] kw={kw!r} | found={found}"
             )
+
             if found:
+                matches = finder.match(kw)
+                if matches:
+                    preview = "، ".join(matches[:5])
+                    return (
+                        f"✅ '{kw}' شامل کلیدواژه‌های "
+                        f"ثبت‌شده است:\n   {preview}"
+                    )
                 return f"✅ '{kw}' وجود دارد."
-            return f"❌ '{kw}' یافت نشد."
+
+            return (
+                f"❌ '{kw}' کلیدواژهٔ ثبت‌شده نیست.\n"
+                f"   (نه در products.py و نه در "
+                f"keywords_custom.json)\n"
+                f"   برای افزودن: کلیدواژه «{kw}» را اضافه کن"
+            )
         except Exception as e:
             log_error(
                 f"❌ [BRAIN:check_keyword] {type(e).__name__}: {e}"
             )
             return f"❌ خطا: {e}"
-
+            
     def generate_report(self, days: int = 7) -> str:
         return (
             f"📊 **گزارش Agent**\n"

@@ -9,17 +9,16 @@ login.py — اسکریپت ورود تعاملی (یک‌بار اجرا برا
 اجرا:
     python login.py
 
-نسخهٔ ۵ (این نسخه):
-  - 🔴 FIX: _safe_launch_context حالا با inspect.signature پارامتر
-    واقعی رو کشف می‌کنه (قبلاً try/except ترتیبی بود — همیشه اولین
-    تلاش TypeError می‌داد و لاگ رو شلوغ می‌کرد).
-
-    کلکتورهای موجود همه use_headless دارن، نه headless. پس نسخهٔ
-    قبلی همیشه اول شکست می‌خورد و بعد با تلاش دوم موفق می‌شد.
-    حالا یک تلاش، مستقیم به پارامتر درست.
-
-  - 🎯 _login_all حالا از نگاشت مستقیم استفاده می‌کنه (کد تمیزتر).
-  - ✅ حفظ همهٔ FIXهای نسخهٔ ۴.
+نسخهٔ ۶ (این نسخه):
+  - 🔴 FIX بزرگ: login_bale() حالا از Playwright استفاده می‌کند، نه baleclient.
+    دلیل: collectors/bale.py از Playwright استفاده می‌کند، پس لاگین هم
+    باید Playwright باشد. قبلاً login_bale از baleclient استفاده می‌کرد
+    که نصب نیست و ناسازگار بود.
+  - 🎨 منو: [2] بله (Bale - مرورگر) — واضح‌تر.
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۵:
+      * _safe_launch_context با inspect.signature
+      * _login_all با نگاشت مستقیم
+      * disconnect امن
 """
 from __future__ import annotations
 
@@ -649,77 +648,21 @@ async def login_browser(
 # wrappers
 # ═══════════════════════════════════════════
 async def login_bale() -> bool:
-    """ورود بله با baleclient (API) — نه مرورگر."""
-    from config import PLUGINS_CONFIG
+    """
+    ورود بله با مرورگر (Playwright) — هماهنگ با collectors/bale.py.
 
-    t0 = time.monotonic()
-    log_info(f"▶️ {_LOGIN_PREFIX}:bale] شروع (API)")
+    🔴 FIX نسخهٔ ۶: قبلاً از baleclient استفاده می‌کرد که نصب نیست
+    و با کلکتور فعلی (Playwright-based) ناسازگار بود.
 
-    cfg = PLUGINS_CONFIG.get("balecollector", {}) or {}
-    phone = (cfg.get("phone") or "").strip()
-    if not phone:
-        log_error(f"❌ {_LOGIN_PREFIX}:bale] BALE_PHONE تنظیم نشده")
-        return False
-
-    # نرمالسازی: 0913... → 98913...
-    p = phone
-    if p.startswith("+98"):
-        p = p[3:]
-    elif p.startswith("0098"):
-        p = p[4:]
-    elif p.startswith("98") and len(p) >= 12:
-        p = p[2:]
-    elif p.startswith("0"):
-        p = p[1:]
-    if not p.startswith("98"):
-        p = "98" + p
-
-    log_info(f"📱 {_LOGIN_PREFIX}:bale] phone={p}")
-
-    try:
-        from baleclient import Client
-    except ImportError as e:
-        log_error(f"❌ {_LOGIN_PREFIX}:bale] baleclient نصب نیست | {e}")
-        return False
-
-    session_path = (
-        PLUGINS_CONFIG.get("balecollector", {}).get("session_path")
-        or os.path.join(SESSIONS_DIR, "bale", "bale_session")
+    حالا مثل ایتا/واتساپ/لینکدین از login_browser استفاده می‌کند.
+    مرورگر باز می‌شود، کاربر با شماره + کد پیامکی وارد می‌شود،
+    پروفایل در storage/sessions/bale_web ذخیره می‌شود.
+    """
+    from collectors.bale import BaleCollector
+    return await login_browser(
+        "بله", BaleCollector, "https://web.bale.ai/"
     )
-    os.makedirs(os.path.dirname(session_path), exist_ok=True)
 
-    client = None
-    success = False
-    try:
-        client = Client(session_file=session_path)
-        await client.start()
-        success = True
-        return True
-    except Exception as e:
-        log_error(f"❌ {_LOGIN_PREFIX}:bale] {type(e).__name__}: {e}")
-        return False
-    finally:
-        if client is not None:
-            try:
-                stop = getattr(client, "stop", None) or getattr(client, "disconnect", None)
-                if stop:
-                    r = stop()
-                    if asyncio.iscoroutine(r):
-                        await r
-            except Exception as e:
-                log_warning(
-                    f"⚠️ {_LOGIN_PREFIX}:bale:disconnect] "
-                    f"{type(e).__name__}: {e}"
-                )
-        elapsed_ms = (time.monotonic() - t0) * 1000
-        if success:
-            log_success(
-                f"✅ {_LOGIN_PREFIX}:bale] ورود موفق | {elapsed_ms:.0f}ms"
-            )
-        else:
-            log_warning(
-                f"⚠️ {_LOGIN_PREFIX}:bale] ناموفق | {elapsed_ms:.0f}ms"
-            )
 
 async def login_eitaa() -> bool:
     from collectors.eitaa import EitaaCollector
@@ -755,7 +698,7 @@ _MENU = """
 ║        ورود تعاملی پلتفرم‌ها (ساخت نشست)                ║
 ╠══════════════════════════════════════════════════════════╣
 ║  [1] روبیکا (Rubika)                                     ║
-║  [2] بله (Bale - API)                                 ║
+║  [2] بله (Bale - مرورگر)                                 ║
 ║  [3] ایتا (Eitaa - مرورگر)                               ║
 ║  [4] تلگرام (Telegram)                                   ║
 ║  [5] واتساپ (WhatsApp - مرورگر/QR)                       ║
