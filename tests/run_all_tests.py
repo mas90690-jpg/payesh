@@ -22,7 +22,15 @@ from core.kernel.console_compat import patch_console
 patch_console(verbose=False)
 
 
-PLATFORMS = ["bale", "eitaa", "rubika", "linkedin", "web"]
+PLATFORMS = [
+    "bale",       # بله
+    "eitaa",      # ایتا
+    "rubika",     # روبیکا
+    "telegram",   # تلگرام
+    "whatsapp",   # واتساپ
+    "linkedin",   # لینکدین
+    "web",        # وب
+]
 
 
 def run_test(name: str, headless: bool = False) -> tuple[bool, float]:

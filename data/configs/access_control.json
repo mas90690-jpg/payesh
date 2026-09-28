@@ -1,6 +1,6 @@
 {
-  "version": "2.0.2",
-  "description": "کنترل دسترسی کامل هوش — v2.0.2: تنظیمات بله برای hot-reload از چت",
+  "version": "2.0.3",
+  "description": "کنترل دسترسی کامل هوش — v2.0.3: افزودن تنظیمات لینکدین (فقط فالوورها، روزی یک بار)",
   "read": {
     "allow": [
       "core/**/*.py",
@@ -107,7 +107,15 @@
       "EITAA_DELAY_MIN",
       "EITAA_DELAY_MAX",
       "EITAA_BETWEEN_MIN",
-      "EITAA_BETWEEN_MAX"
+      "EITAA_BETWEEN_MAX",
+
+      "LINKEDIN_FEED_URL",
+      "LINKEDIN_FOLLOWING_ONLY",
+      "LINKEDIN_STOP_ON_NON_FOLLOWER",
+      "LINKEDIN_ONCE_PER_DAY",
+      "LINKEDIN_SEARCH_ENABLED",
+      "LINKEDIN_MAX_FEED_POSTS",
+      "LINKEDIN_SCROLLS"
     ],
     "deny": [
       "DEEPSEEK_API_KEY",
@@ -142,6 +150,19 @@
       "KEEP_REPORTS_DAYS",
       "KEEP_MESSAGES_DAYS"
     ]
+  },
+  "collectors": {
+    "linkedin": {
+      "feed_url": "https://www.linkedin.com/feed/following/",
+      "following_only": true,
+      "stop_on_non_follower": true,
+      "once_per_day": true,
+      "search_enabled": false,
+      "max_feed_posts": 30,
+      "scrolls": 3,
+      "search_delay": 6.0,
+      "add_query_to_keywords": true
+    }
   },
   "platforms": {
     "toggleable": [

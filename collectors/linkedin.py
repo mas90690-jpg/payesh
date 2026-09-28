@@ -1,22 +1,16 @@
 # collectors/linkedin.py
 """
-کلکتور لینکدین (LinkedIn) در حالت «کاربر عادی» با اتوماسیون مرورگر (Playwright).
+کلکتور لینکدین (LinkedIn) — کاربر عادی با Playwright + رفتار انسانی.
 
-چرا مرورگر و نه کتابخانه؟
-- API رسمی لینکدین اجازهٔ خواندن پست/جستجوی محتوای دیگران را نمی‌دهد (فقط OAuthِ محدود).
-- کتابخانهٔ غیررسمی `linkedin-api` (Voyager) خلاف قوانین لینکدین است و **خطر بن حساب** دارد.
-- پس امن‌ترین و حرفه‌ای‌ترین راهِ «به‌عنوان کاربر»، همان نشستِ واقعیِ مرورگرِ خودِ کاربر است:
-  یک‌بار دستی لاگین می‌کنی (`python login.py` → لینکدین)، نشست در پروفایل مرورگر می‌ماند،
-  بعد این کلکتور آرام و انسان‌گونه نتایجِ جستجوی محتوا را برای کلیدواژه‌ها می‌خواند.
+استراتژی (نسخهٔ ۲):
+  - نشست واقعی مرورگر (login.py → گزینهٔ ۶)
+  - فقط فید فالوورها (/feed/following/)
+  - توقف وقتی به پست غیرفالوور رسید
+  - روزی یک بار (نه ساعت مشخص — هر ساعتی که ربات روشن شد)
+  - جستجوی کلیدواژه به‌صورت پیش‌فرض خاموش (قابل روشن‌کردن)
 
-برای کم‌کردن ریسک: فاصلهٔ زیاد بین دورها (پیش‌فرض ۱۰ دقیقه)، مکث تصادفی بین جستجوها،
-و سقف تعداد نتیجه در هر جستجو.
-
-عبارت‌های جستجو را در `data/linkedin_searches.txt` می‌گذاری (هر خط یک عبارت).
-
-نسخهٔ ۲:
-- add_query_to_keywords از config: اگر false باشد، عبارت سرچ به کلیدواژه‌های پست
-  اضافه نمی‌شود (فقط نام محصولات اعمال می‌شوند). مفید وقتی سرچ‌ها عمومی‌اند و نویز زیاد است.
+فایل‌های ورودی:
+  - data/sources/linkedin_searches.txt
 """
 import asyncio
 import hashlib
@@ -31,19 +25,18 @@ from analyzers.keyword_finder import get_keyword_finder
 from core.contracts.base_collector import BaseCollector, ConnectionStatus
 from core.kernel.logger import log_error, log_info, log_success, log_warning
 
+# پیش‌فرض: فید فالوورها
 LINKEDIN_FEED_URL = "https://www.linkedin.com/feed/"
 LINKEDIN_SEARCH_URL = (
     "https://www.linkedin.com/search/results/content/"
     "?keywords={q}&origin=GLOBAL_SEARCH_HEADER&sortBy=%22date_posted%22"
 )
 
-# نشانه‌های صفحهٔ ورود (یعنی هنوز لاگین نیستیم)
 LOGIN_MARKERS = [
     "input#username",
     'input[name="session_key"]',
     'button[data-litms-control-urn="login-submit"]',
 ]
-# نشانه‌های ورودِ موفق
 LOGGEDIN_MARKERS = [
     "#global-nav",
     ".global-nav",
@@ -66,8 +59,14 @@ class LinkedInCollector(BaseCollector):
         search_delay: float = 6.0,
         scrolls: int = 3,
         monitor_feed: bool = True,
-        max_feed_posts: int = 25,
-        add_query_to_keywords: bool = True,  # ← جدید
+        max_feed_posts: int = 30,
+        add_query_to_keywords: bool = True,
+        # 🆕 تنظیمات جدید (با پیش‌فرض امن)
+        feed_url: str = None,
+        following_only: bool = True,
+        stop_on_non_follower: bool = True,
+        once_per_day: bool = True,
+        search_enabled: bool = False,
         **kwargs,
     ):
         super().__init__()
@@ -80,8 +79,18 @@ class LinkedInCollector(BaseCollector):
         self._scrolls = int(scrolls)
         self._monitor_feed = bool(monitor_feed)
         self._max_feed_posts = int(max_feed_posts)
-        # اگر false: عبارت سرچ به کلیدواژه‌های پست اضافه نمی‌شود.
         self._add_query_to_keywords = bool(add_query_to_keywords)
+
+        # 🆕 تنظیمات جدید
+        self._feed_url = (
+            feed_url
+            or "https://www.linkedin.com/feed/"
+        )
+        self._following_only = bool(following_only)
+        self._stop_on_non_follower = bool(stop_on_non_follower)
+        self._once_per_day = bool(once_per_day)
+        self._search_enabled = bool(search_enabled)
+
         self._pw = None
         self._context = None
         self._page = None
@@ -95,16 +104,38 @@ class LinkedInCollector(BaseCollector):
         self._searches_file = searches_file or os.path.join(
             BASE_DIR, "data", "sources", "linkedin_searches.txt"
         )
-        self._user_data_dir = os.path.join(STORAGE_DIR, "sessions", "linkedin_v2")
+        self._user_data_dir = os.path.join(
+            STORAGE_DIR, "sessions", "linkedin_v2"
+        )
         os.makedirs(self._user_data_dir, exist_ok=True)
-        self._media_dir = os.path.join(STORAGE_DIR, "media", "linkedin")
+        self._media_dir = os.path.join(
+            STORAGE_DIR, "media", "linkedin"
+        )
         os.makedirs(self._media_dir, exist_ok=True)
-        self._seen_path = os.path.join(STORAGE_DIR, "offset", "linkedin_seen.json")
-        os.makedirs(os.path.dirname(self._seen_path), exist_ok=True)
-        # نشستِ ذخیره‌شده (کوکی li_at و...) برای پایداریِ بیشتر؛ علاوه بر پروفایل مرورگر
-        self._state_path = os.path.join(STORAGE_DIR, "sessions", "linkedin_state.json")
+        self._seen_path = os.path.join(
+            STORAGE_DIR, "offset", "linkedin_seen.json"
+        )
+        os.makedirs(
+            os.path.dirname(self._seen_path), exist_ok=True
+        )
+        self._state_path = os.path.join(
+            STORAGE_DIR, "sessions", "linkedin_state.json"
+        )
         self._load_seen()
 
+        # 🆕 فایل last_run برای «روزی یک بار»
+        self._last_run_path = os.path.join(
+            STORAGE_DIR, "offset", "linkedin_last_run.json"
+        )
+        os.makedirs(
+            os.path.dirname(self._last_run_path), exist_ok=True
+        )
+        self._last_run_date = ""
+        self._load_last_run()
+
+    # ═══════════════════════════════════════════════════
+    # خواص
+    # ═══════════════════════════════════════════════════
     @property
     def platform_name(self) -> str:
         return "linkedin"
@@ -119,30 +150,120 @@ class LinkedInCollector(BaseCollector):
 
     @property
     def poll_interval_seconds(self) -> float:
-        # محافظه‌کارانه (پیش‌فرض ۱۰ دقیقه) تا رفتارِ ربات‌گونه و خطر بن کم شود.
         return float(self._poll_seconds)
 
-    # ==================================================
-    # ضدتکراری ماندگار
-    # ==================================================
+    # ═══════════════════════════════════════════════════
+    # رفتار انسانی
+    # ═══════════════════════════════════════════════════
+    async def _human_delay(
+        self,
+        min_s: float = 0.5,
+        max_s: float = 2.5,
+    ):
+        """تأخیر تصادفی مثل کاربر."""
+        await asyncio.sleep(random.uniform(min_s, max_s))
+
+    async def _human_scroll(self, amount: int = 800):
+        """اسکرول انسانی — چند قدم کوچک."""
+        sign = 1 if amount > 0 else -1
+        remaining = abs(amount)
+        while remaining > 0:
+            step = random.randint(80, 250)
+            step = min(step, remaining)
+            await self._page.mouse.wheel(0, sign * step)
+            remaining -= step
+            await self._human_delay(0.15, 0.45)
+
+    async def _human_click(self, element) -> bool:
+        """کلیک انسانی با حرکت mouse."""
+        try:
+            box = await element.bounding_box()
+            if not box:
+                await element.click()
+                return True
+            x = box["x"] + box["width"] * random.uniform(
+                0.35, 0.65
+            )
+            y = box["y"] + box["height"] * random.uniform(
+                0.35, 0.65
+            )
+            steps = random.randint(8, 20)
+            await self._page.mouse.move(x, y, steps=steps)
+            await self._human_delay(0.1, 0.3)
+            await self._page.mouse.click(x, y)
+            return True
+        except Exception:
+            try:
+                await element.click()
+                return True
+            except Exception:
+                return False
+
+    # ═══════════════════════════════════════════════════
+    # ضدتکراری
+    # ═══════════════════════════════════════════════════
     def _load_seen(self):
         try:
             with open(self._seen_path, encoding="utf-8") as f:
                 data = json.load(f)
             if isinstance(data, list):
                 self._seen_ids = set(data[-_MAX_SEEN:])
-                log_info(f"♻️ {len(self._seen_ids)} پستِ دیده‌شدهٔ لینکدین بارگذاری شد")
+                log_info(
+                    f"♻️ {len(self._seen_ids)} پست دیده‌شده"
+                )
         except Exception:
             self._seen_ids = set()
 
     def _save_seen(self):
         try:
             if len(self._seen_ids) > _MAX_SEEN:
-                self._seen_ids = set(list(self._seen_ids)[-_MAX_SEEN:])
+                self._seen_ids = set(
+                    list(self._seen_ids)[-_MAX_SEEN:]
+                )
             with open(self._seen_path, "w", encoding="utf-8") as f:
-                json.dump(list(self._seen_ids), f, ensure_ascii=False)
+                json.dump(
+                    list(self._seen_ids), f, ensure_ascii=False
+                )
         except Exception as e:
-            log_warning(f"ذخیرهٔ ضدتکراری لینکدین ناموفق: {e}")
+            log_warning(f"ذخیرهٔ ضدتکراری ناموفق: {e}")
+
+    # ═══════════════════════════════════════════════════
+    # last_run (روزی یک بار)
+    # ═══════════════════════════════════════════════════
+    def _load_last_run(self):
+        """تاریخ آخرین اجرا رو از دیسک می‌خونه."""
+        self._last_run_date = ""
+        try:
+            if os.path.exists(self._last_run_path):
+                with open(
+                    self._last_run_path, encoding="utf-8"
+                ) as f:
+                    d = json.load(f)
+                self._last_run_date = (
+                    d.get("last_date", "") or ""
+                )
+        except Exception:
+            self._last_run_date = ""
+
+    def _save_last_run(self):
+        """تاریخ امروز رو ذخیره می‌کنه."""
+        try:
+            today = datetime.now().strftime("%Y-%m-%d")
+            with open(
+                self._last_run_path, "w", encoding="utf-8"
+            ) as f:
+                json.dump(
+                    {"last_date": today},
+                    f, ensure_ascii=False, indent=2,
+                )
+            self._last_run_date = today
+        except Exception as e:
+            log_warning(f"ذخیرهٔ last_run ناموفق: {e}")
+
+    def _already_ran_today(self) -> bool:
+        """آیا امروز قبلاً اجرا شده؟"""
+        today = datetime.now().strftime("%Y-%m-%d")
+        return self._last_run_date == today
 
     def _load_searches(self) -> list[str]:
         out = []
@@ -155,35 +276,40 @@ class LinkedInCollector(BaseCollector):
                     out.append(line)
         return out
 
-    # ==================================================
-    # اتصال (نشست از قبل با login.py ساخته شده)
-    # ==================================================
+    # ═══════════════════════════════════════════════════
+    # اتصال
+    # ═══════════════════════════════════════════════════
     async def connect(self, headless: bool | None = None) -> bool:
-        """🎯 قفل سراسری مرورگر — جلوگیری از تداخل."""
         from core.adapters.browser_lock import BROWSER_LOCK
         async with BROWSER_LOCK:
             return await self._connect_locked(headless)
 
-    async def _connect_locked(self, headless: bool | None = None) -> bool:
+    async def _connect_locked(
+        self, headless: bool | None = None
+    ) -> bool:
         try:
             try:
-                from playwright.async_api import async_playwright
-            except ImportError:
-                log_error(
-                    "playwright نصب نیست: pip install playwright && playwright install chromium"
+                from playwright.async_api import (
+                    async_playwright,
                 )
+            except ImportError:
+                log_error("playwright نصب نیست")
                 return False
 
-            use_headless = self.headless if headless is None else headless
+            use_headless = (
+                self.headless if headless is None else headless
+            )
             self._pw = await async_playwright().start()
-            self._context = await self._launch_context(use_headless)
+            self._context = await self._launch_context(
+                use_headless
+            )
             self._page = (
                 self._context.pages[0]
                 if self._context.pages
                 else await self._context.new_page()
             )
             await self._page.goto(
-                LINKEDIN_FEED_URL,
+                self._feed_url,
                 wait_until="domcontentloaded",
                 timeout=90000,
             )
@@ -194,65 +320,70 @@ class LinkedInCollector(BaseCollector):
                 return True
 
             if await self._restore_state():
-                await self._page.goto(LINKEDIN_FEED_URL, wait_until="domcontentloaded")
+                await self._page.goto(
+                    self._feed_url,
+                    wait_until="domcontentloaded",
+                )
                 if await self._wait_login(rounds=6):
                     await self._export_state()
-                    log_success("✅ نشست لینکدین از کوکی ذخیره‌شده بازیابی شد")
+                    log_success("✅ نشست از کوکی بازیابی شد")
                     return True
 
             if self.email and self.password:
-                log_info("🔄 تلاش برای ورود خودکار لینکدین با ایمیل/رمز .env...")
+                log_info("🔄 ورود خودکار...")
                 if await self._auto_login():
                     await self._export_state()
                     return True
 
             log_error(
-                "نشست لینکدین تشخیص داده نشد یا منقضی شده. یک‌بار `python login.py` (گزینهٔ لینکدین) "
-                "را اجرا کن و در مرورگر وارد حساب شو (تیک «keep me logged in»)."
+                "نشست لینکدین نیست — "
+                "`python login.py` (گزینهٔ ۶)"
             )
             await self.disconnect()
             return False
         except Exception as e:
-            log_error(f"خطا در اتصال لینکدین: {e}")
+            log_error(f"خطا در اتصال: {e}")
             self._set_error(str(e))
             return False
-            
+
     async def _auto_login(self) -> bool:
-        """ورود خودکار با ایمیل/رمز (فقط به‌عنوان آخرین راه‌حل، چون ریسک بن دارد)."""
         try:
             await self._page.goto(
-                "https://www.linkedin.com/login", wait_until="domcontentloaded"
+                "https://www.linkedin.com/login",
+                wait_until="domcontentloaded",
             )
             await asyncio.sleep(2)
-            email_sel = await self._page.query_selector("input#username")
-            if not email_sel:
-                log_warning("لینکدین: صفحهٔ ورود پیدا نشد — ورود خودکار لغو شد")
+            if not await self._page.query_selector(
+                "input#username"
+            ):
+                log_warning("صفحهٔ ورود پیدا نشد")
                 return False
-            await self._page.fill("input#username", self.email)
-            await self._page.fill("input#password", self.password)
+            await self._page.fill(
+                "input#username", self.email
+            )
+            await self._page.fill(
+                "input#password", self.password
+            )
             await asyncio.sleep(0.5)
             try:
                 await self._page.click('button[type="submit"]')
             except Exception:
-                try:
-                    await self._page.click("button.btn__primary--large")
-                except Exception:
-                    pass
+                pass
             for _ in range(20):
                 await asyncio.sleep(2)
                 if await self._is_logged_in():
                     self._connected = True
-                    self._set_status(ConnectionStatus.CONNECTED)
-                    log_success("✅ ورود خودکار لینکدین موفق شد")
+                    self._set_status(
+                        ConnectionStatus.CONNECTED
+                    )
+                    log_success("✅ ورود خودکار موفق")
                     return True
                 if "/checkpoint" in (self._page.url or ""):
-                    log_warning(
-                        "⚠️ لینکدین تأیید امنیتی خواست (checkpoint) — ورود خودکار ممکن نیست"
-                    )
+                    log_warning("⚠️ checkpoint")
                     return False
             return False
         except Exception as e:
-            log_warning(f"ورود خودکار لینکدین ناموفق: {e}")
+            log_warning(f"ورود خودکار ناموفق: {e}")
             return False
 
     async def _wait_login(self, rounds: int = 15) -> bool:
@@ -261,42 +392,45 @@ class LinkedInCollector(BaseCollector):
             if await self._is_logged_in():
                 self._connected = True
                 self._set_status(ConnectionStatus.CONNECTED)
-                log_success("✅ اتصال لینکدین برقرار شد (نشست موجود)")
+                log_success("✅ اتصال لینکدین برقرار شد")
                 return True
         return False
 
     async def _export_state(self):
-        """کوکی‌ها/localStorage نشست را ذخیره می‌کند تا نشست پایدار بماند."""
         try:
-            await self._context.storage_state(path=self._state_path)
+            await self._context.storage_state(
+                path=self._state_path
+            )
         except Exception as e:
-            log_warning(f"ذخیرهٔ نشست لینکدین ناموفق: {e}")
+            log_warning(f"ذخیرهٔ نشست ناموفق: {e}")
 
     async def _restore_state(self) -> bool:
-        """کوکی‌های نشستِ ذخیره‌شده را به context تزریق می‌کند."""
         try:
             if not os.path.exists(self._state_path):
                 return False
-            with open(self._state_path, encoding="utf-8") as f:
+            with open(
+                self._state_path, encoding="utf-8"
+            ) as f:
                 state = json.load(f)
             cookies = state.get("cookies") or []
             if cookies:
                 await self._context.add_cookies(cookies)
                 return True
         except Exception as e:
-            log_warning(f"بازیابی نشست لینکدین ناموفق: {e}")
+            log_warning(f"بازیابی نشست ناموفق: {e}")
         return False
 
     async def _launch_context(self, use_headless: bool):
-        """مرورگر را قابل‌حمل باز می‌کند: اگر CHROME_PATH ست باشد همان، وگرنه
-        خودکار Chrome→Edge→Chromium (روی سرور لینوکس هم بدون مسیر هاردکد کار می‌کند)."""
         from config import CHROME_PATH
         base = dict(
             user_data_dir=self._user_data_dir,
             headless=use_headless,
             viewport={"width": 1366, "height": 900},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/126.0.0.0 Safari/537.36"
+            ),
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
@@ -310,34 +444,35 @@ class LinkedInCollector(BaseCollector):
                 ctx = await self._pw.chromium.launch_persistent_context(
                     executable_path=CHROME_PATH, **base
                 )
-                log_info("مرورگر لینکدین با مسیرِ CHROME_PATH باز شد")
+                log_info("مرورگر با CHROME_PATH")
                 return ctx
             except Exception as e:
-                log_warning(f"CHROME_PATH کار نکرد ({e})؛ سراغ مرورگر خودکار می‌روم")
+                log_warning(f"CHROME_PATH ناموفق: {e}")
         last_err = None
         for channel in ("chrome", None):
             try:
                 kwargs = dict(base)
                 if channel:
                     kwargs["channel"] = channel
-                ctx = await self._pw.chromium.launch_persistent_context(**kwargs)
-                log_info(f"مرورگر لینکدین با {channel or 'chromium'} باز شد")
+                ctx = await self._pw.chromium.launch_persistent_context(
+                    **kwargs
+                )
+                log_info(
+                    f"مرورگر با {channel or 'chromium'}"
+                )
                 return ctx
             except Exception as e:
                 last_err = e
                 continue
-        raise RuntimeError(f"هیچ مرورگری برای لینکدین باز نشد: {last_err}")
+        raise RuntimeError(
+            f"هیچ مرورگری باز نشد: {last_err}"
+        )
 
     async def _is_logged_in(self) -> bool:
-        """آیا واقعاً وارد لینکدین هستیم؟"""
         try:
             url = (self._page.url or "").lower()
-            
-            # اگه توی صفحه ورود هستیم، لاگین نیستیم
             if "/login" in url or "/authwall" in url:
                 return False
-            
-            # نشانه‌های ورود
             for sel in LOGGEDIN_MARKERS:
                 try:
                     el = await self._page.query_selector(sel)
@@ -345,8 +480,6 @@ class LinkedInCollector(BaseCollector):
                         return True
                 except Exception:
                     continue
-            
-            # نشانه‌های لاگین نبودن
             for sel in LOGIN_MARKERS:
                 try:
                     el = await self._page.query_selector(sel)
@@ -354,182 +487,509 @@ class LinkedInCollector(BaseCollector):
                         return False
                 except Exception:
                     continue
-            
-            # اگه URL توی لینکدین بود و هیچ نشانه‌ای نداشت، احتمالاً لاگین هستیم
             if "linkedin.com" in url:
                 return True
-            
             return False
         except Exception:
             return False
-            
-    # ==================================================
-    # دریافت پیام‌ها = اجرای جستجوها
-    # ==================================================
-    async def fetch_messages(self, since: datetime = None) -> list[dict[str, Any]]:
-        if not self._connected or not self._page:
-            return []
 
-        # ۱) فیدِ خانه: پست‌های پیج‌ها/افرادی که فالو کرده‌ای
-        if self._monitor_feed:
-            try:
-                await self._scrape_feed()
-            except Exception as e:
-                log_warning(f"لینکدین: خطا در خواندن فید: {e}")
-
-        # ۲) جستجوی محتوا برای عبارت‌های اختیاریِ data/linkedin_searches.txt
-        searches = self._load_searches()
-        for q in searches:
-            if not self._connected:
-                break
-            try:
-                await self._scrape_search(q)
-                await asyncio.sleep(
-                    self._search_delay + random.uniform(0, self._search_delay)
-                )
-            except Exception as e:
-                log_warning(f"لینکدین: خطا در جستجوی «{q}»: {e}")
-                continue
-
-        if not self._monitor_feed and not searches:
-            log_warning(
-                "⚠️ لینکدین: نه فید فعال است نه عبارتِ سرچ — چیزی برای پایش نیست"
-            )
-
-        new_msgs = self._messages_queue.copy()
-        self._messages_queue.clear()
-        self._save_seen()
-        await self._export_state()  # نشست را تازه نگه دار
-        if new_msgs:
-            log_success(f"📥 {len(new_msgs)} پست مرتبط از لینکدین")
-        return new_msgs
-
+    # ═══════════════════════════════════════════════════
+    # check session
+    # ═══════════════════════════════════════════════════
     async def _check_session_alive(self) -> bool:
-        """اگر لینکدین به صفحهٔ ورود/authwall پرت کرد، یعنی نشست منقضی شده."""
         try:
             url = (self._page.url or "").lower()
-            if "/login" in url or "/authwall" in url or "/checkpoint" in url:
+            if any(
+                p in url
+                for p in (
+                    "/login",
+                    "/authwall",
+                    "/checkpoint",
+                )
+            ):
                 self._connected = False
                 self._set_status(ConnectionStatus.ERROR)
                 log_warning(
-                    "⚠️ نشست لینکدین منقضی شد — یک‌بار دوباره `python login.py` (گزینهٔ ۶) را اجرا کن"
+                    "⚠️ نشست منقضی — "
+                    "`python login.py` (گزینهٔ ۶)"
                 )
                 return False
         except Exception:
             pass
         return True
 
+    # ═══════════════════════════════════════════════════
+    # fetch_messages
+    # ═══════════════════════════════════════════════════
+    async def fetch_messages(
+        self, since: datetime = None
+    ) -> list[dict[str, Any]]:
+        if not self._connected or not self._page:
+            return []
+
+        # 🎯 روزی یک بار — هر ساعتی که ربات روشن شد
+        if self._once_per_day and self._already_ran_today():
+            log_info(
+                "⏭️ [linkedin] امروز قبلاً چک شده — "
+                "رد تا فردا"
+            )
+            return []
+
+        # فید فالوورها
+        if self._monitor_feed:
+            try:
+                await self._scrape_feed()
+            except Exception as e:
+                log_warning(f"خطا در فید: {e}")
+
+        # جستجوها — فقط اگه روشن باشه
+        if self._search_enabled:
+            searches = self._load_searches()
+            for q in searches:
+                if not self._connected:
+                    break
+                try:
+                    await self._scrape_search(q)
+                    await asyncio.sleep(
+                        self._search_delay
+                        + random.uniform(0, self._search_delay)
+                    )
+                except Exception as e:
+                    log_warning(f"خطا در «{q}»: {e}")
+                    continue
+
+        new_msgs = self._messages_queue.copy()
+        self._messages_queue.clear()
+        self._save_seen()
+        await self._export_state()
+
+        # ✅ بعد از موفقیت، تاریخ امروز ثبت می‌شه
+        if self._once_per_day:
+            self._save_last_run()
+
+        if new_msgs:
+            log_success(
+                f"📥 {len(new_msgs)} پست از لینکدین"
+            )
+        return new_msgs
+
+    # ═══════════════════════════════════════════════════
+    # scrape فید
+    # ═══════════════════════════════════════════════════
     async def _scrape_feed(self):
+        """فید فالوورها با کلیک روی 'Recent' + scroll انسانی."""
         page = self._page
+
+        log_info(
+            f"🏠 LinkedIn: رفتن به feed | url={self._feed_url}"
+        )
         try:
-            await page.goto(LINKEDIN_FEED_URL, wait_until="domcontentloaded", timeout=90000)
+            await page.goto(
+                self._feed_url,
+                wait_until="domcontentloaded",
+                timeout=90000,
+            )
         except Exception as e:
-            log_warning(f"لینکدین: خطا در باز کردن فید: {e}")
+            log_warning(f"خطا در باز کردن feed: {e}")
             return
-        await asyncio.sleep(8)
+
+        await self._human_delay(4, 7)
+
         if not await self._check_session_alive():
             return
-        for _ in range(self._scrolls + 2):
+
+        log_info("🔍 پیدا کردن دکمهٔ 'Recent'...")
+        clicked = await self._click_sort_recent()
+
+        if clicked:
+            log_success("✅ Sort → Recent")
+            await self._human_delay(3, 5)
+        else:
+            log_info("ℹ️ دکمهٔ Recent نبود")
+
+        log_info("🖱️ scroll آهسته...")
+        total = self._scrolls + 3
+        for i in range(total):
             try:
-                await page.mouse.wheel(0, 1400)
+                await page.mouse.move(
+                    random.randint(400, 900),
+                    random.randint(300, 700),
+                    steps=random.randint(5, 15),
+                )
             except Exception:
                 pass
-            await asyncio.sleep(2)
+            await self._human_scroll(
+                random.randint(800, 1400)
+            )
+            await self._human_delay(2, 4)
+            if (i + 1) % 2 == 0:
+                log_info(f"   ↕️ {i+1}/{total}")
 
-        await asyncio.sleep(3)
+        await self._human_delay(2, 4)
 
         posts = await self._find_posts()
-        count = await self._harvest_posts(posts[: self._max_feed_posts], source="فید")
+        if not posts:
+            log_warning("⚠️ پستی پیدا نشد")
+            return
+
+        log_info(f"📄 {len(posts)} پست پیدا شد")
+        count = await self._harvest_posts(
+            posts[: self._max_feed_posts],
+            source="فید",
+            human=True,
+        )
         if count:
-            log_success(f"🏠 فید لینکدین: {count} پست مرتبط جدید")
-            
+            log_success(f"🏠 فید: {count} پست جدید")
+
+    # ═══════════════════════════════════════════════════
+    # scrape search
+    # ═══════════════════════════════════════════════════
     async def _scrape_search(self, query: str):
         page = self._page
         url = LINKEDIN_SEARCH_URL.format(q=quote(query))
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=90000)
+            await page.goto(
+                url, wait_until="domcontentloaded", timeout=90000
+            )
         except Exception as e:
-            log_warning(f"لینکدین: خطا در باز کردن جستجو «{query}»: {e}")
+            log_warning(f"خطا در search «{query}»: {e}")
             return
         await asyncio.sleep(8)
         if not await self._check_session_alive():
             return
 
         for _ in range(self._scrolls):
-            try:
-                await page.mouse.wheel(0, 1200)
-            except Exception:
-                pass
-            await asyncio.sleep(2)
+            await self._human_scroll(
+                random.randint(900, 1400)
+            )
+            await self._human_delay(2, 4)
 
         await asyncio.sleep(3)
 
         posts = await self._find_posts()
         if not posts:
-            log_info(f"لینکدین: نتیجه‌ای برای «{query}» پیدا نشد")
+            log_info(f"ℹ️ نتیجه‌ای برای «{query}» نبود")
             return
         count = await self._harvest_posts(
-            posts[: self._max_results], source=query, query=query
+            posts[: self._max_results],
+            source=query,
+            query=query,
+            human=True,
         )
         if count:
-            log_success(f"🔎 لینکدین «{query}»: {count} پست مرتبط جدید")
-            
+            log_success(f"🔎 «{query}»: {count} پست")
+
+    # ═══════════════════════════════════════════════════
+    # کلیک Recent
+    # ═══════════════════════════════════════════════════
+    async def _click_sort_recent(self) -> bool:
+        """دکمهٔ 'Sort by: Recent' رو پیدا و کلیک می‌کنه."""
+        await asyncio.sleep(2)
+
+        # ═══════════════════════════════════════════
+        # ۱) چک کن از قبل روی Recent هستیم؟
+        # ═══════════════════════════════════════════
+        try:
+            current_text = await self._page.evaluate(
+                """
+                () => {
+                    const all = document.querySelectorAll(
+                        'strong, p, span'
+                    );
+                    for (const el of all) {
+                        const t = (el.innerText || '').trim();
+                        if (
+                            t.toLowerCase().startsWith('sort by')
+                        ) {
+                            return t;
+                        }
+                    }
+                    return '';
+                }
+                """
+            )
+            if current_text and "recent" in current_text.lower():
+                log_info(
+                    f"✅ LinkedIn از قبل Recent | {current_text}"
+                )
+                return True
+            elif current_text:
+                log_info(f"   current: {current_text}")
+        except Exception as e:
+            log_warning(f"   chk current: {e}")
+
+        # ═══════════════════════════════════════════
+        # ۲) کلیک روی dropdown (Sort by: ...)
+        # ═══════════════════════════════════════════
+        dropdown_selectors = [
+            "strong:has-text('Sort by')",
+            "strong:has-text('Sort by:')",
+            "p:has-text('Sort by')",
+            "span:has-text('Sort by')",
+        ]
+
+        clicked_dd = False
+        for sel in dropdown_selectors:
+            try:
+                els = await self._page.query_selector_all(sel)
+                for el in els:
+                    try:
+                        if not await el.is_visible():
+                            continue
+                        text = (
+                            await el.inner_text() or ""
+                        ).strip()
+                        if "sort" not in text.lower():
+                            continue
+                        log_info(f"   🔽 dropdown: {sel}")
+                        if await self._human_click(el):
+                            clicked_dd = True
+                            await self._human_delay(0.8, 1.5)
+                            break
+                    except Exception:
+                        continue
+                if clicked_dd:
+                    break
+            except Exception:
+                continue
+
+        if not clicked_dd:
+            log_info("   ℹ️ dropdown پیدا نشد")
+
+        # ═══════════════════════════════════════════
+        # ۳) کلیک روی گزینهٔ "Recent" تو dropdown
+        # ═══════════════════════════════════════════
+        recent_selectors = [
+            "div[role='option']:has-text('Recent')",
+            "li:has-text('Recent')",
+            "[role='menuitem']:has-text('Recent')",
+            "button:has-text('Recent')",
+            "span:has-text('Recent')",
+            "strong span:has-text('Recent')",
+        ]
+
+        for sel in recent_selectors:
+            try:
+                els = await self._page.query_selector_all(sel)
+                for el in els:
+                    try:
+                        if not await el.is_visible():
+                            continue
+                        text = (
+                            await el.inner_text() or ""
+                        ).strip().lower()
+                        if text == "recent":
+                            log_info(
+                                f"   ✅ Recent: {sel}"
+                            )
+                            if await self._human_click(el):
+                                await self._human_delay(1.5, 3)
+                                return True
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+
+        log_warning("⚠️ Recent پیدا نشد")
+        return False
+
+    # ═══════════════════════════════════════════════════
+    # پیدا کردن پست‌ها
+    # ═══════════════════════════════════════════════════
     async def _find_posts(self):
-        """عناصرِ پست را با چند انتخابگرِ پشتیبان پیدا می‌کند (فید و سرچ مشترک)."""
         for attempt in range(10):
-            post_selectors = [
+            for sel in (
                 "div[role='listitem']",
                 "main ul li",
-            ]
-            for sel in post_selectors:
+            ):
                 try:
-                    posts = await self._page.query_selector_all(sel)
+                    posts = (
+                        await self._page.query_selector_all(sel)
+                    )
                     if posts:
-                        log_info(f"لینکدین: {len(posts)} پست با `{sel}` پیدا شد (تلاش {attempt+1})")
+                        log_info(
+                            f"لینکدین: {len(posts)} پست "
+                            f"با `{sel}`"
+                        )
                         return posts
                 except Exception:
                     continue
             await asyncio.sleep(1)
         return []
-        
-    async def _harvest_posts(self, posts, source: str, query: str = None) -> int:
+
+    # ═══════════════════════════════════════════════════
+    # چک فالوور
+    # ═══════════════════════════════════════════════════
+    async def _is_follower_post(self, post) -> bool | None:
+        """
+        آیا این پست از کسی هست که دنبالش می‌کنیم؟
+
+        True  = فالوور (دکمهٔ Following داره)
+        False = غیرفالوور (دکمهٔ Follow داره)
+        None  = نامعلوم (تشخیص نشد → ادامه بده)
+        """
+        try:
+            result = await post.evaluate("""
+            (el) => {
+                const header = el.querySelector(
+                    '.feed-shared-header, ' +
+                    '.update-components-actor, ' +
+                    'header, .feed-shared-actor'
+                ) || el;
+                const buttons = header.querySelectorAll(
+                    'button, [role="button"], span'
+                );
+                let hasFollow = false;
+                let hasFollowing = false;
+                for (const b of buttons) {
+                    const t = (b.innerText || '').trim();
+                    if (
+                        t === 'Following' ||
+                        t === 'following'
+                    ) {
+                        hasFollowing = true;
+                    }
+                    if (t === 'Follow' || t === 'follow') {
+                        hasFollow = true;
+                    }
+                }
+                if (hasFollowing) return 'following';
+                if (hasFollow) return 'follow';
+                return 'unknown';
+            }
+            """)
+            if result == "following":
+                return True
+            if result == "follow":
+                return False
+            return None
+        except Exception:
+            return None
+
+    # ═══════════════════════════════════════════════════
+    # harvest
+    # ═══════════════════════════════════════════════════
+    async def _harvest_posts(
+        self,
+        posts,
+        source: str,
+        query: str = None,
+        human: bool = False,
+    ) -> int:
         count = 0
         for post in posts:
             try:
-                text = (await post.inner_text() or "").strip()
-                if not text or len(text) < 20:  # ← متن‌های خیلی کوتاه رو رد کن
+                if human:
+                    try:
+                        await post.scroll_into_view_if_needed()
+                        await self._human_delay(0.3, 0.8)
+                    except Exception:
+                        pass
+
+                # 🎯 چک فالوور — فقط برای فید
+                if self._following_only and source == "فید":
+                    is_follower = await self._is_follower_post(
+                        post
+                    )
+                    if (
+                        is_follower is False
+                        and self._stop_on_non_follower
+                    ):
+                        log_info(
+                            "⏹️ [linkedin] به پست غیرفالوور "
+                            "رسید — توقف"
+                        )
+                        break
+
+                # ⭐ اول متن پیش‌نمایش
+                preview = (await post.inner_text() or "").strip()
+                if not preview or len(preview) < 20:
                     continue
+
+                # ⭐ اگه پیش‌نمایش کوتاه بود، more بزن
+                has_more = (
+                    "…" in preview
+                    or "..." in preview
+                    or "more" in preview.lower()
+                )
+
+                if has_more or len(preview) < 500:
+                    try:
+                        clicked = await post.evaluate("""
+                        (el) => {
+                            const all = el.querySelectorAll(
+                                'button, span, a, [role="button"]'
+                            );
+                            for (const x of all) {
+                                const t = (x.innerText || '').trim();
+                                if (
+                                    t === '…more' ||
+                                    t === '… more' ||
+                                    t === '...more' ||
+                                    t === '... more' ||
+                                    t === 'more' ||
+                                    t.toLowerCase() === 'see more'
+                                ) {
+                                    x.click();
+                                    return true;
+                                }
+                            }
+                            return false;
+                        }
+                        """)
+                        if clicked:
+                            await asyncio.sleep(0.2)
+                    except Exception:
+                        pass
+
+                    text = (await post.inner_text() or "").strip()
+                    if not text or len(text) < 20:
+                        text = preview
+                else:
+                    text = preview
 
                 matched = self._match_post(text, query)
                 if not matched:
                     continue
 
-                urn = await post.get_attribute("data-urn") or await post.get_attribute("data-id")
-                # ← اگه urn نبود، از متن hash بگیر
-                mid = urn or hashlib.md5(text.encode("utf-8")).hexdigest()[:16]
+                urn = (
+                    await post.get_attribute("data-urn")
+                    or await post.get_attribute("data-id")
+                )
+                mid = urn or hashlib.md5(
+                    text.encode("utf-8")
+                ).hexdigest()[:16]
                 if mid in self._seen_ids:
                     continue
                 self._seen_ids.add(mid)
 
-                # ← نویسنده رو از متن استخراج کن (چون انتخابگرها عوض شدن)
                 author = ""
                 try:
-                    # لینک پروفایل نویسنده
-                    a = await post.query_selector("a[href*='/in/']")
+                    a = await post.query_selector(
+                        "a[href*='/in/']"
+                    )
                     if a:
-                        author = (await a.inner_text() or "").strip()[:100]
+                        author = (
+                            await a.inner_text() or ""
+                        ).strip()[:100]
                 except Exception:
                     pass
 
-                # ← لینک پست رو استخراج کن
                 permalink = await self._extract_link(post)
 
-                media_type, local_file_path = "text", None
+                media_type, local_path = "text", None
                 try:
-                    from core.adapters.web_media import download_dom_image
-                    mt, lp = await download_dom_image(self._page, post, self._media_dir, "linkedin")
+                    from core.adapters.web_media import (
+                        download_dom_image,
+                    )
+                    mt, lp = await download_dom_image(
+                        self._page,
+                        post,
+                        self._media_dir,
+                        "linkedin",
+                    )
                     if mt:
-                        media_type, local_file_path = mt, lp
+                        media_type, local_path = mt, lp
                 except Exception:
                     pass
 
@@ -547,43 +1007,35 @@ class LinkedInCollector(BaseCollector):
                     "timestamp": datetime.now(),
                     "media_type": media_type,
                     "file_id": None,
-                    "local_file_path": local_file_path,
+                    "local_file_path": local_path,
                     "keywords": ",".join(sorted(matched)),
                     "reply_to": None,
                 })
                 count += 1
+
+                if human:
+                    await self._human_delay(0.3, 1.0)
             except Exception as e:
-                log_warning(f"لینکدین: خطا در یک پست: {e}")
+                log_warning(f"خطا در یک پست: {e}")
                 continue
         return count
-        
+
+    # ═══════════════════════════════════════════════════
+    # helpers
+    # ═══════════════════════════════════════════════════
     def _match_post(self, text: str, query: str) -> set:
-        """🎯 موقت برای تست: هر پستی رو قبول کن (بعداً برگردون به حالت اصلی)"""
         matched = set(self._kw.match(text))
-        if self._add_query_to_keywords and query and query.lower() in (text or "").lower():
+        if (
+            self._add_query_to_keywords
+            and query
+            and query.lower() in (text or "").lower()
+        ):
             matched.add(query)
-        # موقت: اگه هیچی نبود، بذار رد نشه
-        if not matched:
-            matched.add("__debug__")
         return matched
-        
-    @staticmethod
-    async def _extract(post, selectors) -> str:
-        for sel in selectors:
-            try:
-                el = await post.query_selector(sel)
-                if el:
-                    t = (await el.inner_text() or "").strip()
-                    if t:
-                        return t.split("\n")[0]
-            except Exception:
-                continue
-        return ""
 
     @staticmethod
     async def _extract_link(post) -> str | None:
         try:
-            # اول دنبال لینک پست بگرد
             for sel in (
                 'a[href*="/feed/update/"]',
                 'a[href*="/posts/"]',
@@ -594,7 +1046,6 @@ class LinkedInCollector(BaseCollector):
                     href = await a.get_attribute("href")
                     if href:
                         return href.split("?")[0]
-            # اگه نبود، لینک پروفایل نویسنده رو بده
             a = await post.query_selector("a[href*='/in/']")
             if a:
                 href = await a.get_attribute("href")
@@ -603,13 +1054,15 @@ class LinkedInCollector(BaseCollector):
         except Exception:
             pass
         return None
-        
+
     async def dump_dom(self, path: str = None) -> str:
-        path = path or os.path.join(self._user_data_dir, "linkedin_dom_dump.html")
+        path = path or os.path.join(
+            self._user_data_dir, "linkedin_dom_dump.html"
+        )
         html = await self._page.content()
         with open(path, "w", encoding="utf-8") as f:
             f.write(html)
-        log_info(f"DOM لینکدین در {path} ذخیره شد")
+        log_info(f"DOM در {path}")
         return path
 
     async def disconnect(self) -> None:

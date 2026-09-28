@@ -31,10 +31,8 @@ if sys.platform == "win32":
     except Exception:
         pass
 import asyncio
-import os
 import platform
 import signal
-import sys
 import time
 from typing import Any
 

@@ -90,8 +90,8 @@ async def main(headless: bool = False):
         from collectors.linkedin import LinkedInCollector
         collector = LinkedInCollector(
             headless=headless, poll_seconds=999,
-            max_results=5, scrolls=1,
-            monitor_feed=True, max_feed_posts=5,
+            max_results=5, scrolls=2,
+            monitor_feed=True, max_feed_posts=10,
         )
         report.add("collector.init", "ok",
                    f"platform={collector.platform_name}")

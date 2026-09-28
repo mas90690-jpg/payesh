@@ -52,7 +52,7 @@ LOG_FILE = os.path.join(ROOT, "storage", "logs", "app.jsonl")
 REQUESTS_FILE = os.path.join(ROOT, "storage", "requests.jsonl")
 
 _SQLITE_TIMEOUT_S = 5.0
-_PYTEST_TIMEOUT_S = 300
+_PYTEST_TIMEOUT_S = 900
 _CLEANUP_TIMEOUT_S = 120
 _START_VERIFY_WAIT_S = 1.0
 _LOG_PREVIEW_LEN = 80
@@ -227,8 +227,9 @@ def start() -> None:
 
     kwargs: dict[str, Any] = {"cwd": ROOT}
     if os.name == "nt":
-        kwargs["creationflags"] = getattr(
-            subprocess, "CREATE_NEW_CONSOLE", 0
+        kwargs["creationflags"] = (
+            getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         )
     else:
         kwargs["start_new_session"] = True
@@ -267,36 +268,45 @@ def stop() -> None:
     try:
         if psutil:
             p = psutil.Process(pid)
-            try:
-                children = p.children(recursive=True)
-            except Exception:
-                children = []
 
-            for child in children:
+            # ─── روی Windows: سیگنال «تمیز بمیر» ───
+            if os.name == "nt":
                 try:
-                    child.terminate()
+                    p.send_signal(signal.CTRL_BREAK_EVENT)
+                    _print("[..] Sent Ctrl+Break — waiting...")
+                except Exception as e:
+                    _print(f"[!] CTRL_BREAK failed: {e}")
+                    try:
+                        p.terminate()
+                    except Exception:
+                        pass
+            else:
+                # ─── Linux/macOS: SIGTERM ───
+                try:
+                    p.terminate()
                 except Exception:
                     pass
 
+            # ─── صبر برای خروج تمیز ───
             try:
-                p.terminate()
-            except Exception:
-                pass
-
-            try:
-                p.wait(timeout=10)
+                p.wait(timeout=15)
+                _print("[OK] Bot stopped cleanly.")
             except psutil.TimeoutExpired:
+                _print("[!] Timeout — forcing kill...")
+                try:
+                    children = p.children(recursive=True)
+                except Exception:
+                    children = []
+                for child in children:
+                    try:
+                        child.kill()
+                    except Exception:
+                        pass
                 try:
                     p.kill()
                 except Exception:
                     pass
-                for child in children:
-                    try:
-                        if child.is_running():
-                            child.kill()
-                    except Exception:
-                        pass
-            _print("[OK] Bot stopped.")
+                _print("[OK] Bot killed (forced).")
         else:
             try:
                 os.kill(pid, signal.SIGTERM)
@@ -594,7 +604,6 @@ def _print_crm_result(res: dict[str, Any], split: bool) -> None:
         if res.get("xlsx"):
             _print(f"   • XLSX: {res['xlsx']}")
 
-
 def recent_reports() -> None:
     """آخرین فایل‌های reports."""
     if not os.path.isdir(REPORTS_DIR):
@@ -623,25 +632,70 @@ def recent_reports() -> None:
         ts = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
         kb = size / 1024
         _print(f"   [{ts}] {name:50s}  ({kb:.1f} KB)")
-
-
+        
 def tests() -> None:
-    """اجرای تست‌ها."""
-    _print("[..] Running tests...")
+    """اجرای تست‌های end-to-end — با منوی انتخاب پلتفرم."""
+    _print("\n  📋 پلتفرم‌های موجود برای تست:")
+    _print("    [0] همه (bale + eitaa + rubika + telegram + whatsapp + linkedin + web)")
+    _print("    [1] بله (bale)")
+    _print("    [2] ایتا (eitaa)")
+    _print("    [3] روبیکا (rubika)")
+    _print("    [4] تلگرام (telegram)")
+    _print("    [5] واتساپ (whatsapp)")
+    _print("    [6] لینکدین (linkedin)")
+    _print("    [7] وب (web)")
+
+    choice = _ask_input("\n  انتخاب [0-7] (Enter = همه): ")
+    if choice is None:
+        _print("[i] لغو شد.")
+        return
+
+    choice = (choice or "0").strip() or "0"
+
+    # ─── نگاشت انتخاب به پلتفرم ───
+    _TEST_PLATFORMS = {
+        "0": None,                          # همه
+        "1": ["bale"],
+        "2": ["eitaa"],
+        "3": ["rubika"],
+        "4": ["telegram"],
+        "5": ["whatsapp"],
+        "6": ["linkedin"],
+        "7": ["web"],
+    }
+
+    if choice not in _TEST_PLATFORMS:
+        _print(f"[X] انتخاب نامعتبر: {choice}")
+        return
+
+    platforms = _TEST_PLATFORMS[choice]
+
+    runner = os.path.join(ROOT, "tests", "run_all_tests.py")
+    if not os.path.exists(runner):
+        _print(f"[X] Test runner not found: {runner}")
+        return
+
+    # ─── ساخت دستور ───
+    cmd = [PYEXE, runner]
+    if platforms:
+        cmd.append("--only")
+        cmd.extend(platforms)
+        _print(f"\n[..] Running tests for: {', '.join(platforms)}...")
+    else:
+        _print("\n[..] Running ALL tests (7 platforms)...")
+
+    _print("     (این ممکنه چند دقیقه طول بکشه)\n")
+
     try:
-        rc = subprocess.call(
-            [PYEXE, "-m", "pytest", "-q"],
-            cwd=ROOT,
-            timeout=_PYTEST_TIMEOUT_S,
-        )
+        rc = subprocess.call(cmd, cwd=ROOT)
         if rc == 0:
-            _print("[OK] Tests passed.")
+            _print("\n[OK] Tests passed.")
         else:
-            _print(f"[!] Tests failed (rc={rc}).")
-    except subprocess.TimeoutExpired:
-        _print(f"[X] Tests timed out after {_PYTEST_TIMEOUT_S}s")
+            _print(f"\n[!] Tests failed (rc={rc}).")
+    except KeyboardInterrupt:
+        _print("\n[i] لغو شد.")
     except Exception as e:
-        _print(f"[X] Tests failed: {e}")
+        _print(f"\n[X] Tests failed: {type(e).__name__}: {e}")      
 
 
 def cleanup() -> None:
@@ -1208,7 +1262,7 @@ MENU: list[tuple[str, str, Callable[[], None]]] = [
     ("15", "Open local AI chat (offline)", open_chat),
     ("16", "Recent reports & CRM files", recent_reports),
     ("17", "Pull from GitHub (restore + pull)", github_pull),
-    ("18", "Git status (branch/changes)", git_status_full := github_status),
+    ("18", "Git status (branch/changes)", github_status),
 ]
 
 

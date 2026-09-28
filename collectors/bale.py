@@ -1089,16 +1089,6 @@ class BaleCollector(BaseCollector):
         except Exception:
             pass
         self._pw = None
-
-        try:
-            import subprocess
-            subprocess.run(
-                ["taskkill", "/F", "/IM", "chrome.exe"],
-                capture_output=True, timeout=5,
-            )
-        except Exception:
-            pass
-
         self._connected = False
         self._set_status(ConnectionStatus.DISCONNECTED)
         log_info("🔌 قطع ارتباط از بله‌وب")

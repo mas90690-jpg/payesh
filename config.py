@@ -26,7 +26,7 @@ from data import paths as data_paths
 from dotenv import load_dotenv
 
 # ─── Load .env (force override) ───
-load_dotenv(override=True)
+load_dotenv(override=False)
 
 # ══════════════════════════════════════════════════════════
 # helpers (type-safe env readers)
@@ -668,15 +668,31 @@ def _build_plugins_config() -> dict[str, Any]:
             ),
             "monitor_feed": _env_bool("LINKEDIN_MONITOR_FEED", True),
             "max_feed_posts": _env_int(
-                "LINKEDIN_MAX_FEED_POSTS", 25, min_val=1, max_val=500
+                "LINKEDIN_MAX_FEED_POSTS", 30, min_val=1, max_val=500
             ),
             "enabled": _env_bool("LINKEDIN_ENABLED", False),
             "headless": _env_bool("BROWSER_HEADLESS", True),
             "add_query_to_keywords": _env_bool(
                 "LINKEDIN_ADD_QUERY_TO_KEYWORDS", True
             ),
+            # 🆕 تنظیمات جدید (فقط فالوورها، روزی یک بار)
+            "feed_url": _env_str(
+                "LINKEDIN_FEED_URL",
+                "https://www.linkedin.com/feed/",
+            ),
+            "following_only": _env_bool(
+                "LINKEDIN_FOLLOWING_ONLY", True
+            ),
+            "stop_on_non_follower": _env_bool(
+                "LINKEDIN_STOP_ON_NON_FOLLOWER", True
+            ),
+            "once_per_day": _env_bool(
+                "LINKEDIN_ONCE_PER_DAY", True
+            ),
+            "search_enabled": _env_bool(
+                "LINKEDIN_SEARCH_ENABLED", False
+            ),
         },
-
         # ═══ وب ═══
         "webcollector": {
             "sources_file": str(data_paths.WEB_SOURCES),
@@ -995,7 +1011,7 @@ def reload() -> None:
 
     ⚠️ dictها رو in-place به‌روزرسانی می‌کنه تا referenceهای موجود معتبر بمونن.
     """
-    load_dotenv(override=True)
+    load_dotenv(override=False)
 
     # ─── globals ───
     global AI_ENABLED, EVENT_LOG, AI_PRIORITY

@@ -192,6 +192,9 @@ class SQLiteDatabase(BaseDatabase):
                 f"current=v{current} target=v{_SCHEMA_VERSION}"
             )
 
+            # 🆕 sync PRAGMA user_version با جدول migrations
+            await self._sync_user_version(conn, current)
+
             if current >= _SCHEMA_VERSION:
                 log_info(
                     f"ℹ️ [DB:sqlite] migrate نیازی نیست "
@@ -255,9 +258,56 @@ class SQLiteDatabase(BaseDatabase):
                     f"✅ [DB:sqlite] migrate کامل | "
                     f"{applied} migration"
                 )
+                # 🆕 بعد از اعمال migrationها، PRAGMA رو هم set کن
+                await self._sync_user_version(
+                    conn, _SCHEMA_VERSION
+                )
             else:
                 log_info("ℹ️ [DB:sqlite] migrate: لازم نبود")
 
+    # ═══════════════════════════════════════════════════════════
+    # 🆕 sync PRAGMA user_version — استاندارد SQLite
+    # ═══════════════════════════════════════════════════════════
+    async def _sync_user_version(self, conn, version: int):
+        """PRAGMA user_version رو با جدول migrations sync میکنه.
+
+        چرا مهمه؟
+          - PRAGMA user_version استاندارد SQLite هست
+          - ابزارهای خارجی (DBeaver, DB Browser) ازش میفهمن schema چیه
+          - جدول migrations منبع حقیقت (source of truth) میمونه
+          - PRAGMA فقط یه آینهست که همیشه باید هماهنگ باشه
+
+        Args:
+            conn: اتصال aiosqlite فعال
+            version: نسخهٔ فعلی از جدول migrations
+        """
+        if version <= 0:
+            return
+        try:
+            # چک کن از قبل set شده؟
+            cur = await conn.execute("PRAGMA user_version")
+            row = await cur.fetchone()
+            current_pragma = row[0] if row else 0
+
+            if current_pragma == version:
+                # از قبل هماهنگه — کاری نکن
+                return
+
+            # PRAGMA نمیتونه پارامتر ? بگیره → f-string امنه چون int هست
+            await conn.execute(
+                f"PRAGMA user_version = {int(version)}"
+            )
+            await conn.commit()
+            log_info(
+                f"🔧 [DB:sqlite] PRAGMA user_version sync | "
+                f"v{current_pragma} → v{version}"
+            )
+        except Exception as e:
+            log_warning(
+                f"⚠️ [DB:sqlite] sync user_version | "
+                f"{type(e).__name__}: {e}"
+            )
+            
     # ─── write ───
     async def save_message(self, message: dict[str, Any]) -> int:
         msg_id = message.get("id")

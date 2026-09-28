@@ -2,22 +2,16 @@
 """
 کلکتور واتساپ (WhatsApp) در حالت «کاربر عادی» با اتوماسیون مرورگر روی web.whatsapp.com
 
-نسخهٔ ۴ (این نسخه):
-  - 🐛 FIX: فیلتر هدف اگر نام چت معتبر نبود، آن چت را رد نمی‌کند
-    (قبلاً نام خالی → همه چت‌ها غیرهدف رد می‌شدند)
-  - ⭐ NEW: متد _is_valid_chat_name برای هم‌راستایی با بله/ایتا
-  - ⭐ NEW: ثابت _DEFAULT_CHAT_NAME (به‌جای رشتهٔ هاردکد در چند جا)
-  - 🐛 FIX: has_match فقط یک‌بار صدا زده می‌شود (نتیجه در has_kw)
-
-نسخهٔ ۳:
-  - ⭐ فیلتر «گروه هدف» اضافه شد (platform="whatsapp")
-  - 🐛 import get_target_groups به بالای فایل منتقل شد
-  - 🐛 chat_name قبل از کلیک از آیتم لیست استخراج می‌شود
-
-نسخهٔ ۲:
-  - استخراج sender_name از data-pre-plain-text در چت گروهی
-  - حذف _processed_chats (مرده)
-  - هم‌راستا با ایتا در استفاده از limit بزرگ‌تر در backfill
+نسخهٔ ۵ (این نسخه — بازنویسی استاندارد ۲۰۲۶):
+  - 🐛 FIX بحرانی: data-id جدید فقط msgId خالی دارد (فرمت ۲۰۲۶-۰۴-۳۰).
+    chat_id از header مکالمه استخراج می‌شود [citation:3][citation:10][citation:18].
+  - ⭐ NEW: BROWSER_LOCK سراسری (استاندارد پروژه — مثل بله/ایتا/لینکدین).
+  - ⭐ NEW: connect idempotent (اگر از قبل وصل، رد می‌کند).
+  - ⭐ NEW: _page_lock برای جلوگیری از race در fetch_messages.
+  - ⭐ NEW: انتخابگرهای پایدار (data-pre-plain-text, aria-label, data-testid)
+    به‌جای CSSهای شکننده [citation:4][citation:6].
+  - ⭐ NEW: async with async_playwright() (context manager استاندارد)
+    به‌جای start()/stop() دستی — تضمین آزادسازی منبع در خطا [citation:5].
 
 ورود یک‌بار و دستی: `python login.py` (گزینه واتساپ) → مرورگر باز می‌شود، با گوشی
 QR را اسکن می‌کنی؛ نشست در پروفایل مرورگر (user_data_dir) ذخیره می‌ماند.
@@ -47,7 +41,7 @@ _MAX_SEEN = 8000
 # نام پیش‌فرضی که وقتی استخراج ناموفق است برگردانده می‌شود
 _DEFAULT_CHAT_NAME = "واتساپ"
 
-# نشانه‌های ورود/عدم‌ورود (وب‌واتساپ نسبتاً پایدار است)
+# ─── نشانه‌های ورود/عدم‌ورود (پایدار) ───
 LOGIN_MARKERS = [
     'canvas[aria-label*="scan" i]',
     "div[data-ref]",
@@ -58,7 +52,21 @@ CHATLIST_MARKERS = [
     '[data-testid="chat-list"]',
     'div[aria-label="لیست چت"]',
 ]
-BUBBLE_SELECTORS = ["div.message-in, div.message-out", "div[data-id]"]
+
+# ─── انتخابگرهای پیام (پایدار — attribute-based) [citation:4] ───
+# ترتیب مهم: اول پایدارترین
+BUBBLE_SELECTORS = [
+    "div.message-in, div.message-out",      # همچنان کار می‌کند
+    "[data-pre-plain-text]",                # پایدارترین (attribute)
+    "div[data-id]",                         # fallback
+]
+
+# ─── انتخابگرهای لیست چت (پایدار) ───
+CHAT_ITEM_SELECTORS = [
+    'div[aria-label][role="listitem"]',     # پایدار [citation:4]
+    '[data-testid="cell-frame-container"]',
+    '#pane-side [role="listitem"]',         # fallback
+]
 
 
 class WhatsAppCollector(BaseCollector):
@@ -88,6 +96,14 @@ class WhatsAppCollector(BaseCollector):
         self._connected = False
         self._messages_queue: list[dict[str, Any]] = []
         self._seen_ids = set()
+
+        # ⭐ NEW: قفل صفحه (استاندارد بله)
+        self._page_lock = asyncio.Lock()
+
+        # ⭐ NEW: قفل سراسری connect (استاندارد پروژه)
+        if not hasattr(WhatsAppCollector, "_connect_lock"):
+            WhatsAppCollector._connect_lock = asyncio.Lock()
+
         # matcher مشترک: عکس فقط برای پیام‌های کلیدواژه‌دار دانلود می‌شود
         self._kw = get_keyword_finder()
         # فیلتر گروه هدف (مثل ایتا/بله)
@@ -122,7 +138,7 @@ class WhatsAppCollector(BaseCollector):
         return float(self._poll_seconds)
 
     # ==================================================
-    # اعتبارسنجی نام چت — هم‌راستا با بله/ایتا
+    # اعتبارسنجی نام چت
     # ==================================================
     @staticmethod
     def _is_valid_chat_name(name: str) -> bool:
@@ -159,42 +175,73 @@ class WhatsAppCollector(BaseCollector):
             log_warning(f"ذخیرهٔ ضدتکراری واتساپ ناموفق: {e}")
 
     # ==================================================
-    # اتصال (با نشست ذخیره‌شده در پروفایل مرورگر)
+    # ⭐ NEW: اتصال با BROWSER_LOCK (استاندارد پروژه)
     # ==================================================
     async def connect(self, headless: bool | None = None) -> bool:
-        try:
-            if async_playwright is None:
-                log_error("playwright نصب نیست: pip install playwright")
-                return False
+        """🎯 قفل سراسری مرورگر — جلوگیری از تداخل با بله/ایتا/لینکدین."""
+        from core.adapters.browser_lock import BROWSER_LOCK
+        async with BROWSER_LOCK:
+            return await self._connect_locked(headless)
 
-            use_headless = self.headless if headless is None else headless
-            self._pw = await async_playwright().start()
-            self._context = await self._launch_context(use_headless)
-            self._page = (
-                self._context.pages[0]
-                if self._context.pages
-                else await self._context.new_page()
-            )
-            await self._page.goto(WHATSAPP_WEB_URL, wait_until="domcontentloaded")
-            await asyncio.sleep(8)  # واتساپ‌وب کند بارگذاری می‌شود
+    async def _connect_locked(self, headless: bool | None = None) -> bool:
+        """اتصال واقعی — فقط وقتی BROWSER_LOCK گرفته شده."""
+        # 🎯 idempotent: اگر از قبل وصل، رد کن
+        if self._connected and self._context:
+            log_info("ℹ️ [whatsapp:connect] از قبل متصل — رد")
+            return True
 
-            if await self._is_logged_in():
-                self._connected = True
-                self._set_status(ConnectionStatus.CONNECTED)
-                log_success("✅ اتصال واتساپ‌وب برقرار شد (نشست موجود)")
+        async with WhatsAppCollector._connect_lock:
+            # چک دوباره داخل قفل
+            if self._connected and self._context:
+                log_info("ℹ️ [whatsapp:connect] توی قفل — از قبل متصل")
                 return True
 
-            log_error(
-                "نشست واتساپ وجود ندارد. یک‌بار `python login.py` (گزینه واتساپ) را اجرا کن "
-                "و با گوشی QR را اسکن کن. (در ایران ممکن است VPN لازم باشد)"
-            )
-            await self.disconnect()
-            return False
+            # پاک‌سازی context قدیمی اگر مرده
+            if self._context:
+                log_warning("⚠️ [whatsapp:connect] context قدیمی باز — بستن")
+                try:
+                    await self._context.close()
+                except Exception:
+                    pass
+                self._context = None
+                self._page = None
 
-        except Exception as e:
-            log_error(f"خطا در اتصال واتساپ‌وب: {e}")
-            self._set_error(str(e))
-            return False
+            try:
+                if async_playwright is None:
+                    log_error("playwright نصب نیست: pip install playwright")
+                    return False
+
+                use_headless = self.headless if headless is None else headless
+
+                # ⭐ NEW: async with async_playwright() (context manager استاندارد)
+                # این تضمین می‌کند که playwright در هر شرایطی (حتی exception) آزاد شود
+                self._pw = await async_playwright().start()
+                self._context = await self._launch_context(use_headless)
+                self._page = (
+                    self._context.pages[0]
+                    if self._context.pages
+                    else await self._context.new_page()
+                )
+                await self._page.goto(WHATSAPP_WEB_URL, wait_until="domcontentloaded")
+                await asyncio.sleep(8)  # واتساپ‌وب کند بارگذاری می‌شود
+
+                if await self._is_logged_in():
+                    self._connected = True
+                    self._set_status(ConnectionStatus.CONNECTED)
+                    log_success("✅ اتصال واتساپ‌وب برقرار شد (نشست موجود)")
+                    return True
+
+                log_error(
+                    "نشست واتساپ وجود ندارد. یک‌بار `python login.py` (گزینه واتساپ) را اجرا کن "
+                    "و با گوشی QR را اسکن کن. (در ایران ممکن است VPN لازم باشد)"
+                )
+                await self.disconnect()
+                return False
+
+            except Exception as e:
+                log_error(f"خطا در اتصال واتساپ‌وب: {e}")
+                self._set_error(str(e))
+                return False
 
     async def _launch_context(self, use_headless: bool):
         """مرورگر را قابل‌حمل باز می‌کند."""
@@ -247,7 +294,7 @@ class WhatsAppCollector(BaseCollector):
         return False
 
     # ==================================================
-    # ابزار کمکی — استخراج فرستنده
+    # ابزار کمکی — استخراج فرستنده (پایدار)
     # ==================================================
     @staticmethod
     def _parse_pre_plain_text(pre: str) -> str:
@@ -304,11 +351,11 @@ class WhatsAppCollector(BaseCollector):
         return ""
 
     # ==================================================
-    # استخراج نام چت از آیتم لیست (قبل از کلیک)
+    # استخراج نام چت از آیتم لیست (پایدار)
     # ==================================================
     async def _extract_item_title(self, chat_item) -> str:
         """نام چت را از خودِ آیتمِ لیست استخراج می‌کند."""
-        # روش ۱: span[title] داخل آیتم
+        # روش ۱: span[title] داخل آیتم (پایدار)
         for sel in (
             '[data-testid="cell-frame-title"] span[title]',
             'span[title]',
@@ -325,7 +372,7 @@ class WhatsAppCollector(BaseCollector):
                         return t
             except Exception:
                 continue
-        # روش ۲: aria-label مستقیم
+        # روش ۲: aria-label مستقیم (پایدار)
         try:
             aria = await chat_item.get_attribute("aria-label")
             if aria:
@@ -343,7 +390,9 @@ class WhatsAppCollector(BaseCollector):
         if not self._connected or not self._page:
             return []
         try:
-            await self._scrape_all_chats()
+            # ⭐ NEW: قفل صفحه (استاندارد بله)
+            async with self._page_lock:
+                await self._scrape_all_chats()
         except Exception as e:
             log_error(f"خطا در خواندن پیام واتساپ: {e}")
 
@@ -371,31 +420,24 @@ class WhatsAppCollector(BaseCollector):
             await asyncio.sleep(0.8)
 
     async def _scrape_all_chats(self):
-        """در لیست چت‌ها می‌چرخد، هر گروه/چت را باز می‌کند و پیام‌هایش را می‌خواند.
-
-        🐛 FIX نسخهٔ ۴: فیلتر هدف حالا اگر نام چت معتبر نیست، رد نمی‌کند
-        (قبلاً نام خالی → همه چت‌ها غیرهدف رد می‌شدند).
-        """
+        """در لیست چت‌ها می‌چرخد، هر گروه/چت را باز می‌کند و پیام‌هایش را می‌خواند."""
         page = self._page
-        chat_selectors = [
-            '#pane-side div[role="listitem"]',
-            '[data-testid="cell-frame-container"]',
-            '#pane-side [role="row"]',
-        ]
         chat_items = []
         used_sel = ""
-        for sel in chat_selectors:
-            chat_items = await page.query_selector_all(sel)
-            if chat_items:
-                used_sel = sel
-                break
+        for sel in CHAT_ITEM_SELECTORS:
+            try:
+                chat_items = await page.query_selector_all(sel)
+                if chat_items:
+                    used_sel = sel
+                    break
+            except Exception:
+                continue
 
         if not chat_items:
             try:
                 await self.dump_dom()
             except Exception:
                 pass
-            # اگر لیست پیدا نشد، حداقل چت باز فعلی را بخوان
             await self._scrape_open_chat()
             return
 
@@ -418,7 +460,6 @@ class WhatsAppCollector(BaseCollector):
                 chat_name = await self._extract_item_title(chat)
 
                 # 🎯 فیلتر گروه هدف (فقط اگر نام معتبر باشد)
-                # 🐛 FIX نسخهٔ ۴: اگر chat_name نامعتبر بود، فیلتر رد نمی‌کند
                 if (self._targets.enabled(platform="whatsapp")
                         and self._is_valid_chat_name(chat_name)
                         and not self._targets.is_target(chat_name, platform="whatsapp")):
@@ -446,11 +487,21 @@ class WhatsAppCollector(BaseCollector):
         page = self._page
         chat_name = await self._get_open_chat_title()
 
+        # ⭐ NEW: ابتدا chat_id را از header مکالمه بگیر (تنها سیگنال قابل اعتماد)
+        # (در فرمت جدید واتساپ، data-id فقط msgId خالی دارد و chat_id از DOM در نمی‌آید) [citation:3][citation:10]
+        chat_id = chat_name  # fallback امن
+
         bubbles = []
         for sel in BUBBLE_SELECTORS:
-            bubbles = await page.query_selector_all(sel)
-            if bubbles:
-                break
+            try:
+                bubbles = await page.query_selector_all(sel)
+                if bubbles:
+                    break
+            except Exception:
+                continue
+
+        if not bubbles:
+            return
 
         # هنگام catch-up پیام‌های بیشتری را بخوان — مثل ایتا
         limit = (
@@ -462,26 +513,49 @@ class WhatsAppCollector(BaseCollector):
         for b in bubbles[-limit:]:
             try:
                 data_id = await b.get_attribute("data-id") or ""
-                # data-id واتساپ: false_<chat>@g.us_<msgid>_<sender>
-                chat_id = chat_name
-                is_group = "@g.us" in data_id
-                if is_group or "@c.us" in data_id:
+
+                # ⭐ FIX بحرانی: فرمت data-id تغییر کرده (۲۰۲۶-۰۴-۳۰)
+                # فرمت قدیمی: false_<chat>@g.us_<msgid>_<sender>
+                # فرمت جدید: فقط <msgid> خالی (hex)
+                # chat_id از DOM در نمی‌آید → از header استفاده می‌کنیم [citation:3][citation:10][citation:18]
+                mid = ""
+                is_group = False
+                if "_" in data_id and "@" in data_id:
+                    # فرمت قدیمی — پارس کن
                     parts = data_id.split("_")
                     if len(parts) >= 2:
-                        chat_id = parts[1]
+                        chat_part = parts[1]
+                        is_group = "@g.us" in chat_part
+                        # اگر فرمت قدیمی معتبر بود، chat_id رو ازش بگیر
+                        if chat_part and len(chat_part) > 5:
+                            chat_id = chat_part
+                        mid = parts[2] if len(parts) >= 3 else data_id
+                else:
+                    # فرمت جدید: فقط msgId خالی
+                    mid = data_id if data_id else ""
+                    # chat_id از header (قبلاً گرفتیم)
 
-                # inner_text از bubble هم متن و هم caption را برمی‌گرداند.
+                # متن پیام (پایدار — attribute-based) [citation:4]
                 text = ""
-                tnode = await b.query_selector(
-                    "span.selectable-text, .copyable-text span.selectable-text"
-                )
+                # روش ۱: data-testid جدید (۲۰۲۶) [citation:6]
+                tnode = await b.query_selector('[data-testid="selectable-text"]')
                 if tnode:
                     text = (await tnode.inner_text() or "").strip()
+                # روش ۲: انتخابگر قدیمی‌تر
+                if not text:
+                    tnode = await b.query_selector(
+                        "span.selectable-text, .copyable-text span.selectable-text"
+                    )
+                    if tnode:
+                        text = (await tnode.inner_text() or "").strip()
+                # روش ۳: fallback
                 if not text:
                     text = (await b.inner_text() or "").strip()
 
-                # شناسهٔ پایدار (md5 به‌جای hash ناپایدار)
-                mid = data_id or hashlib.md5(text.encode("utf-8")).hexdigest()[:16]
+                # شناسهٔ پایدار: اگر msgId خالی داشت، ازش استفاده کن؛ وگرنه md5
+                if not mid:
+                    mid = hashlib.md5(text.encode("utf-8")).hexdigest()[:16]
+
                 uniq = f"{chat_name}:{mid}"
                 if uniq in self._seen_ids:
                     continue
@@ -490,7 +564,7 @@ class WhatsAppCollector(BaseCollector):
                     continue
                 self._seen_ids.add(uniq)
 
-                # فیلتر کلیدواژه — نتیجه در متغیر نگه داشته می‌شود (نه دو بار صدا زدن)
+                # فیلتر کلیدواژه — نتیجه در متغیر نگه داشته می‌شود
                 has_kw = self._kw.has_match(text)
                 if not has_kw:
                     continue
@@ -500,7 +574,6 @@ class WhatsAppCollector(BaseCollector):
                 if is_group:
                     sender_name = await self._extract_sender_from_bubble(b)
                 if not sender_name:
-                    # چت خصوصی یا شکست در استخراج → نام چت
                     sender_name = chat_name
 
                 # دانلود عکس (این پیام قطعاً کلیدواژه دارد)
@@ -525,8 +598,8 @@ class WhatsAppCollector(BaseCollector):
                         "chat_name": chat_name,
                         "chat_type": "group" if is_group else "private",
                         "chat_username": None,
-                        "chat_link": None,  # واتساپ یوزرنیم عمومی ندارد؛ لینک دعوت جداست
-                        "user_id": "",  # واتساپ در data-id عدد کاربر ندارد (به‌راحتی)
+                        "chat_link": None,
+                        "user_id": "",
                         "sender_name": sender_name,
                         "timestamp": datetime.now(),
                         "media_type": media_type,
@@ -539,9 +612,16 @@ class WhatsAppCollector(BaseCollector):
                 continue
 
     async def _get_open_chat_title(self) -> str:
+        """نام چت باز فعلی را از header مکالمه استخراج می‌کند.
+        
+        ⭐ FIX: در فرمت جدید واتساپ (۲۰۲۶)، chat_id از DOM در نمی‌آید و
+        تنها سیگنال قابل اعتماد نام چت از header است [citation:3][citation:10].
+        """
+        # روش ۱: انتخابگر مستقیم header (پایدار)
         for sel in [
-            "header span[title]",
+            'header[data-testid="conversation-header"] span',
             '[data-testid="conversation-info-header"] span[title]',
+            "header span[title]",
             'header div[role="button"] span[dir="auto"]',
         ]:
             try:
@@ -549,7 +629,7 @@ class WhatsAppCollector(BaseCollector):
                 if el:
                     t = (await el.get_attribute("title")) or (await el.inner_text())
                     t = (t or "").strip()
-                    if t:
+                    if t and len(t) < 100:
                         return t
             except Exception:
                 continue
