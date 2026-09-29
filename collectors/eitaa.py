@@ -169,64 +169,85 @@ class EitaaCollector(BaseCollector):
         if self._connected and self._context:
             log_info("ℹ️ [eitaa:connect] از قبل متصل — connect تکراری رد شد")
             return True
-               
-        # اگر context قبلی مرده، پاکش کن
-        if self._context:
-            log_warning("⚠️ [eitaa:connect] context قدیمی باز — بستن")
+
+        async with EitaaCollector._connect_lock:
+            # چک دوباره داخل قفل
+            if self._connected and self._context:
+                log_info("ℹ️ [eitaa:connect] توی قفل — از قبل متصل")
+                return True
+
+            # اگر context قبلی مرده، پاکش کن
+            if self._context:
+                log_warning("⚠️ [eitaa:connect] context قدیمی باز — بستن")
+                try:
+                    await self._context.close()
+                except Exception:
+                    pass
+                self._context = None
+                self._page = None
+
             try:
-                await self._context.close()
-            except Exception:
-                pass
-            self._context = None
-            self._page = None
-        
-        try:
-            if async_playwright is None:
-                log_error(
-                    "playwright نصب نیست: pip install playwright "
-                    "&& playwright install chromium"
+                if async_playwright is None:
+                    log_error(
+                        "playwright نصب نیست: pip install playwright "
+                        "&& playwright install chromium"
+                    )
+                    return False
+
+                use_headless = (
+                    self.headless if headless is None else headless
                 )
+                self._pw = await async_playwright().start()
+                self._context = await self._launch_context(use_headless)
+                self._page = (
+                    self._context.pages[0]
+                    if self._context.pages
+                    else await self._context.new_page()
+                )
+                await self._page.goto(
+                    EITAA_WEB_URL, wait_until="domcontentloaded"
+                )
+
+                for _ in range(20):
+                    await asyncio.sleep(2)
+                    if await self._is_logged_in():
+                        self._connected = True
+                        self._needs_backfill = True
+                        self._set_status(ConnectionStatus.CONNECTED)
+                        log_success(
+                            "✅ اتصال ایتا‌وب برقرار شد (نشست موجود)"
+                        )
+                        return True
+
+                await self.dump_dom()
+                log_error(
+                    "نشست ایتا‌وب تشخیص داده نشد. یک‌بار "
+                    "`python login.py` (گزینه ایتا) را اجرا کن "
+                    "و در مرورگر با شماره و کد پیامکی وارد شو."
+                )
+                await self.disconnect()
                 return False
 
-            use_headless = (
-                self.headless if headless is None else headless
-            )
-            self._pw = await async_playwright().start()
-            self._context = await self._launch_context(use_headless)
-            self._page = (
-                self._context.pages[0]
-                if self._context.pages
-                else await self._context.new_page()
-            )
-            await self._page.goto(
-                EITAA_WEB_URL, wait_until="domcontentloaded"
-            )
-
-            for _ in range(20):
-                await asyncio.sleep(2)
-                if await self._is_logged_in():
-                    self._connected = True
-                    self._needs_backfill = True
-                    self._set_status(ConnectionStatus.CONNECTED)
-                    log_success(
-                        "✅ اتصال ایتا‌وب برقرار شد (نشست موجود)"
-                    )
-                    return True
-
-            await self.dump_dom()
-            log_error(
-                "نشست ایتا‌وب تشخیص داده نشد. یک‌بار "
-                "`python login.py` (گزینه ایتا) را اجرا کن "
-                "و در مرورگر با شماره و کد پیامکی وارد شو."
-            )
-            await self.disconnect()
-            return False
-
-        except Exception as e:
-            log_error(f"خطا در اتصال ایتا‌وب: {e}")
-            self._set_error(str(e))
-            return False
-            
+            except Exception as e:
+                log_error(f"خطا در اتصال ایتا‌وب: {e}")
+                self._set_error(str(e))
+                # 🎯 پاک‌سازی context تا Chrome قفل نشود
+                try:
+                    if self._context:
+                        await self._context.close()
+                except Exception:
+                    pass
+                self._context = None
+                self._page = None
+                try:
+                    if self._pw:
+                        await self._pw.stop()
+                except Exception:
+                    pass
+                self._pw = None
+                self._connected = False
+                return False
+                
     async def _launch_context(self, use_headless: bool):
         last_err = None
         for channel in ("chrome", "msedge"):

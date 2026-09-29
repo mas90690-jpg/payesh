@@ -99,6 +99,10 @@ class LinkedInCollector(BaseCollector):
         self._seen_ids = set()
         self._kw = get_keyword_finder()
 
+        # 🎯 قفل سراسری connect — جلوگیری از race
+        if not hasattr(LinkedInCollector, "_connect_lock"):
+            LinkedInCollector._connect_lock = asyncio.Lock()
+
         from config import BASE_DIR, STORAGE_DIR
 
         self._searches_file = searches_file or os.path.join(
@@ -287,65 +291,95 @@ class LinkedInCollector(BaseCollector):
     async def _connect_locked(
         self, headless: bool | None = None
     ) -> bool:
-        try:
-            try:
-                from playwright.async_api import (
-                    async_playwright,
+        # 🎯 idempotent: اگر از قبل وصل، رد کن
+        if self._connected and self._context:
+            log_info(
+                "ℹ️ [linkedin:connect] از قبل متصل — رد"
+            )
+            return True
+
+        async with LinkedInCollector._connect_lock:
+            # چک دوباره داخل قفل
+            if self._connected and self._context:
+                log_info(
+                    "ℹ️ [linkedin:connect] توی قفل — از قبل متصل"
                 )
-            except ImportError:
-                log_error("playwright نصب نیست")
-                return False
-
-            use_headless = (
-                self.headless if headless is None else headless
-            )
-            self._pw = await async_playwright().start()
-            self._context = await self._launch_context(
-                use_headless
-            )
-            self._page = (
-                self._context.pages[0]
-                if self._context.pages
-                else await self._context.new_page()
-            )
-            await self._page.goto(
-                self._feed_url,
-                wait_until="domcontentloaded",
-                timeout=90000,
-            )
-            await asyncio.sleep(5)
-
-            if await self._wait_login():
-                await self._export_state()
                 return True
 
-            if await self._restore_state():
+            # اگر context قدیمی مرده، پاکش کن
+            if self._context:
+                log_warning(
+                    "⚠️ [linkedin:connect] context قدیمی باز — بستن"
+                )
+                try:
+                    await self._context.close()
+                except Exception:
+                    pass
+                self._context = None
+                self._page = None
+
+            try:
+                try:
+                    from playwright.async_api import (
+                        async_playwright,
+                    )
+                except ImportError:
+                    log_error("playwright نصب نیست")
+                    return False
+
+                use_headless = (
+                    self.headless
+                    if headless is None
+                    else headless
+                )
+                self._pw = await async_playwright().start()
+                self._context = await self._launch_context(
+                    use_headless
+                )
+                self._page = (
+                    self._context.pages[0]
+                    if self._context.pages
+                    else await self._context.new_page()
+                )
                 await self._page.goto(
                     self._feed_url,
                     wait_until="domcontentloaded",
+                    timeout=90000,
                 )
-                if await self._wait_login(rounds=6):
-                    await self._export_state()
-                    log_success("✅ نشست از کوکی بازیابی شد")
-                    return True
+                await asyncio.sleep(5)
 
-            if self.email and self.password:
-                log_info("🔄 ورود خودکار...")
-                if await self._auto_login():
+                if await self._wait_login():
                     await self._export_state()
                     return True
 
-            log_error(
-                "نشست لینکدین نیست — "
-                "`python login.py` (گزینهٔ ۶)"
-            )
-            await self.disconnect()
-            return False
-        except Exception as e:
-            log_error(f"خطا در اتصال: {e}")
-            self._set_error(str(e))
-            return False
+                if await self._restore_state():
+                    await self._page.goto(
+                        self._feed_url,
+                        wait_until="domcontentloaded",
+                    )
+                    if await self._wait_login(rounds=6):
+                        await self._export_state()
+                        log_success("✅ نشست از کوکی بازیابی شد")
+                        return True
 
+                if self.email and self.password:
+                    log_info("🔄 ورود خودکار...")
+                    if await self._auto_login():
+                        await self._export_state()
+                        return True
+
+                log_error(
+                    "نشست لینکدین نیست — "
+                    "`python login.py` (گزینهٔ ۶)"
+                )
+                await self.disconnect()
+                return False
+            except Exception as e:
+                log_error(f"خطا در اتصال: {e}")
+                self._set_error(str(e))
+                await self.disconnect()
+                return False
+                
     async def _auto_login(self) -> bool:
         try:
             await self._page.goto(

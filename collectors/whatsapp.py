@@ -185,18 +185,16 @@ class WhatsAppCollector(BaseCollector):
 
     async def _connect_locked(self, headless: bool | None = None) -> bool:
         """اتصال واقعی — فقط وقتی BROWSER_LOCK گرفته شده."""
-        # 🎯 idempotent: اگر از قبل وصل، رد کن
+        # 🎯 idempotent
         if self._connected and self._context:
             log_info("ℹ️ [whatsapp:connect] از قبل متصل — رد")
             return True
 
         async with WhatsAppCollector._connect_lock:
-            # چک دوباره داخل قفل
             if self._connected and self._context:
                 log_info("ℹ️ [whatsapp:connect] توی قفل — از قبل متصل")
                 return True
 
-            # پاک‌سازی context قدیمی اگر مرده
             if self._context:
                 log_warning("⚠️ [whatsapp:connect] context قدیمی باز — بستن")
                 try:
@@ -213,8 +211,6 @@ class WhatsAppCollector(BaseCollector):
 
                 use_headless = self.headless if headless is None else headless
 
-                # ⭐ NEW: async with async_playwright() (context manager استاندارد)
-                # این تضمین می‌کند که playwright در هر شرایطی (حتی exception) آزاد شود
                 self._pw = await async_playwright().start()
                 self._context = await self._launch_context(use_headless)
                 self._page = (
@@ -222,30 +218,111 @@ class WhatsAppCollector(BaseCollector):
                     if self._context.pages
                     else await self._context.new_page()
                 )
-                await self._page.goto(WHATSAPP_WEB_URL, wait_until="domcontentloaded")
-                await asyncio.sleep(8)  # واتساپ‌وب کند بارگذاری می‌شود
 
-                if await self._is_logged_in():
+                # ─── goto با timeout و تشخیص خطا ───
+                log_info("🌐 [whatsapp] رفتن به web.whatsapp.com...")
+                try:
+                    await self._page.goto(
+                        WHATSAPP_WEB_URL,
+                        wait_until="domcontentloaded",
+                        timeout=60000,
+                    )
+                except Exception as e:
+                    err = str(e)
+                    log_error(f"❌ goto واتساپ شکست خورد: {err[:120]}")
+                    if "ERR_SSL_PROTOCOL_ERROR" in err:
+                        log_warning(
+                            "🔒 ERR_SSL_PROTOCOL_ERROR → VPN/Proxy لازم است"
+                        )
+                    elif "ERR_NAME_NOT_RESOLVED" in err:
+                        log_warning("🌐 DNS resolve نشد → VPN چک کن")
+                    elif "ERR_CONNECTION_TIMED_OUT" in err:
+                        log_warning("⏱️ Timeout → VPN چک کن")
+                    self._set_error(f"goto_failed: {err[:200]}")
+                    await self.disconnect()
+                    return False
+
+                # ─── انتظار پویا برای لاگین ───
+                log_info("⏳ [whatsapp] انتظار لاگین (حداکثر ۴۰ ثانیه)...")
+                login_confirmed = False
+                for attempt in range(20):
+                    await asyncio.sleep(2)
+                    if await self._is_logged_in():
+                        login_confirmed = True
+                        log_success(
+                            f"✅ لاگین واتساپ تشخیص داده شد "
+                            f"(بعد از {attempt+1} تلاش، ~{(attempt+1)*2}s)"
+                        )
+                        break
+                    if attempt % 5 == 4:
+                        log_info(f"   ⏳ [whatsapp] {attempt+1}/20 ...")
+
+                if login_confirmed:
                     self._connected = True
                     self._set_status(ConnectionStatus.CONNECTED)
-                    log_success("✅ اتصال واتساپ‌وب برقرار شد (نشست موجود)")
+                    log_success(
+                        "✅ اتصال واتساپ‌وب برقرار شد (نشست موجود)"
+                    )
                     return True
 
-                log_error(
-                    "نشست واتساپ وجود ندارد. یک‌بار `python login.py` (گزینه واتساپ) را اجرا کن "
-                    "و با گوشی QR را اسکن کن. (در ایران ممکن است VPN لازم باشد)"
-                )
+                # ─── تشخیص دقیق دلیل شکست ───
+                url = self._page.url or ""
+                title = ""
+                try:
+                    title = await self._page.title()
+                except Exception:
+                    pass
+
+                log_error("❌ [whatsapp] لاگین تشخیص داده نشد")
+                log_info(f"   URL: {url[:100]}")
+                log_info(f"   Title: {title[:80]}")
+
+                if "web.whatsapp.com" not in url:
+                    log_error("   → صفحه در واتساپ نیست (شبکه/VPN)")
+                else:
+                    qr_found = False
+                    for sel in LOGIN_MARKERS:
+                        try:
+                            el = await self._page.query_selector(sel)
+                            if el and await el.is_visible():
+                                qr_found = True
+                                break
+                        except Exception:
+                            continue
+                    if qr_found:
+                        log_error(
+                            "   → QR نمایش داده شده (نشست معتبر نیست)"
+                        )
+                        log_warning(
+                            "   راه‌حل: python login.py → گزینهٔ ۵"
+                        )
+                    else:
+                        log_error(
+                            "   → chat-list پیدا نشد (DOM تغییر کرده؟)"
+                        )
+
                 await self.disconnect()
                 return False
 
             except Exception as e:
-                log_error(f"خطا در اتصال واتساپ‌وب: {e}")
+                log_error(
+                    f"خطا در اتصال واتساپ‌وب: "
+                    f"{type(e).__name__}: {e}"
+                )
                 self._set_error(str(e))
+                await self.disconnect()
                 return False
-
+                
     async def _launch_context(self, use_headless: bool):
         """مرورگر را قابل‌حمل باز می‌کند."""
         from config import CHROME_PATH, get_browser_proxy
+
+        proxy_cfg = get_browser_proxy()
+        log_info(
+            f"🔧 [whatsapp:launch] proxy="
+            f"{'yes' if proxy_cfg else 'no'} | "
+            f"headless={use_headless}"
+        )
 
         base = dict(
             user_data_dir=self._user_data_dir,
@@ -256,8 +333,9 @@ class WhatsAppCollector(BaseCollector):
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
             ],
-            **get_browser_proxy(),
+            **proxy_cfg,
         )
+
         if CHROME_PATH:
             try:
                 ctx = await self._pw.chromium.launch_persistent_context(
@@ -266,33 +344,79 @@ class WhatsAppCollector(BaseCollector):
                 log_info("مرورگر واتساپ‌وب با مسیرِ CHROME_PATH باز شد")
                 return ctx
             except Exception as e:
-                log_warning(f"CHROME_PATH کار نکرد ({e})؛ سراغ مرورگر خودکار می‌روم")
+                log_warning(
+                    f"CHROME_PATH کار نکرد ({e})؛ "
+                    f"سراغ مرورگر خودکار می‌روم"
+                )
+
         last_err = None
         for channel in ("chrome", "msedge", None):
             try:
                 kwargs = dict(base)
                 if channel:
                     kwargs["channel"] = channel
-                ctx = await self._pw.chromium.launch_persistent_context(**kwargs)
-                log_info(f"مرورگر واتساپ‌وب با {channel or 'chromium'} باز شد")
+                ctx = await self._pw.chromium.launch_persistent_context(
+                    **kwargs
+                )
+                log_info(
+                    f"مرورگر واتساپ‌وب با {channel or 'chromium'} باز شد"
+                )
                 return ctx
             except Exception as e:
                 last_err = e
                 continue
-        raise RuntimeError(f"هیچ مرورگری برای واتساپ‌وب باز نشد: {last_err}")
 
+        raise RuntimeError(
+            f"هیچ مرورگری برای واتساپ‌وب باز نشد: {last_err}"
+        )
+        
     async def _is_logged_in(self) -> bool:
+        """چک دقیق‌تر: صفحه لود شده + المان‌ها visible."""
         try:
+            # ─── ۱) چک کن صفحه واقعاً لود شده ───
+            title = (await self._page.title() or "").lower()
+            url = (self._page.url or "").lower()
+
+            # اگر در صفحهٔ خطا/blank هستیم → نامعلوم (نه لاگین)
+            if not title and "whatsapp" not in url:
+                return False
+
+            # ─── ۲) چک QR (یعنی لاگین نیستیم) با visibility ───
             for sel in LOGIN_MARKERS:
-                if await self._page.query_selector(sel):
-                    return False
+                try:
+                    el = await self._page.query_selector(sel)
+                    if el and await el.is_visible():
+                        return False
+                except Exception:
+                    continue
+
+            # ─── ۳) چک chat-list با visibility ───
             for sel in CHATLIST_MARKERS:
-                if await self._page.query_selector(sel):
-                    return True
+                try:
+                    el = await self._page.query_selector(sel)
+                    if el and await el.is_visible():
+                        return True
+                except Exception:
+                    continue
+
+            # ─── ۴) fallback: چک وجود عناصر دیگر واتساپ ───
+            fallback_markers = [
+                'div[role="application"]',
+                'div[data-testid="default-user"]',
+                "#app",
+            ]
+            for sel in fallback_markers:
+                try:
+                    el = await self._page.query_selector(sel)
+                    if el and await el.is_visible():
+                        # صفحه واتساپ لود شده ولی شاید chat-list نباشد
+                        return False
+                except Exception:
+                    continue
+
         except Exception:
             pass
         return False
-
     # ==================================================
     # ابزار کمکی — استخراج فرستنده (پایدار)
     # ==================================================

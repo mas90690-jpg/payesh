@@ -417,6 +417,21 @@ class BaleCollector(BaseCollector):
             except Exception as e:
                 log_error(f"خطا در اتصال بله‌وب: {e}")
                 self._set_error(str(e))
+                # 🎯 پاک‌سازی context تا Chrome قفل نشود
+                try:
+                    if self._context:
+                        await self._context.close()
+                except Exception:
+                    pass
+                self._context = None
+                self._page = None
+                try:
+                    if self._pw:
+                        await self._pw.stop()
+                except Exception:
+                    pass
+                self._pw = None
+                self._connected = False
                 return False
 
     # ═══════════════════════════════════════════════════
