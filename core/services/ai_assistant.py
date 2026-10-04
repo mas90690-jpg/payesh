@@ -1,30 +1,5 @@
 ﻿# core/services/ai_assistant.py
-"""
-AIAssistant â€” Ù„Ø§ÛŒÙ‡Ù” Ù†Ø§Ø²Ú© Ø¨Ø±Ø§ÛŒ ÙØ±Ø§Ø®ÙˆØ§Ù†ÛŒ Ù…Ø¯Ù„ AI (Ollama Ù„ÙˆÚ©Ø§Ù„ ÛŒØ§ DeepSeek Ø¢Ù†Ù„Ø§ÛŒÙ†).
 
-Ù‚Ø§Ø¨Ù„ÛŒØªâ€ŒÙ‡Ø§:
-  - chat(text, system=""): Ú†Øª Ø¢Ø²Ø§Ø¯ Ø¨Ø§ system prompt
-  - chat_with_status(text, system=""): Ú†Øª Ø¨Ø§ Ù¾Ø±Ú†Ù… Ù…ÙˆÙÙ‚ÛŒØª/Ø´Ú©Ø³Øª
-  - parse_intent(text): Ù…ØªÙ† ÙØ§Ø±Ø³ÛŒ â†’ {"action": ..., "args": {...}} Ø¨Ø§ whitelist
-  - available(): Ø¢ÛŒØ§ Ù‡ÛŒÚ† providerÛŒ Ø¯Ø± Ø¯Ø³ØªØ±Ø³ Ø§Ø³ØªØŸ (Ø¨Ø§ cache TTL)
-  - Ø§ÙˆÙ„ÙˆÛŒØª Ø§Ø² .env: AI_PRIORITY=auto|deepseek|ollama
-      auto     â†’ Ø§ÙˆÙ„ DeepSeek (Ø§Ú¯Ù‡ Ú©Ù„ÛŒØ¯)ØŒ ÙˆÚ¯Ø±Ù†Ù‡ Ollama
-      deepseek â†’ ÙÙ‚Ø· DeepSeek
-      ollama   â†’ ÙÙ‚Ø· Ollama
-
-âš ï¸ Ø§ÛŒÙ† ÙØ§ÛŒÙ„ Ø±ÙˆÛŒ Ø§Ú©Ø´Ù†â€ŒÙ‡Ø§ÛŒ ChatOps Ú©Ø§Ø± Ù†Ù…ÛŒâ€ŒÚ©Ù†Ø¯ â€” ÙÙ‚Ø· NLU + Ú†Øª.
-Ø§Ú©Ø´Ù†â€ŒÙ‡Ø§ Ø¯Ø± admin_handler.py / safe_brain.py / brain.py Ù¾ÛŒØ§Ø¯Ù‡ Ø´Ø¯Ù‡â€ŒØ§Ù†Ø¯.
-
-Ù†Ø³Ø®Ù‡Ù” Û´ (Ø§ÛŒÙ† Ù†Ø³Ø®Ù‡):
-  - ðŸ”´ FIX Ø¨Ø­Ø±Ø§Ù†ÛŒ: _extract_json Ú©Ø§Ù…Ù„ Ø´Ø¯ (Ù‚Ø¨Ù„Ø§Ù‹ Ù†Ø§Ù‚Øµ Ø¨ÙˆØ¯ Ùˆ ÙØ§ÛŒÙ„
-    Ø§ØµÙ„Ø§Ù‹ parse Ù†Ù…ÛŒâ€ŒØ´Ø¯ â†’ Ù‡ÛŒÚ†â€ŒÚ†ÛŒØ² import Ù†Ù…ÛŒâ€ŒØ´Ø¯).
-  - ðŸ”´ FIX Ø¨Ø­Ø±Ø§Ù†ÛŒ: get_ai_assistant() singleton Ø§Ø¶Ø§ÙÙ‡ Ø´Ø¯
-    (Ù‚Ø¨Ù„Ø§Ù‹ ØºØ§ÛŒØ¨ Ø¨ÙˆØ¯ â†’ admin_handler / safe_brain / brain Ù‡Ù…Ù‡
-    ImportError Ù…ÛŒâ€ŒÚ¯Ø±ÙØªÙ†).
-  - ðŸŸ  FIX: enabled Ø­Ø§Ù„Ø§ Ø¨Ø§ _env_bool (Ù¾Ø´ØªÛŒØ¨Ø§Ù†ÛŒ Ø§Ø² 1/yes/on/TRUE).
-  - ðŸŸ  FIX: Ø¢Ø¯Ø±Ø³ DeepSeek Ø­Ø§Ù„Ø§ Ø§Ø² env (DEEPSEEK_API_URL) Ø¨Ø§ Ù¾ÛŒØ´â€ŒÙØ±Ø¶.
-  - âœ… Ø­ÙØ¸ Ù‡Ù…Ù‡Ù” FIXÙ‡Ø§ÛŒ Ù†Ø³Ø®Ù‡Ù” Û³.
-"""
 from __future__ import annotations
 
 import os
@@ -34,7 +9,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from core.kernel.logger import log_info, log_warning, log_error
+from core.kernel.logger import log_info, log_warning
 
 try:
     import aiohttp

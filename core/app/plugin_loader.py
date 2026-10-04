@@ -279,14 +279,29 @@ class PluginLoader:
 
         plugin_name = plugin_class.__name__.lower()
 
+        # 🐛 FIX: چک هر دو نام — هم نام کلاس هم نام پلتفرم
+        # مثلاً TelegramWebCollector → هم «telegramwebcollector» هم «telegramcollector»
+        names_to_check = [plugin_name]
+        pname = getattr(plugin_class, "platform_name", None)
+        if isinstance(pname, str) and pname:
+            names_to_check.append(f"{pname}collector")
+
         # ۱) تنظیمات اختصاصی
         try:
-            plugin_config = PLUGINS_CONFIG.get(plugin_name, {})
+            plugin_config = {}
+            matched_name = plugin_name
+            for _n in names_to_check:
+                _cfg = PLUGINS_CONFIG.get(_n, {})
+                if "enabled" in _cfg:
+                    plugin_config = _cfg
+                    matched_name = _n
+                    break
         except Exception as e:
             return True, f"PLUGINS_CONFIG دسترسی ناموفق ({e}) — پیش‌فرض فعال"
 
         if "enabled" in plugin_config and plugin_config["enabled"] is False:
-            return False, f"config: {plugin_name}.enabled=False"
+            return False, f"config: {matched_name}.enabled=False"
+            
 
         # ۲) لیست enabled_plugins
         try:
@@ -340,11 +355,24 @@ class PluginLoader:
         except Exception:
             PLUGINS_CONFIG = {}
 
+        # 🐛 FIX: چک هر دو نام — هم نام کلاس هم نام پلتفرم
         plugin_name = plugin_class.__name__.lower()
 
         # پارامترها
         params: dict[str, Any] = {}
         passed_names: list[str] = []
+
+        # پیدا کردن کلید کانفیگ درست (هم نام کلاس هم نام پلتفرم)
+        names_to_check = [plugin_name]
+        pname = getattr(plugin_class, "platform_name", None)
+        if isinstance(pname, str) and pname:
+            names_to_check.append(f"{pname}collector")
+
+        config_key = plugin_name
+        for _n in names_to_check:
+            if _n in PLUGINS_CONFIG:
+                config_key = _n
+                break
 
         # ۱) وابستگی‌های تزریقی (اولویت بالاتر)
         try:
@@ -363,7 +391,7 @@ class PluginLoader:
 
         # ۲) پارامترهای اختصاصی از config
         try:
-            config_params = PLUGINS_CONFIG.get(plugin_name, {})
+            config_params = PLUGINS_CONFIG.get(config_key, {})
             for key, value in config_params.items():
                 if key not in params:
                     params[key] = value

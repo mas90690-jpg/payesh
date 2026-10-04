@@ -2,7 +2,12 @@
 """
 کلکتور واتساپ (WhatsApp) در حالت «کاربر عادی» با اتوماسیون مرورگر روی web.whatsapp.com
 
-نسخهٔ ۵ (این نسخه — بازنویسی استاندارد ۲۰۲۶):
+نسخهٔ ۶ (این نسخه):
+  - 🐛 FIX #14: _is_logged_in دیگر لاگین معتبر را در حالت "chat-list
+    هنوز لود نشده" رد نمی‌کند. اگر QR نبود ولی app واتساپ لود شده بود
+    → True برمی‌گرداند تا caller فرصت بیشتری بدهد.
+
+نسخهٔ ۵ — بازنویسی استاندارد ۲۰۲۶:
   - 🐛 FIX بحرانی: data-id جدید فقط msgId خالی دارد (فرمت ۲۰۲۶-۰۴-۳۰).
     chat_id از header مکالمه استخراج می‌شود [citation:3][citation:10][citation:18].
   - ⭐ NEW: BROWSER_LOCK سراسری (استاندارد پروژه — مثل بله/ایتا/لینکدین).
@@ -27,7 +32,9 @@ from typing import Any
 from analyzers.keyword_finder import get_keyword_finder
 from analyzers.target_filter import get_target_groups
 from core.contracts.base_collector import BaseCollector, ConnectionStatus
-from core.kernel.logger import log_error, log_info, log_success, log_warning
+from core.kernel.logger import (
+    log_debug, log_error, log_info, log_success, log_warning,
+)
 
 # ایمپورتِ playwright در سطح ماژول با محافظ
 try:
@@ -36,7 +43,7 @@ except ImportError:
     async_playwright = None
 
 WHATSAPP_WEB_URL = "https://web.whatsapp.com/"
-_MAX_SEEN = 8000
+_MAX_SEEN = 100000
 
 # نام پیش‌فرضی که وقتی استخراج ناموفق است برگردانده می‌شود
 _DEFAULT_CHAT_NAME = "واتساپ"
@@ -399,7 +406,10 @@ class WhatsAppCollector(BaseCollector):
                 except Exception:
                     continue
 
-            # ─── ۴) fallback: چک وجود عناصر دیگر واتساپ ───
+            # ─── ۴) 🎯 FIX #14: fallback — QR نبود ولی chat-list نبود ───
+            # یعنی یا در حال لود هستیم یا chat-list هنوز آماده نشده.
+            # اگر appِ واتساپ لود شده، True برمی‌گردانیم تا caller
+            # فرصت بیشتری برای chat-list بدهد (به‌جای شکست کاذب).
             fallback_markers = [
                 'div[role="application"]',
                 'div[data-testid="default-user"]',
@@ -409,11 +419,10 @@ class WhatsAppCollector(BaseCollector):
                 try:
                     el = await self._page.query_selector(sel)
                     if el and await el.is_visible():
-                        # صفحه واتساپ لود شده ولی شاید chat-list نباشد
-                        return False
+                        # QR نیست + app لود شده → احتمالاً لاگین هستیم
+                        return True
                 except Exception:
                     continue
-
         except Exception:
             pass
         return False
@@ -678,10 +687,14 @@ class WhatsAppCollector(BaseCollector):
 
                 # شناسهٔ پایدار: اگر msgId خالی داشت، ازش استفاده کن؛ وگرنه md5
                 if not mid:
-                    mid = hashlib.md5(text.encode("utf-8")).hexdigest()[:16]
+                    # 🎯 FIX: chat_name را هم داخل hash بیاور
+                    mid = hashlib.md5(
+                        f"{chat_name}:{text}".encode("utf-8")
+                    ).hexdigest()[:16]
 
                 uniq = f"{chat_name}:{mid}"
                 if uniq in self._seen_ids:
+                    log_debug(f"⏭️ [seen] تکراری | {chat_name} | {mid}")
                     continue
                 # بدون متن = بدون امکان تطبیق کلیدواژه
                 if not text:
@@ -691,8 +704,9 @@ class WhatsAppCollector(BaseCollector):
                 # فیلتر کلیدواژه — نتیجه در متغیر نگه داشته می‌شود
                 has_kw = self._kw.has_match(text)
                 if not has_kw:
+                    log_debug(f"⏭️ [kw] بدون کلیدواژه | {chat_name} | {text[:40]}")
                     continue
-
+                    
                 # ─── استخراج فرستنده ───
                 sender_name = ""
                 if is_group:

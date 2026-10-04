@@ -385,106 +385,98 @@ async def login_rubika() -> bool:
 # تلگرام (telethon)
 # ═══════════════════════════════════════════
 async def login_telegram() -> bool:
-    """
-    ورود تلگرام با API + شماره + کد.
-
-    🔴 FIX: client در finally disconnect می‌شود.
-    """
-    t0 = time.monotonic()
-    log_info(f"▶️ {_LOGIN_PREFIX}:telegram] شروع")
-
-    cfg = PLUGINS_CONFIG.get("telegramcollector", {}) or {}
-    api_id_raw = cfg.get("api_id")
-    api_hash = cfg.get("api_hash")
-    phone = cfg.get("phone")
-
-    missing = [
-        name for name, val in (
-            ("TELEGRAM_API_ID", api_id_raw),
-            ("TELEGRAM_API_HASH", api_hash),
-            ("TELEGRAM_PHONE", phone),
-        ) if not val
-    ]
-    if missing:
-        log_error(
-            f"❌ {_LOGIN_PREFIX}:telegram] تنظیمات ناقص | "
-            f"missing={missing}"
-        )
-        return False
+    """ورود تعاملی به تلگرام وِب (مرورگر) — بدون api_id."""
+    print("[..] تلگرام وِب: باز کردن مرورگر...")
+    print("     ⚠️ VPN باید روشن باشد (web.telegram.org)")
+    print()
 
     try:
-        api_id = int(str(api_id_raw).strip())
-    except (ValueError, TypeError) as e:
-        log_error(
-            f"❌ {_LOGIN_PREFIX}:telegram] api_id نامعتبر | "
-            f"raw={api_id_raw!r} | {type(e).__name__}: {e}"
-        )
+        from playwright.async_api import async_playwright
+    except ImportError:
+        print("[X] playwright نصب نیست")
         return False
 
-    try:
-        from telethon import TelegramClient
-    except ImportError as e:
-        log_error(
-            f"❌ {_LOGIN_PREFIX}:telegram] telethon نصب نیست | {e}"
-        )
-        return False
+    from config import STORAGE_DIR, CHROME_PATH
 
-    session_path = _telegram_session_path()
-    log_info(
-        f"📱 {_LOGIN_PREFIX}:telegram] api_id={api_id} | "
-        f"session={session_path} | منتظر کد..."
+    user_data_dir = os.path.join(
+        STORAGE_DIR, "sessions", "telegram_web"
     )
+    os.makedirs(user_data_dir, exist_ok=True)
 
-    client = None
-    me_name = ""
-    success = False
-
+    pw = None
+    ctx = None
     try:
-        try:
-            client = TelegramClient(session_path, api_id, api_hash)
-        except Exception as e:
-            log_error(
-                f"❌ {_LOGIN_PREFIX}:telegram] ساخت Client | "
-                f"{type(e).__name__}: {e}"
-            )
-            return False
+        pw = await async_playwright().start()
 
-        try:
-            await client.start(phone=phone)
-        except Exception as e:
-            log_error(
-                f"❌ {_LOGIN_PREFIX}:telegram] start | "
-                f"{type(e).__name__}: {e}"
-            )
-            return False
-
-        try:
-            me = await client.get_me()
-            me_name = getattr(me, "first_name", "") or ""
-        except Exception as e:
-            log_warning(
-                f"⚠️ {_LOGIN_PREFIX}:telegram] get_me | "
-                f"{type(e).__name__}: {e}"
-            )
-
-        success = True
-        return True
-    finally:
-        await _safe_disconnect_client(client, "telegram")
-
-        elapsed_ms = (time.monotonic() - t0) * 1000
-        if success:
-            log_success(
-                f"✅ {_LOGIN_PREFIX}:telegram] ورود موفق | "
-                f"name={me_name} | {elapsed_ms:.0f}ms"
-            )
+        launch_opts = {
+            "user_data_dir": user_data_dir,
+            "headless": False,
+            "viewport": {"width": 1366, "height": 768},
+            "args": [
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+            ],
+        }
+        if CHROME_PATH and os.path.exists(CHROME_PATH):
+            launch_opts["executable_path"] = CHROME_PATH
         else:
-            log_warning(
-                f"⚠️ {_LOGIN_PREFIX}:telegram] ناموفق | "
-                f"{elapsed_ms:.0f}ms"
+            launch_opts["channel"] = "chrome"
+
+        ctx = await pw.chromium.launch_persistent_context(
+            **launch_opts
+        )
+        page = (
+            ctx.pages[0] if ctx.pages
+            else await ctx.new_page()
+        )
+        await page.goto(
+            "https://web.telegram.org/k/",
+            wait_until="domcontentloaded",
+            timeout=60000,
+        )
+
+        print()
+        print("═" * 60)
+        print("📱 در مرورگر باز شده:")
+        print("   ۱) شماره‌ات را وارد کن (+98...)")
+        print("   ۲) کد پیامکی را وارد کن")
+        print("   ۳) اگر 2FA داری، رمز را وارد کن")
+        print("   ۴) بعد از دیدن چت‌ها، این پنجره را ببند")
+        print("═" * 60)
+        print()
+        print("⏳ منتظر می‌مانم تا مرورگر را ببندی...")
+        print()
+
+        # منتظر بمان تا کاربر مرورگر را ببندد
+        try:
+            await ctx.pages[0].wait_for_event(
+                "close", timeout=600000  # ۱۰ دقیقه
             )
+        except Exception:
+            pass
 
+        print()
+        print("[OK] نشست تلگرام وِب ذخیره شد ✅")
+        print(f"     مسیر: {user_data_dir}")
+        return True
 
+    except Exception as e:
+        print(f"[X] خطا: {type(e).__name__}: {e}")
+        return False
+    finally:
+        try:
+            if ctx:
+                await ctx.close()
+        except Exception:
+            pass
+        try:
+            if pw:
+                await pw.stop()
+        except Exception:
+            pass
+
+            
 # ═══════════════════════════════════════════
 # ورود مرورگری مشترک
 # ═══════════════════════════════════════════
@@ -689,7 +681,13 @@ async def login_linkedin() -> bool:
         "https://www.linkedin.com/feed/",
     )
 
-
+async def login_instagram() -> bool:
+    from collectors.instagram import InstagramCollector
+    return await login_browser(
+        "اینستاگرام",
+        InstagramCollector,
+        "https://www.instagram.com/",
+    )
 # ═══════════════════════════════════════════
 # منو
 # ═══════════════════════════════════════════
@@ -703,7 +701,8 @@ _MENU = """
 ║  [4] تلگرام (Telegram)                                   ║
 ║  [5] واتساپ (WhatsApp - مرورگر/QR)                       ║
 ║  [6] لینکدین (LinkedIn - مرورگر)                         ║
-║  [7] ورود همه (به ترتیب)                                 ║
+║  [8] اینستاگرام (Instagram - مرورگر)                     ║
+║  [9] ورود همه (به ترتیب)                                 ║
 ║  [0] خروج                                                ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -716,8 +715,8 @@ _ACTIONS: dict[str, tuple[str, Callable[[], Awaitable[bool]]]] = {
     "4": ("telegram", login_telegram),
     "5": ("whatsapp", login_whatsapp),
     "6": ("linkedin", login_linkedin),
+    "8": ("instagram", login_instagram),
 }
-
 # 🎯 FIX: نگاشت نام → تابع (برای _login_all)
 _BY_NAME: dict[str, Callable[[], Awaitable[bool]]] = {
     name: func for _key, (name, func) in _ACTIONS.items()
@@ -725,9 +724,9 @@ _BY_NAME: dict[str, Callable[[], Awaitable[bool]]] = {
 
 # ترتیب ورود در حالت «ورود همه»
 _LOGIN_ALL_ORDER = [
-    "rubika", "bale", "eitaa", "telegram", "whatsapp", "linkedin",
+    "rubika", "bale", "eitaa", "telegram",
+    "whatsapp", "linkedin", "instagram",
 ]
-
 
 async def _login_all() -> None:
     """ورود به همه پلتفرم‌ها به ترتیب."""
@@ -789,7 +788,7 @@ async def main() -> None:
             return
 
         # ورود همه
-        if choice == "7":
+        if choice == "9":
             log_info(f"🎯 {_LOGIN_PREFIX}:main] ورود همه")
             await _login_all()
             continue

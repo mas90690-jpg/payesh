@@ -15,20 +15,28 @@ Structured logging — built on Python's standard `logging`.
 از print() برای پیام‌های early-init و از self._logger.<level>(...) برای بعد از
 setup استفاده می‌کنیم.
 
-نسخهٔ ۲ (این نسخه):
-  - 🎯 init diagnostics: چاپ خلاصه‌ای از تنظیماتِ اعمال‌شده (level/handlers/paths)
-  - 🐛 FIX: _emit با try/except — اگه handler خطا بده، کاربر نمی‌ترکه
-  - 🐛 FIX: set_level سطح نامعتبر رو لاگ می‌کند (نه بی‌صدا)
-  - 🐛 FIX: get_stats JSON-safe (datetime → ISO)
-  - 🐛 FIX: log_duration از time.monotonic (نه time.time)
-  - 🐛 FIX: flush خطاها لاگ می‌شه
-  - 🐛 FIX: _env_bool قبول می‌کنه yes/no/on/off/1/0
-  - 🎯 ConsoleFormatter رنگ رو در Windows Terminal هم می‌فهمه (ANSICON/WT)
-  - 🧹 from __future__ import annotations
-  - 🧹 add_level helper + safe_add_handler
+نسخهٔ ۳ (این نسخه):
+  - 🐛 FIX بحرانی: sys.stdout/sys.stderr در ابتدای ماژول به UTF-8 reconfigure
+    می‌شوند. روی ویندوز، console پیش‌فرض cp1256/cp1252 است و emoji/Persian
+    به mojibake تبدیل می‌شد (ðŸ—ï¸ به‌جای 🔧، Ø³Ø§Ø®Øª به‌جای ساخت).
+  - 🐛 FIX: StreamHandler صریحاً از _SafeUtf8Stream استفاده می‌کند
+    (اگر reconfigure شکست خورد، یک wrapper امن UTF-8 می‌سازیم).
+  - 🎯 init diagnostic حالا encoding هر stream را هم نشان می‌دهد.
+  - ✅ حفظ همهٔ رفتار نسخهٔ ۲.
+
+نسخهٔ ۲:
+  - 🎯 init diagnostics: چاپ خلاصه‌ای از تنظیمات اعمال‌شده.
+  - 🐛 FIX: _emit با try/except.
+  - 🐛 FIX: set_level سطح نامعتبر را لاگ می‌کند.
+  - 🐛 FIX: get_stats JSON-safe.
+  - 🐛 FIX: log_duration از time.monotonic.
+  - 🐛 FIX: flush خطاها لاگ می‌شود.
+  - 🐛 FIX: _env_bool yes/no/on/off/1/0.
+  - 🎯 ConsoleFormatter رنگ را در Windows Terminal می‌فهمد.
 """
 from __future__ import annotations
 
+import io
 import json
 import logging
 import logging.handlers
@@ -42,6 +50,45 @@ from enum import Enum
 from typing import Any
 
 from config import SYSTEM_CONFIG
+
+
+# ═══════════════════════════════════════════
+# 🐛 FIX #4: UTF-8 streams (قبل از هر چاپی)
+# ═══════════════════════════════════════════
+def _ensure_utf8_streams() -> None:
+    """sys.stdout/stderr را روی UTF-8 تنظیم می‌کند.
+
+    روی ویندوز، console پیش‌فرض cp1256 یا cp1252 است و emoji/Persian
+    به mojibake تبدیل می‌شود. این تابع:
+      ۱) اگر stream.reconfigure موجود بود، آن را صدا می‌زند
+      ۲) وگرنه stream را با یک TextIOWrapper امن دور می‌زند
+    """
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        if stream is None:
+            continue
+        try:
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8", errors="replace")
+                continue
+        except Exception:
+            pass
+        # ─── fallback: wrap با UTF-8 ───
+        try:
+            buf = getattr(stream, "buffer", None)
+            if buf is not None:
+                wrapper = io.TextIOWrapper(
+                    buf,
+                    encoding="utf-8",
+                    errors="replace",
+                    line_buffering=True,
+                )
+                setattr(sys, name, wrapper)
+        except Exception:
+            pass
+
+
+_ensure_utf8_streams()
 
 # Don't let a logging/encoding hiccup crash the app
 logging.raiseExceptions = False
@@ -76,7 +123,7 @@ _COLOR = {
 }
 _RESET = "\033[0m"
 
-# حداکثر طول exception در JSON (باقی‌شو می‌بُریم که فایل لاگ بی‌نهایت نشه)
+# حداکثر طول exception در JSON
 _EXC_MAX_LEN = 2000
 
 
@@ -120,7 +167,6 @@ class JsonFormatter(logging.Formatter):
         try:
             return json.dumps(obj, ensure_ascii=False, default=str)
         except Exception:
-            # JSON نشد — fallback به رشته
             return json.dumps(
                 {
                     "ts": obj["ts"],
@@ -137,14 +183,13 @@ class ConsoleFormatter(logging.Formatter):
     def __init__(self):
         super().__init__()
         try:
-            # Windows Terminal / ANSICON / ConEmu رنگ رو پشتیبانی می‌کنن
             is_tty = sys.stdout.isatty() if sys.stdout else False
             is_win = sys.platform.startswith("win")
             has_ansi = bool(
-                os.getenv("WT_SESSION")      # Windows Terminal
-                or os.getenv("ANSICON")      # ANSICON
-                or os.getenv("ConEmuANSI")   # ConEmu
-                or os.getenv("TERM")         # Unix / Git Bash
+                os.getenv("WT_SESSION")
+                or os.getenv("ANSICON")
+                or os.getenv("ConEmuANSI")
+                or os.getenv("TERM")
             )
             self._color = is_tty and (not is_win or has_ansi)
         except Exception:
@@ -184,8 +229,16 @@ def _env_bool(name: str, default: str = "true") -> bool:
         return True
     if val in _FALSE_VALUES:
         return False
-    # مقدار عجیب → default
     return str(default).strip().lower() in _TRUE_VALUES
+
+
+def _stream_encoding(stream) -> str:
+    """encoding فعلی یک stream را با احتیاط برمی‌گرداند."""
+    try:
+        enc = getattr(stream, "encoding", None)
+        return str(enc) if enc else "?"
+    except Exception:
+        return "?"
 
 
 # ═══════════════════════════════════════════
@@ -237,10 +290,29 @@ class Logger:
         self._logger.propagate = False
 
         # ─── Console handler ───
+        # 🐛 FIX #4: StreamHandler از sys.stdout که قبلاً reconfigure شده
+        # استفاده می‌کند. اگر هر دلیلی encoding خراب بود، اینجا هم صریحاً
+        # wrap می‌کنیم.
         console_on = _env_bool("LOG_CONSOLE", "true")
         if console_on:
             try:
-                ch = logging.StreamHandler(sys.stdout)
+                stream = sys.stdout
+                enc = _stream_encoding(stream)
+                if enc.lower() not in ("utf-8", "utf8"):
+                    # اگر باز هم UTF-8 نیست، یک wrapper امن می‌سازیم
+                    try:
+                        buf = getattr(stream, "buffer", None)
+                        if buf is not None:
+                            stream = io.TextIOWrapper(
+                                buf,
+                                encoding="utf-8",
+                                errors="replace",
+                                line_buffering=True,
+                            )
+                    except Exception:
+                        pass
+
+                ch = logging.StreamHandler(stream)
                 ch.setFormatter(ConsoleFormatter())
                 self._logger.addHandler(ch)
             except Exception as e:
@@ -290,7 +362,7 @@ class Logger:
             "last_log_time": None,
         }
 
-        # ─── init diagnostic (با print چون logger تازه ساخته شد) ───
+        # ─── init diagnostic ───
         handlers_info = []
         for h in self._logger.handlers:
             hname = type(h).__name__
@@ -299,19 +371,26 @@ class Logger:
             ):
                 handlers_info.append("console")
             elif isinstance(h, logging.FileHandler):
-                handlers_info.append(f"file:{os.path.basename(h.baseFilename)}")
+                handlers_info.append(
+                    f"file:{os.path.basename(h.baseFilename)}"
+                )
             else:
                 handlers_info.append(hname)
+
+        # 🎯 FIX #4: نمایش encoding streamها
+        stdout_enc = _stream_encoding(sys.stdout)
+        stderr_enc = _stream_encoding(sys.stderr)
 
         print(
             f"🔧 [LOGGER:init] level={self.log_level} | "
             f"handlers=[{', '.join(handlers_info) or '—'}] | "
-            f"dir={self.log_dir}",
+            f"dir={self.log_dir} | "
+            f"stdout_enc={stdout_enc} | stderr_enc={stderr_enc}",
             file=sys.stderr,
         )
 
     # ═══════════════════════════════════════════
-    # emit (با محافظ در برابر خطاهای handler)
+    # emit
     # ═══════════════════════════════════════════
     def _emit(
         self,
@@ -320,7 +399,6 @@ class Logger:
         context: dict | None = None,
         exc_info=None,
     ) -> None:
-        # آمار
         try:
             self._stats["total_logs"] += 1
             self._stats["by_level"][levelname] = (
@@ -335,7 +413,6 @@ class Logger:
         try:
             self._logger.log(levelno, message, extra=extra, exc_info=exc_info)
         except Exception as e:
-            # هرگز نباید کد کاربر رو بترکونیم — به stderr چاپ می‌کنیم
             try:
                 print(
                     f"❌ [LOGGER:emit-fail] {type(e).__name__}: {e} | "
@@ -384,7 +461,6 @@ class Logger:
     def log(self, level, message: str, context: dict | None = None):
         """Accepts a LogLevel enum or a level name string (backward compatible)."""
         if isinstance(level, LogLevel):
-            # mapped by name (DEBUG/INFO/...)
             name = level.name
         else:
             name = str(level).upper()
@@ -421,6 +497,9 @@ class Logger:
             "handlers": [
                 type(h).__name__ for h in self._logger.handlers
             ],
+            # 🎯 FIX #4: encoding هم گزارش شود
+            "stdout_enc": _stream_encoding(sys.stdout),
+            "stderr_enc": _stream_encoding(sys.stderr),
         }
 
     def flush(self):
@@ -428,7 +507,6 @@ class Logger:
             try:
                 h.flush()
             except Exception as e:
-                # نمی‌توانیم log_* صدا بزنیم (recursion) → stderr
                 try:
                     print(
                         f"⚠️ [LOGGER:flush] {type(h).__name__} | "

@@ -14,12 +14,16 @@
   - بررسی mtime حداکثر هر KEYWORDS_RELOAD_SECONDS (پیش‌فرض ۵ث).
   - الگوی regex با مرزِ کلمه ساخته می‌شه تا «یاراترا» داخل «یاراترایی» match نشه.
 
-نسخهٔ ۸ (این نسخه):
-  - 🐛 FIX بحرانی: keywords_custom.json حالا از _json_files حذف می‌شود
-    (قبلاً دوبار خونده می‌شد و version/updated_at اشتباهاً کلیدواژه
-     می‌شدن).
-  - 🐛 FIX: _extract_strings_from_json حالا dict تودرتو را هم می‌گردد
-  - ✅ نسخهٔ ۷ هم حفظ شده
+نسخهٔ ۹ (این نسخه):
+  - 🐛 FIX #13: فقط فایل‌های با پیشوند «keywords_» در data/ به‌عنوان
+    منبع کلیدواژه قبول می‌شوند (جلوگیری از config.json → کلیدواژه).
+  - 🐛 FIX #13: رشته‌های عددی/تاریخ/hex در _extract_strings_from_json
+    نادیده گرفته می‌شوند.
+  - ✅ نسخهٔ ۸ هم حفظ شده.
+
+نسخهٔ ۸:
+  - 🐛 FIX بحرانی: keywords_custom.json حالا از _json_files حذف می‌شود.
+  - 🐛 FIX: _extract_strings_from_json حالا dict تودرتو را هم می‌گردد.
 """
 from __future__ import annotations
 
@@ -64,10 +68,18 @@ _WB = r"\w"
 # (چون جداگانه خونده می‌شن یا ساختار خاصی دارن)
 _NON_KEYWORD_JSON: set[str] = set()
 
+# 🎯 FIX #13: فقط فایل‌های با این پیشوند به‌عنوان منبع کلیدواژه قبول می‌شن
+# — جلوگیری از تبدیل config.json / settings.json به کلیدواژه
+_KEYWORD_JSON_PREFIX = "keywords_"
+
+# 🎯 FIX #13: رشته‌های زیر این طول نادیده گرفته می‌شن (اعداد، کلیدهای کوتاه)
+_MIN_KEYWORD_LEN = 2
+# 🎯 FIX #13: رشته‌های بالای این طول نادیده گرفته می‌شن (توضیحات، متن‌های بلند)
+_MAX_KEYWORD_LEN = 120
+
 
 def _get_excluded_json_files() -> set[str]:
-    """
-    فایل‌های JSON که نباید به‌عنوان منبع کلیدواژهٔ عمومی خونده بشن.
+    """فایل‌های JSON که نباید به‌عنوان منبع کلیدواژهٔ عمومی خونده بشن.
 
     🐛 FIX: keywords_custom.json قبلاً دوبار خونده می‌شد:
       ۱. در _read_custom_keywords (درست)
@@ -131,6 +143,13 @@ class KeywordFinder(BaseAnalyzer):
                 log_info(
                     f"⏭️ [KF:_json_files] {fn} رد شد "
                     f"(جداگانه خونده میشه)"
+                )
+                continue
+            # 🎯 FIX #13: فقط فایل‌های با پیشوند keywords_ قبول می‌شن
+            if not fn.startswith(_KEYWORD_JSON_PREFIX):
+                log_info(
+                    f"⏭️ [KF:_json_files] {fn} رد شد "
+                    f"(پیشوند keywords_ ندارد)"
                 )
                 continue
             out.append(os.path.join(self.data_dir, fn))
@@ -302,13 +321,34 @@ class KeywordFinder(BaseAnalyzer):
             )
             return out
 
+        def _is_keyword_like(s: str) -> bool:
+            """🎯 FIX #13: آیا این رشته شبیه کلیدواژه است (نه متادیتا)؟"""
+            if not s or len(s) < _MIN_KEYWORD_LEN:
+                return False
+            if len(s) > _MAX_KEYWORD_LEN:
+                return False
+            # اعداد خالص (1.0، 123، 3.14)
+            if re.fullmatch(r"[\d.,:/\-\s]+", s):
+                return False
+            # تاریخ ISO (2026-01-01 / 2026-01-01T00:00:00Z)
+            if re.match(r"^\d{4}[-/]\d{2}[-/]\d{2}", s):
+                return False
+            # hex/uuid
+            if re.fullmatch(
+                r"[0-9a-fA-F]{8}(-?[0-9a-fA-F]{4}){3}-?[0-9a-fA-F]{12}",
+                s,
+            ):
+                return False
+            return True
+
         def _walk(obj, depth: int = 0) -> None:
-            """بازگشتی: هر رشته‌ای در هر عمقی رو پیدا کن."""
+            """بازگشتی: هر رشتهٔ معناداری در هر عمقی رو پیدا کن."""
             if depth > 5:  # جلوگیری از بازگشت بی‌نهایت
                 return
             if isinstance(obj, str):
                 s = obj.strip()
-                if s:
+                # 🎯 FIX #13: فقط رشته‌های شبیه کلیدواژه
+                if _is_keyword_like(s):
                     out.append(s)
             elif isinstance(obj, (list, tuple, set)):
                 for x in obj:

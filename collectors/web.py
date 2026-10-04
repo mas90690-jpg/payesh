@@ -35,7 +35,9 @@ from typing import Any
 from urllib.parse import urljoin, urlparse
 
 from core.contracts.base_collector import BaseCollector, ConnectionStatus
-from core.kernel.logger import log_error, log_info, log_success, log_warning
+from core.kernel.logger import (
+    log_debug, log_error, log_info, log_success, log_warning,
+)
 
 DEFAULT_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -43,7 +45,7 @@ DEFAULT_UA = (
 )
 
 # سقف حافظهٔ اثرانگشت‌های دیده‌شده (رم/دیسک کنترل‌شده)
-_MAX_SEEN = 8000
+_MAX_SEEN = 100000
 
 # الگوهای مسیر خبری — فقط وقتی استفاده می‌شوند که URL فهرست، صفحهٔ اصلی باشد
 # (index_path خالی). در این حالت نمی‌توان از index_path برای تشخیص خبر استفاده کرد.
@@ -406,49 +408,70 @@ class WebCollector(BaseCollector):
         """مرورگرِ headless را یک‌بار می‌سازد (با چشم‌پوشی از خطای گواهی)."""
         if self._bctx is not None:
             return self._bctx
-        try:
-            from playwright.async_api import async_playwright
-        except ImportError:
-            log_warning("playwright نصب نیست؛ سایت‌های JS-محور/بلاک‌شده خوانده نمی‌شوند")
-            return None
-        from config import CHROME_PATH
 
-        try:
-            self._bpw = await async_playwright().start()
-        except Exception as e:
-            log_warning(f"وب: شروع playwright ناموفق: {e}")
-            return None
+        # 🎯 FIX #9: BROWSER_LOCK — جلوگیری از تداخل با بله/ایتا/لینکدین/تلگرام/واتساپ
+        from core.adapters.browser_lock import BROWSER_LOCK
 
-        base = {"headless": True, "args": ["--no-sandbox", "--disable-dev-shm-usage"]}
-        # مثل بقیهٔ کلکتورها: اول مرورگرِ نصب‌شدهٔ سیستم (Chrome/Edge)، بعد chromiumِ دانلودی
-        attempts = []
-        if CHROME_PATH:
-            attempts.append({**base, "executable_path": CHROME_PATH})
-        for ch in ("chrome", "msedge"):
-            attempts.append({**base, **({"channel": ch} if ch else {})})
-
-        for opt in attempts:
-            try:
-                browser = await self._bpw.chromium.launch(**opt)
-                self._bctx = await browser.new_context(
-                    ignore_https_errors=True,  # گواهیِ منقضی را رد کن
-                    user_agent=DEFAULT_UA,
-                    viewport={"width": 1366, "height": 900},
-                )
-                log_info(
-                    f"وب: مرورگرِ رندر آماده شد ({opt.get('channel') or opt.get('executable_path') or 'chromium'})"
-                )
+        async with BROWSER_LOCK:
+            # 🎯 چک دوباره داخل قفل (race protection)
+            if self._bctx is not None:
                 return self._bctx
-            except Exception:
-                continue
-        log_warning("وب: هیچ مرورگری برای رندر باز نشد (Chrome/Edge/Chromium نصب نیست)")
-        try:
-            await self._bpw.stop()
-        except Exception:
-            pass
-        self._bpw = None
-        return None
 
+            try:
+                from playwright.async_api import async_playwright
+            except ImportError:
+                log_warning(
+                    "playwright نصب نیست؛ سایت‌های JS-محور/بلاک‌شده خوانده نمی‌شوند"
+                )
+                return None
+            from config import CHROME_PATH
+
+            try:
+                self._bpw = await async_playwright().start()
+            except Exception as e:
+                log_warning(f"وب: شروع playwright ناموفق: {e}")
+                return None
+
+            base = {
+                "headless": True,
+                "args": ["--no-sandbox", "--disable-dev-shm-usage"],
+            }
+            # مثل بقیهٔ کلکتورها: اول مرورگرِ نصب‌شدهٔ سیستم (Chrome/Edge)، بعد chromiumِ دانلودی
+            attempts = []
+            if CHROME_PATH:
+                attempts.append({**base, "executable_path": CHROME_PATH})
+            for ch in ("chrome", "msedge"):
+                attempts.append(
+                    {**base, **({"channel": ch} if ch else {})}
+                )
+
+            for opt in attempts:
+                try:
+                    browser = await self._bpw.chromium.launch(**opt)
+                    self._bctx = await browser.new_context(
+                        ignore_https_errors=True,
+                        user_agent=DEFAULT_UA,
+                        viewport={"width": 1366, "height": 900},
+                    )
+                    log_info(
+                        f"وب: مرورگرِ رندر آماده شد "
+                        f"({opt.get('channel') or opt.get('executable_path') or 'chromium'})"
+                    )
+                    return self._bctx
+                except Exception:
+                    continue
+
+            log_warning(
+                "وب: هیچ مرورگری برای رندر باز نشد "
+                "(Chrome/Edge/Chromium نصب نیست)"
+            )
+            try:
+                await self._bpw.stop()
+            except Exception:
+                pass
+            self._bpw = None
+            return None
+            
     async def _fetch_rendered(self, url) -> str | None:
         ctx = await self._ensure_browser()
         if ctx is None:
@@ -619,6 +642,7 @@ class WebCollector(BaseCollector):
         # اثرانگشت محتوا برای حذف تکراری (پایدار بین اجراها)
         fingerprint = hashlib.md5((url + "|" + text[:1000]).encode("utf-8")).hexdigest()
         if fingerprint in self._seen_hashes:
+            log_debug(f"⏭️ [seen] تکراری | web | {url[:60]}")
             return None
         self._seen_hashes.add(fingerprint)
 

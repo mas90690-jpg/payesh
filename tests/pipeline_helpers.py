@@ -20,7 +20,15 @@ from typing import Any
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+def _make_event(msg: dict):
+    """ساخت یک شیء سبک با attribute .data برای StorageHandler."""
+    class _FakeEvent:
+        def __init__(self, data):
+            self.data = data
+            self.event_type = "message.received"
 
+    return _FakeEvent(msg)
+    
 class TestPipeline:
     """
     Pipeline تست: Collector → EventBus → StorageHandler → DB.
@@ -134,53 +142,28 @@ class TestPipeline:
     # ═══════════════════════════════════════════════════
     async def feed(self, msgs: list[dict]) -> int:
         """
-        پیام‌های scrape‌شده را از pipeline عبور می‌دهد.
+        پیام‌ها را مستقیم به StorageHandler می‌فرستد (بدون EventBus).
 
-        از EventBus.emit_async(event_name, data) استفاده می‌کند — نه
-        ساخت Event دستی. چون API واقعی EventBus همین است.
+        چرا؟ چون EventBus واقعی ممکن است handler را در task پس‌زمینه
+        صدا بزند و await نکند → stored=0 اشتباه.
         """
-        if not msgs or not self._bus:
+        if not msgs or not self._storage:
             return 0
 
         stored_before = self.stats["stored"]
 
         for msg in msgs:
             try:
-                # 🎯 emit_async مستقیم: event_name + data
-                # (async handlerها را کامل await می‌کند)
-                result = self._bus.emit_async(
-                    "message.received",
-                    msg,
-                )
-                # اگر Task برگرداند، await کن
-                if asyncio.iscoroutine(result) or isinstance(
-                    result, asyncio.Task
-                ):
-                    await result
-                elif isinstance(result, int):
-                    # emit_async ممکن است int برگرداند (تعداد handlerها)
-                    # در این حالت، taskها در پس‌زمینه اجرا می‌شوند
-                    # کمی صبر کن
-                    pass
+                event = _make_event(msg)
+                await self._storage.handle(event)
                 self.stats["fed"] += 1
             except Exception as e:
                 self.stats["errors"] += 1
                 print(f"  ⚠️ pipeline.feed error: "
                       f"{type(e).__name__}: {e}")
 
-        # صبر برای write نهایی
-        # (اگر emit_async در background اجرا کرده، الان تمام می‌شود)
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(0.3)
 
-        # منتظر taskهای pending EventBus
-        try:
-            pending = self._bus.get_pending_tasks_count()
-            if pending:
-                await asyncio.sleep(0.5)
-        except Exception:
-            pass
-
-        # آمار از StorageHandler
         handler_stats = self._storage.stats if self._storage else {}
         self.stats["stored"] = handler_stats.get(
             "messages_with_keywords", 0
@@ -188,7 +171,7 @@ class TestPipeline:
         self.stats["leads"] = self.stats["stored"]
 
         return self.stats["stored"] - stored_before
-
+        
     # ═══════════════════════════════════════════════════
     # چک DB
     # ═══════════════════════════════════════════════════

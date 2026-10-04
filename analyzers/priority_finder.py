@@ -37,15 +37,17 @@ class PriorityFinder:
     def __init__(self):
         self.t1_words: list[str] = []
         self.t2_words: list[str] = []
+        # 🎯 FIX #12: T3 حالا واقعاً استفاده می‌شود
+        self.t3_words: list[str] = []
         self.product_to_brand: dict[str, str] = {}
         self.keyword_tier: dict[str, str] = {}
 
         self._pat_t1 = None
         self._pat_t2 = None
+        self._pat_t3 = None
         self._signature = None
         self._last_check = 0.0
         self._load()
-
     # ─── منابع ───
     @staticmethod
     def _sources() -> list[str]:
@@ -69,6 +71,8 @@ class PriorityFinder:
     def _load(self):
         t1: list[str] = []
         t2: list[str] = []
+        # 🎯 FIX #12: T3 حالا جمع‌آوری می‌شود
+        t3: list[str] = []
         prod2brand: dict[str, str] = {}
 
         # ۱) products.py (فارسی) — فقط مقادیر، نه برندها
@@ -107,10 +111,12 @@ class PriorityFinder:
         except Exception as e:
             log_warning(f"⚠️ products_en.py: {e}")
 
-        # ۳) keywords_custom.json (دستی) — پیش‌فرض T1، اختیاری T2
-        c_t1, c_t2, tiers = self._load_custom()
+        # ۳) keywords_custom.json (دستی) — پیش‌فرض T1، اختیاری T2/T3
+        c_t1, c_t2, c_t3, tiers = self._load_custom()
         t1.extend(c_t1)
         t2.extend(c_t2)
+        # 🎯 FIX #12: T3 حالا اضافه می‌شود
+        t3.extend(c_t3)
         self.keyword_tier = tiers
 
         # یکتا + مرتب (بلندترین اول تا تطبیق دقیق‌تر مقدم باشه)
@@ -120,18 +126,27 @@ class PriorityFinder:
             {b for b in t2 if b and b not in t1_set},
             key=lambda s: (-len(s), s),
         )
+        # 🎯 FIX #12: T3 — با حذف کلمات تکراری در T1 و T2
+        t12_set = t1_set | set(t2)
+        self.t3_words = sorted(
+            {b for b in t3 if b and b not in t12_set},
+            key=lambda s: (-len(s), s),
+        )
         self.product_to_brand = prod2brand
 
         # regex با مرزِ کلمه
         self._pat_t1 = self._compile(self.t1_words)
         self._pat_t2 = self._compile(self.t2_words)
+        self._pat_t3 = self._compile(self.t3_words)
 
         self._signature = self._signature_now()
         self._last_check = time.monotonic()
         log_info(
             f"🎯 Tier — T1={len(self.t1_words)} | T2={len(self.t2_words)} "
+            f"| T3={len(self.t3_words)} "
             f"| نگاشت محصول→برند={len(self.product_to_brand)} | "
-            f"دستی T1={len(c_t1)} | دستی T2={len(c_t2)}"
+            f"دستی T1={len(c_t1)} | دستی T2={len(c_t2)} "
+            f"| دستی T3={len(c_t3)}"
         )
 
     @staticmethod
@@ -146,20 +161,22 @@ class PriorityFinder:
             log_warning(f"⚠️ regex: {e}")
             return None
 
-    def _load_custom(self) -> tuple[list[str], list[str], dict[str, str]]:
+    def _load_custom(
+        self,
+    ) -> tuple[list[str], list[str], list[str], dict[str, str]]:
         """..."""
         from data import paths as data_paths
         path = str(data_paths.KEYWORDS_CUSTOM)
-        t1, t2, tiers = [], [], {}
+        t1, t2, t3, tiers = [], [], [], {}
 
         if not os.path.exists(path):
-            return t1, t2, tiers
+            return t1, t2, t3, tiers
         try:
             with open(path, encoding="utf-8") as f:
                 data = json.load(f)
         except Exception as e:
             log_warning(f"⚠️ keywords_custom.json: {e}")
-            return t1, t2, tiers
+            return t1, t2, t3, tiers
 
         # ─── فرمت قدیمی: لیست خالص ───
         # همه T1 (پیش‌فرض)
@@ -169,7 +186,7 @@ class PriorityFinder:
                     s = x.strip()
                     t1.append(s)
                     tiers[s] = "T1"
-            return t1, t2, tiers
+            return t1, t2, t3, tiers
 
         # ─── فرمت جدید: دیکشنری ───
         if isinstance(data, dict):
@@ -179,7 +196,7 @@ class PriorityFinder:
                     f"⚠️ [PF:custom] dict بدون «keywords» | "
                     f"کلیدها: {list(data.keys())[:5]}"
                 )
-                return t1, t2, tiers
+                return t1, t2, t3, tiers
             if isinstance(kws, dict):
                 for kw, meta in kws.items():
                     s = str(kw).strip()
@@ -199,9 +216,11 @@ class PriorityFinder:
                         t1.append(s)
                     elif tier == "T2":
                         t2.append(s)
-                    # T3 فعلاً استفاده نمی‌شه ولی نگه داشته می‌شه
-        return t1, t2, tiers
-
+                    elif tier == "T3":
+                        # 🎯 FIX #12: T3 حالا به t3 اضافه می‌شود
+                        t3.append(s)
+        return t1, t2, t3, tiers
+        
     def _maybe_reload(self):
         now = time.monotonic()
         if now - self._last_check < _RELOAD_SECONDS:
@@ -220,8 +239,11 @@ class PriorityFinder:
             return "T1"
         if self._pat_t2 and self._pat_t2.search(text):
             return "T2"
+        # 🎯 FIX #12: T3 حالا واقعاً بررسی می‌شود
+        if self._pat_t3 and self._pat_t3.search(text):
+            return "T3"
         return "T0"
-
+        
     def tier_bonus(self, tier: str) -> int:
         """بونوس امتیاز برای هر tier."""
         return TIER_BONUS.get(tier, 0)

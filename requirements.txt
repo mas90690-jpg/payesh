@@ -1,0 +1,38 @@
+# ══════════════════════════════════════════════════════════════
+# Srooyesh Lead-Monitor — Python Dependencies
+# نصب: pip install -r requirements.txt
+# پایتون پیشنهادی: 3.11 یا 3.12
+# ══════════════════════════════════════════════════════════════
+
+# ─── Web scraping / Browser automation ───
+playwright>=1.40,<2.0
+beautifulsoup4>=4.12,<5.0
+
+# ─── Platform SDKs ───
+# rubpy بین نسخه‌ها API را می‌شکند → پین کن
+rubpy==7.3.0
+
+# ─── Async / HTTP ───
+aiohttp>=3.9,<4.0
+
+# ─── Config ───
+python-dotenv>=1.0,<2.0
+
+# ─── Media ───
+Pillow>=10.0,<12.0
+
+# ─── System metrics ───
+psutil>=5.9,<8.0
+
+# ─── Web server (health / metrics / chat) ───
+fastapi>=0.110,<1.0
+uvicorn[standard]>=0.27,<1.0
+websockets>=12.0,<14.0
+pydantic>=2.5,<3.0
+
+# ─── Cryptography (وابستگی rubpy) ───
+cryptography>=42.0,<45.0
+
+# ─── Testing ───
+pytest>=7.0,<9.0
+pytest-asyncio>=0.23,<1.0

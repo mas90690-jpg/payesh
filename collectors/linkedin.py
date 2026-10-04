@@ -23,7 +23,9 @@ from urllib.parse import quote
 
 from analyzers.keyword_finder import get_keyword_finder
 from core.contracts.base_collector import BaseCollector, ConnectionStatus
-from core.kernel.logger import log_error, log_info, log_success, log_warning
+from core.kernel.logger import (
+    log_debug, log_error, log_info, log_success, log_warning,
+)
 
 # پیش‌فرض: فید فالوورها
 LINKEDIN_FEED_URL = "https://www.linkedin.com/feed/"
@@ -44,7 +46,11 @@ LOGGEDIN_MARKERS = [
     "input.search-global-typeahead__input",
 ]
 
-_MAX_SEEN = 8000
+_MAX_SEEN = 100000
+
+# 🎯 FIX #11: توقف بعد از N پست غیرفالوور پشت سر هم
+# (لینکدین ترتیب فید را تضمین نمی‌کند — فالور/غیرفالوور قاطی هستند)
+_MAX_CONSECUTIVE_NON_FOLLOWERS = 3
 
 
 class LinkedInCollector(BaseCollector):
@@ -911,6 +917,8 @@ class LinkedInCollector(BaseCollector):
         human: bool = False,
     ) -> int:
         count = 0
+        # 🎯 FIX #11: شمارندهٔ ناپیوستگی
+        consecutive_non_followers = 0
         for post in posts:
             try:
                 if human:
@@ -920,21 +928,34 @@ class LinkedInCollector(BaseCollector):
                     except Exception:
                         pass
 
-                # 🎯 چک فالوور — فقط برای فید
+                # 🎯 FIX #11: چک فالوور — توقف فقط بعد از N تای پشت‌سرهم
                 if self._following_only and source == "فید":
                     is_follower = await self._is_follower_post(
                         post
                     )
-                    if (
-                        is_follower is False
-                        and self._stop_on_non_follower
-                    ):
-                        log_info(
-                            "⏹️ [linkedin] به پست غیرفالوور "
-                            "رسید — توقف"
+                    if is_follower is False:
+                        consecutive_non_followers += 1
+                        log_debug(
+                            f"⏭️ [linkedin] پست غیرفالوور "
+                            f"#{consecutive_non_followers}"
                         )
-                        break
-
+                        if (
+                            self._stop_on_non_follower
+                            and consecutive_non_followers
+                            >= _MAX_CONSECUTIVE_NON_FOLLOWERS
+                        ):
+                            log_info(
+                                f"⏹️ [linkedin] "
+                                f"{consecutive_non_followers} "
+                                f"پست غیرفالوور پشت‌سرهم — توقف"
+                            )
+                            break
+                        # 🎯 غیرفالوور منفرد → ادامه بده (skip)
+                        continue
+                    elif is_follower is True:
+                        # 🎯 فالوور → شمارنده صفر شود
+                        consecutive_non_followers = 0
+                        
                 # ⭐ اول متن پیش‌نمایش
                 preview = (await post.inner_text() or "").strip()
                 if not preview or len(preview) < 20:
@@ -994,6 +1015,7 @@ class LinkedInCollector(BaseCollector):
                     text.encode("utf-8")
                 ).hexdigest()[:16]
                 if mid in self._seen_ids:
+                    log_debug(f"⏭️ [seen] تکراری | linkedin | {mid}")
                     continue
                 self._seen_ids.add(mid)
 

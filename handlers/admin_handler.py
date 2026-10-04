@@ -82,8 +82,9 @@ _REPLY_CHUNK = 3900
 # prefixهای SafeBrain — برای تشخیص «واگذاری به لایهٔ بعد»
 _SAFEBRAIN_PREFIXES = ("🤖 SafeBrain", "🤖 WinDoctor")
 
-# تعداد کاراکتر برای اینکه SafeBrain real باشد (نه fallback)
-_SAFEBRAIN_MIN_REAL_LEN = 250
+# 🎯 FIX #10: آستانه از 250 به 40 کاهش یافت — پاسخ‌های کوتاه معتبر
+# (مثل «سلام»، «بله»، «۳ سرنخ») دیگر به‌عنوان fallback علامت نمی‌خورند
+_SAFEBRAIN_MIN_REAL_LEN = 40
 
 # 🐛 FIX: پیام پیش‌فرض وقتی هیچ لایه‌ای پاسخ نداد
 _EMPTY_REPLY_FALLBACK = (
@@ -131,9 +132,15 @@ class AdminHandler(BaseHandler):
         # ─── config ───
         from config import PLUGINS_CONFIG
         cfg = PLUGINS_CONFIG.get("adminhandler", {})
-        # ⚠️ هاردکد غیرفعال (پایشگر فقط‌خواندنی)
-        self.enabled = False
-        self.admin_ids = set()   # هیچ مدیری نیست
+
+        # 🎯 FIX #7: حالا از config خوانده می‌شود، نه هاردکد
+        self.enabled = bool(cfg.get("enabled", False))
+        raw_admin_ids = cfg.get("admin_ids", [])
+        self.admin_ids = {
+            str(x).strip()
+            for x in raw_admin_ids
+            if x and str(x).strip()
+        }
         self.platform = cfg.get("platform", "bale")
 
         # چک: آیا پلتفرم مدیر فعال است؟ (برای لاگ)
@@ -168,10 +175,20 @@ class AdminHandler(BaseHandler):
             get_custom_kw_path=lambda: CUSTOM_KW,
         )
 
-        log_info(
-            f"⏭️ [ADMIN:init] غیرفعال — پایشگر فقط‌خواندنی | "
-            f"platform={self.platform}"
-        )
+        # 🎯 FIX #7: لاگ حالا وضعیت واقعی را نشان می‌دهد
+        if self.enabled:
+            log_success(
+                f"✅ [ADMIN:init] فعال | "
+                f"platform={self.platform} | "
+                f"admins={len(self.admin_ids)} | "
+                f"platform_enabled={self._platform_enabled}"
+            )
+        else:
+            log_info(
+                f"⏭️ [ADMIN:init] غیرفعال | "
+                f"platform={self.platform} | "
+                f"admins={len(self.admin_ids)}"
+            )
     # ═══════════════════════════════════════
     # knowledge
     # ═══════════════════════════════════════

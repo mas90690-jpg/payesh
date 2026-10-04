@@ -27,7 +27,29 @@ try:
 except ImportError:
     Client = None
 
-_MAX_SEEN = 5000
+_MAX_SEEN = 100000
+
+# 🎯 FIX #5: سقف‌های واقعی از .env — به‌جای مقادیر هاردکد 30
+_DEFAULT_HISTORY_LIMIT = 200
+_DEFAULT_MAX_CHATS = 30
+
+
+def _get_history_limit() -> int:
+    """RUBIKA_HISTORY_LIMIT را می‌خواند و sanitize می‌کند."""
+    try:
+        v = int(os.getenv("RUBIKA_HISTORY_LIMIT", str(_DEFAULT_HISTORY_LIMIT)))
+        return v if v > 0 else _DEFAULT_HISTORY_LIMIT
+    except (TypeError, ValueError):
+        return _DEFAULT_HISTORY_LIMIT
+
+
+def _get_max_chats() -> int:
+    """RUBIKA_MAX_CHATS را می‌خواند و sanitize می‌کند (0=بی‌نهایت)."""
+    try:
+        v = int(os.getenv("RUBIKA_MAX_CHATS", str(_DEFAULT_MAX_CHATS)))
+        return v if v >= 0 else _DEFAULT_MAX_CHATS
+    except (TypeError, ValueError):
+        return _DEFAULT_MAX_CHATS
 
 
 def _get_session_path() -> str:
@@ -392,7 +414,13 @@ class RubikaCollector(BaseCollector):
             return
         try:
             chats_resp = await self._client.get_chats()
-            chats = self._extract_list(chats_resp, "chats")
+            all_chats = self._extract_list(chats_resp, "chats")
+            _max_chats = _get_max_chats()
+            chats = (
+                all_chats[:_max_chats]
+                if _max_chats > 0
+                else all_chats
+            )
 
             if chats and not getattr(self, "_chats_debugged", False):
                 self._chats_debugged = True
@@ -508,18 +536,19 @@ class RubikaCollector(BaseCollector):
             return []
 
         results = []
-        try:
-            _hl = int(os.getenv("RUBIKA_HISTORY_LIMIT", "200"))
-            if _hl <= 0:
-                _hl = 200
-        except (TypeError, ValueError):
-            _hl = 200
+        _hl = _get_history_limit()
+        _max_chats = _get_max_chats()
 
         try:
             since_ts = int(since.timestamp()) if since else 0
 
             chats_resp = await self._client.get_chats()
-            chats = self._extract_list(chats_resp, "chats")[:30]
+            all_chats = self._extract_list(chats_resp, "chats")
+            chats = (
+                all_chats[:_max_chats]
+                if _max_chats > 0
+                else all_chats
+            )
 
             # ─── debug: get_chats ───
             try:
@@ -593,7 +622,7 @@ class RubikaCollector(BaseCollector):
 
                 try:
                     msgs_resp = await self._client.get_messages(
-                        guid, max_id=None, limit=min(_hl, 30)
+                        guid, max_id=None, limit=_hl
                     )
                     for m in self._extract_list(msgs_resp, "messages"):
                         mtime = self._dig(m, "time")
@@ -613,6 +642,7 @@ class RubikaCollector(BaseCollector):
 
                         key = f"rubika:{guid}:{mid}"
                         if key in self._seen_ids:
+                            log_debug(f"⏭️ [seen] تکراری | rubika | {mid}")
                             continue
                         self._seen_ids.add(key)
 

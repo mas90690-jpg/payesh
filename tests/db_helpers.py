@@ -10,14 +10,9 @@
 
 نسخهٔ ۲ (این نسخه):
   - 🐛 FIX: db_schema_version حالا اسم جدول واقعی را کشف می‌کند
-    (schema_version | meta | pragma user_version).
-  - 🐛 FIX: check_ids_in_db حالا هر دو فرم id را چک می‌کند:
-      * id خام (مثل 69907bc6c653ff67 — از کلکتور)
-      * id با prefix (مثل bale_69907bc6c653ff67 — از StorageHandler)
-    این باعث می‌شد تست بله با «0/9 پیام در DB» شکست بخورد.
-  - 🎯 NEW: db_list_tables برای debug.
-  - 🎯 NEW: db_table_columns برای debug.
-  - ✅ حفظ همهٔ توابع نسخهٔ ۱.
+  - 🐛 FIX: check_ids_in_db حالا هر دو فرم id را چک می‌کند
+  - 🎯 NEW: db_list_tables برای debug
+  - 🎯 NEW: db_table_columns برای debug
 """
 from __future__ import annotations
 
@@ -60,7 +55,7 @@ def db_size_kb() -> float:
 
 
 # ═════════════════════════════════════════════════════════
-# 🆕 Debug helpers
+# Debug helpers
 # ═════════════════════════════════════════════════════════
 def db_list_tables() -> list[str]:
     """لیست همهٔ جدول‌های DB (برای debug)."""
@@ -92,7 +87,7 @@ def db_table_columns(table: str) -> list[str]:
 
 
 # ═════════════════════════════════════════════════════════
-# 🔧 FIX: schema version — کشف جدول واقعی
+# schema version
 # ═════════════════════════════════════════════════════════
 def db_schema_version() -> str:
     """
@@ -114,21 +109,16 @@ def db_schema_version() -> str:
         row = cur.fetchone()
         if row:
             table = row[0]
-            # چک ستون‌ها
             cur.execute(f"PRAGMA table_info({table})")
             cols = [r[1] for r in cur.fetchall()]
 
-            # حالت migrations: name + applied_at
             if "name" in cols:
-                cur.execute(
-                    f"SELECT COUNT(*) FROM {table}"
-                )
+                cur.execute(f"SELECT COUNT(*) FROM {table}")
                 r = cur.fetchone()
                 if r and r[0]:
                     conn.close()
                     return f"migrations={r[0]}"
 
-            # حالت schema_version: version
             if "version" in cols:
                 cur.execute(
                     f"SELECT version FROM {table} "
@@ -153,6 +143,8 @@ def db_schema_version() -> str:
         return "no_table"
     except Exception as e:
         return f"error:{type(e).__name__}"
+
+
 # ═════════════════════════════════════════════════════════
 # شمارش
 # ═════════════════════════════════════════════════════════
@@ -242,12 +234,7 @@ def find_by_ids(
     platform: str,
     ids: list[str],
 ) -> dict[str, dict[str, Any]]:
-    """
-    برای مجموعه‌ای از message_idها، پیام‌های موجود در DB را برمی‌گرداند.
-
-    Returns:
-        dict[id, {row}] — فقط idهایی که در DB هستند.
-    """
+    """برای مجموعه‌ای از message_idها، پیام‌های موجود در DB را برمی‌گرداند."""
     if not ids:
         return {}
     result: dict[str, dict[str, Any]] = {}
@@ -342,33 +329,13 @@ def get_platforms_stats() -> dict[str, dict[str, int]]:
 
 
 # ═════════════════════════════════════════════════════════
-# 🔧 FIX: check_ids_in_db — چک هر دو فرم id
+# check_ids_in_db — چک هر دو فرم id
 # ═════════════════════════════════════════════════════════
 def check_ids_in_db(
     platform: str,
     msgs: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """
-    برای یک لیست پیام (که از scrape آمده)، بررسی می‌کند کدام‌ها در DB هستند.
-
-    🎯 FIX نسخهٔ ۲: StorageHandler ممکن است id را با prefix platform_
-    ذخیره کند (مثل `bale_69907bc6c653ff67`)، در حالی که کلکتور
-    id خام می‌دهد (مثل `69907bc6c653ff67`).
-
-    این تابع هر دو فرم را چک می‌کند و نتیجه را برمی‌گرداند.
-
-    Returns:
-        {
-            "total": int,
-            "in_db": int,
-            "missing": int,
-            "ids_in_db": list,       # raw_idهایی که در DB پیدا شدند
-            "ids_missing": list,     # raw_idهایی که پیدا نشدند
-            "details_in_db": dict,
-            "details_missing": list,
-        }
-    """
-    # ─── حالت خالی ───
+    """بررسی می‌کند کدام‌یک از پیام‌ها در DB هستند."""
     if not msgs:
         return {
             "total": 0, "in_db": 0, "missing": 0,
@@ -376,7 +343,6 @@ def check_ids_in_db(
             "details_in_db": {}, "details_missing": [],
         }
 
-    # ─── جمع‌آوری raw_idها ───
     raw_ids = [str(m.get("id", "")) for m in msgs if m.get("id")]
     if not raw_ids:
         return {
@@ -385,27 +351,22 @@ def check_ids_in_db(
             "details_in_db": {}, "details_missing": [],
         }
 
-    # ─── ساخت کاندیدها (خام + با prefix) ───
     prefix = f"{platform}_"
-    # mapping: candidate_db_id → raw_id
     all_candidates: dict[str, str] = {}
     for rid in raw_ids:
-        all_candidates[rid] = rid           # خام
+        all_candidates[rid] = rid
         if not rid.startswith(prefix):
             prefixed = f"{prefix}{rid}"
-            all_candidates[prefixed] = rid  # با prefix
+            all_candidates[prefixed] = rid
 
-    # ─── جستجو در DB ───
     found = find_by_ids(platform, list(all_candidates.keys()))
 
-    # ─── mapping: raw_id → found row ───
     raw_found: dict[str, dict] = {}
     for db_id, row in found.items():
         raw_id = all_candidates.get(db_id)
         if raw_id and raw_id not in raw_found:
             raw_found[raw_id] = row
 
-    # ─── شمارش ───
     ids_in_db = list(raw_found.keys())
     ids_missing = [i for i in raw_ids if i not in raw_found]
 

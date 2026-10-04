@@ -5,17 +5,11 @@ config.py — منبع یکتای تنظیمات پروژه (از .env).
 استفاده کند (circular). برای لاگ کردن، یا print به stderr استفاده کن، یا
 `log_config_summary()` را بعد از setup logger صدا بزن.
 
-نسخهٔ ۵ (این نسخه) — هماهنگی صفر تا صد با .env.example v5:
-  - ⭐ NEW: EITAA_MESSAGES_PER_CHAT (با fallback به EITAA_MSGS_PER_CHAT)
-  - ⭐ NEW: WHATSAPP_MESSAGES_PER_CHAT (با fallback به WHATSAPP_MSGS_PER_CHAT)
-  - ⭐ NEW: AI_AVAILABLE_CACHE_S (برای ai_assistant v3)
-  - ⭐ NEW: SAFE_BRAIN_CONFIG (max_api_hour, ai_timeout_s)
-  - ⭐ NEW: BACKUP_CONFIG.backup_poke_seconds
-  - ⭐ NEW: RETENTION.cleanup_min_interval_hours / cleanup_max_interval_hours
-  - ⭐ NEW: MAIN_CONFIG.skip_venv_check
-  - 🐛 FIX: EITAA و WHATSAPP حالا هر دو نام را می‌خوانند (سازگاری)
-  - 🎯 reload() همگی این‌ها را هم به‌روز می‌کند
-  - ✅ حفظ همهٔ FIXهای نسخهٔ ۴.
+نسخهٔ ۶ (این نسخه):
+  - ⭐ NEW: instagramcollector (پلتفرم هشتم)
+  - ⭐ NEW: get_instagram_config()
+  - ⭐ NEW: _PLATFORM_KEY_MAP حالا instagram را دارد
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۵.
 """
 from __future__ import annotations
 
@@ -299,7 +293,6 @@ RETENTION: dict[str, int] = {
     "cleanup_interval_hours": max(
         1, _env_int("CLEANUP_INTERVAL_HOURS", 24)
     ),
-    # ⭐ NEW: مرزهای interval برای cleanup_service v3
     "cleanup_min_interval_hours": max(
         1, _env_int("CLEANUP_MIN_INTERVAL_HOURS", 1)
     ),
@@ -368,7 +361,6 @@ BACKUP_CONFIG: dict[str, Any] = {
     "full_days": _env_int(
         "FULL_BACKUP_DAYS", 7, min_val=1, max_val=365
     ),
-    # ⭐ NEW: فاصلهٔ حلقهٔ بررسی backup (برای debug/test)
     "backup_poke_seconds": _env_int(
         "BACKUP_POKE_SECONDS", 3600, min_val=60, max_val=86400
     ),
@@ -378,16 +370,12 @@ BACKUP_CONFIG: dict[str, Any] = {
 # ══════════════════════════════════════════════════════════
 # گزارش خودکار
 # ══════════════════════════════════════════════════════════
-# map فارسی/انگلیسی روز هفته → کد APScheduler
 _WEEKLY_DAY_MAP = {
-    # انگلیسی (کامل)
     "saturday": "sat", "sunday": "sun", "monday": "mon",
     "tuesday": "tue", "wednesday": "wed", "thursday": "thu",
     "friday": "fri",
-    # انگلیسی (کوتاه)
     "sat": "sat", "sun": "sun", "mon": "mon",
     "tue": "tue", "wed": "wed", "thu": "thu", "fri": "fri",
-    # فارسی
     "شنبه": "sat", "یکشنبه": "sun", "یک‌شنبه": "sun",
     "دوشنبه": "mon", "دو‌شنبه": "mon",
     "سه‌شنبه": "tue", "سه شنبه": "tue",
@@ -469,7 +457,6 @@ MAIN_CONFIG: dict[str, Any] = {
     "login_input_timeout_s": _env_int(
         "LOGIN_INPUT_TIMEOUT_S", 600, min_val=30, max_val=3600
     ),
-    # ⭐ NEW: skip venv check (فقط برای dev)
     "skip_venv_check": _env_bool("MAIN_SKIP_VENV_CHECK", False),
 }
 
@@ -478,11 +465,9 @@ MAIN_CONFIG: dict[str, Any] = {
 # SafeBrain (گارد امن)
 # ══════════════════════════════════════════════════════════
 SAFE_BRAIN_CONFIG: dict[str, Any] = {
-    # 🟢 حداکثر تماس‌های API در ساعت (۰ = بدون محدودیت)
     "max_api_hour": max(
         0, _env_int("SAFE_BRAIN_MAX_API_HOUR", 20)
     ),
-    # 🟢 timeout هر فراخوانی AI در SafeBrain (ثانیه)
     "ai_timeout_s": _env_float(
         "SAFE_BRAIN_AI_TIMEOUT_S", 30.0,
         min_val=5.0, max_val=300.0,
@@ -585,7 +570,6 @@ def _build_plugins_config() -> dict[str, Any]:
             "chat_open_delay": _env_float(
                 "EITAA_CHAT_DELAY", 1.5, min_val=0.1, max_val=60.0
             ),
-            # ⭐ FIX: هماهنگی با .env.example v5 (fallback به نام قدیمی)
             "messages_per_chat": _env_int_fallback(
                 "EITAA_MESSAGES_PER_CHAT",
                 "EITAA_MSGS_PER_CHAT",
@@ -632,7 +616,6 @@ def _build_plugins_config() -> dict[str, Any]:
             "chat_open_delay": _env_float(
                 "WHATSAPP_CHAT_DELAY", 1.5, min_val=0.1, max_val=60.0
             ),
-            # ⭐ FIX: هماهنگی با .env.example v5
             "messages_per_chat": _env_int_fallback(
                 "WHATSAPP_MESSAGES_PER_CHAT",
                 "WHATSAPP_MSGS_PER_CHAT",
@@ -675,7 +658,6 @@ def _build_plugins_config() -> dict[str, Any]:
             "add_query_to_keywords": _env_bool(
                 "LINKEDIN_ADD_QUERY_TO_KEYWORDS", True
             ),
-            # 🆕 تنظیمات جدید (فقط فالوورها، روزی یک بار)
             "feed_url": _env_str(
                 "LINKEDIN_FEED_URL",
                 "https://www.linkedin.com/feed/",
@@ -693,6 +675,37 @@ def _build_plugins_config() -> dict[str, Any]:
                 "LINKEDIN_SEARCH_ENABLED", False
             ),
         },
+
+        # ═══ اینستاگرام (فقط فالوورها — پست + استوری) ═══
+        "instagramcollector": {
+            "session_path": os.path.join(
+                SESSIONS_DIR, "instagram"
+            ),
+            "media_dir": os.path.join(MEDIA_DIR, "instagram"),
+            "enabled": _env_bool("INSTAGRAM_ENABLED", False),
+            "headless": _env_bool("BROWSER_HEADLESS", True),
+            "poll_seconds": _env_int(
+                "INSTAGRAM_POLL_SECONDS", 28800,
+                min_val=300, max_val=86400,
+            ),
+            "max_posts": _env_int(
+                "INSTAGRAM_MAX_POSTS", 10, min_val=1, max_val=50
+            ),
+            "max_stories": _env_int(
+                "INSTAGRAM_MAX_STORIES", 20, min_val=1, max_val=100
+            ),
+            "story_delay_min": _env_float(
+                "INSTAGRAM_STORY_DELAY_MIN", 4.0,
+                min_val=1.0, max_val=60.0,
+            ),
+            "story_delay_max": _env_float(
+                "INSTAGRAM_STORY_DELAY_MAX", 9.0,
+                min_val=2.0, max_val=120.0,
+            ),
+            "read_stories": _env_bool("INSTAGRAM_READ_STORIES", True),
+            "read_posts": _env_bool("INSTAGRAM_READ_POSTS", True),
+        },
+
         # ═══ وب ═══
         "webcollector": {
             "sources_file": str(data_paths.WEB_SOURCES),
@@ -705,7 +718,7 @@ def _build_plugins_config() -> dict[str, Any]:
             "translate": _env_bool("WEB_TRANSLATE", False),
             "enabled": _env_bool("WEB_ENABLED", False),
         },
-        
+
         # ═══ کلیدواژه‌یاب ═══
         "keywordsfinder": {
             "brand_token_enabled": _env_bool(
@@ -729,6 +742,9 @@ def _build_plugins_config() -> dict[str, Any]:
             ],
             "save_leads": True,
             "save_media": True,
+            "save_self_messages": _env_bool(
+                "STORAGE_SAVE_SELF_MESSAGES", False
+            ),
         },
         "scoringhandler": {
             "enabled": _env_bool("SCORING_ENABLED", False),
@@ -742,11 +758,16 @@ def _build_plugins_config() -> dict[str, Any]:
             "telegram_chat_id": _env_str("NOTIFY_TELEGRAM_CHAT_ID"),
         },
 
-        # ═══ ChatOps — غیرفعال کامل (پایشگر فقط‌خواندنی) ═══
+        # ═══ ChatOps — غیرفعال کامل ═══
         "adminhandler": {
-            "admin_ids": [],
-            "platform": "bale",
-            "enabled": False,
+            "admin_ids": [
+                x.strip()
+                for x in _env_str("ADMIN_IDS", "").split(",")
+                if x.strip()
+            ],
+            "platform": _env_str("ADMIN_PLATFORM", "bale"),
+            "enabled": _env_bool("ADMIN_ENABLED", False),   # ← از .env بخون
+    
             "admin_phone": "",
             "admin_chat": "",
         },
@@ -788,7 +809,6 @@ AI: dict[str, Any] = {
     "keep_alive": _env_str("OLLAMA_KEEP_ALIVE", "60s") or "60s",
     "timeout": _env_int("AI_TIMEOUT", 120, min_val=10, max_val=600),
     "deepseek_api_key": _env_str("DEEPSEEK_API_KEY"),
-    # ⭐ NEW: cache available() در ai_assistant v3
     "available_cache_s": _env_float(
         "AI_AVAILABLE_CACHE_S", 30.0, min_val=0.0, max_val=600.0
     ),
@@ -835,7 +855,7 @@ def _parse_tiers(raw: str, default: list[str]) -> list[str]:
 
 
 LEAD_ALERTS: dict[str, Any] = {
-    "enabled": False,   # ← هاردکد غیرفعال
+    "enabled": False,
     "min_score": 0,
     "tiers": ["T1"],
 }
@@ -868,6 +888,10 @@ def get_linkedin_config() -> dict[str, Any]:
     return PLUGINS_CONFIG.get("linkedincollector", {})
 
 
+def get_instagram_config() -> dict[str, Any]:
+    return PLUGINS_CONFIG.get("instagramcollector", {})
+
+
 def get_web_config() -> dict[str, Any]:
     return PLUGINS_CONFIG.get("webcollector", {})
 
@@ -880,6 +904,7 @@ _PLATFORM_KEY_MAP = (
     ("whatsapp", "whatsappcollector"),
     ("web", "webcollector"),
     ("linkedin", "linkedincollector"),
+    ("instagram", "instagramcollector"),
 )
 
 
@@ -903,10 +928,7 @@ COLLECTORS_CONFIG: dict[str, Any] = PLUGINS_CONFIG
 # Config summary logger
 # ══════════════════════════════════════════════════════════
 def log_config_summary() -> None:
-    """خلاصهٔ تنظیمات را در لاگ ثبت می‌کنه.
-
-    ⚠️ این تابع رو بعد از `core.kernel.logger` و `core.kernel.console_compat` صدا بزن.
-    """
+    """خلاصهٔ تنظیمات را در لاگ ثبت می‌کنه."""
     try:
         from core.kernel.logger import log_info
     except Exception:
@@ -930,17 +952,14 @@ def log_config_summary() -> None:
             f"({OBS_CONFIG['host']}:{OBS_CONFIG['port']})"
         )
 
-        # پلتفرم‌های فعال
         active = PLATFORMS_ACTIVE or []
         if active:
             log_info(f"⚙️ [config] پلتفرم‌های فعال: {active}")
         else:
             log_info("⚠️ [config] هیچ پلتفرمی فعال نیست")
 
-        # admin_ids — حذف شد (پایشگر فقط‌خواندنی)
         log_info("⚙️ [config] admin=غیرفعال (پایشگر فقط‌خواندنی)")
 
-        # retention
         log_info(
             f"⚙️ [config] retention | "
             f"media={RETENTION['media_days']}d | "
@@ -949,10 +968,8 @@ def log_config_summary() -> None:
             f"{'∞' if RETENTION['messages_days'] == 0 else str(RETENTION['messages_days'])+'d'}"
         )
 
-        # lead alerts — همیشه خاموش
         log_info("⚙️ [config] lead_alerts خاموش (پایشگر فقط‌خواندنی)")
-        
-        # report schedule
+
         if REPORT["enabled"]:
             log_info(
                 f"⚙️ [config] report | "
@@ -961,7 +978,6 @@ def log_config_summary() -> None:
                 f"{REPORT['weekly_time']}"
             )
 
-        # storage tiers
         storage_cfg = PLUGINS_CONFIG.get("storagehandler", {})
         if storage_cfg:
             log_info(
@@ -970,7 +986,6 @@ def log_config_summary() -> None:
                 f"require_t1={storage_cfg.get('require_t1')}"
             )
 
-        # monitor + log + backup
         log_info(
             f"⚙️ [config] monitor | "
             f"interval={MONITOR['interval_seconds']}s | "
@@ -987,14 +1002,12 @@ def log_config_summary() -> None:
             f"keep_full={BACKUP_CONFIG['keep_full']}"
         )
 
-        # ⭐ NEW: safe_brain summary
         log_info(
             f"⚙️ [config] safe_brain | "
             f"max_api_hour={SAFE_BRAIN_CONFIG['max_api_hour']} | "
             f"ai_timeout={SAFE_BRAIN_CONFIG['ai_timeout_s']}s"
         )
 
-        # paths
         log_info(
             f"⚙️ [config] paths | "
             f"base={BASE_DIR} | storage={STORAGE_DIR}"
@@ -1007,13 +1020,9 @@ def log_config_summary() -> None:
 # reload (hot-reload)
 # ══════════════════════════════════════════════════════════
 def reload() -> None:
-    """بارگذاری مجدد config از .env — برای تست.
-
-    ⚠️ dictها رو in-place به‌روزرسانی می‌کنه تا referenceهای موجود معتبر بمونن.
-    """
+    """بارگذاری مجدد config از .env — برای تست."""
     load_dotenv(override=False)
 
-    # ─── globals ───
     global AI_ENABLED, EVENT_LOG, AI_PRIORITY
     global DATABASE_TYPE, CHROME_PATH
     global PLATFORMS_ACTIVE
@@ -1035,7 +1044,6 @@ def reload() -> None:
 
     CHROME_PATH = _env_str("CHROME_PATH") or None
 
-    # ─── dictها (in-place) ───
     CRM_CONFIG.update({
         "sql_timeout_s": _env_float(
             "CRM_SQL_TIMEOUT_S", 5.0, min_val=0.5, max_val=120.0
@@ -1222,10 +1230,8 @@ def reload() -> None:
         "tiers": ["T1"],
     })
 
-    # PLUGINS_CONFIG: rebuild کامل
     new_plugins = _build_plugins_config()
     PLUGINS_CONFIG.clear()
     PLUGINS_CONFIG.update(new_plugins)
 
-    # پلتفرم‌های فعال
     PLATFORMS_ACTIVE = get_active_platforms()

@@ -50,14 +50,14 @@ SAFE_PARAMS = {
     # ─── ایتا ───
     "EITAA_MAX_CHATS",
     "EITAA_MESSAGES_PER_CHAT",
-    "EITAA_MSGS_PER_CHAT",  # سازگاری عقب‌رو
+    "EITAA_MSGS_PER_CHAT",
     "EITAA_BACKFILL_SCROLLS",
     "EITAA_CHAT_DELAY",
 
     # ─── واتساپ ───
     "WHATSAPP_MAX_CHATS",
     "WHATSAPP_MESSAGES_PER_CHAT",
-    "WHATSAPP_MSGS_PER_CHAT",  # سازگاری عقب‌رو
+    "WHATSAPP_MSGS_PER_CHAT",
     "WHATSAPP_BACKFILL_SCROLLS",
     "WHATSAPP_CHAT_DELAY",
 
@@ -99,14 +99,16 @@ SAFE_PARAMS = {
     "LOGIN_INPUT_TIMEOUT_S",
 }
 
-# پارامترهای حساس — مقدارشان در پاسخ mask می‌شود
-# ⚠️ این‌ها در SAFE_PARAMS نیستند (امکان تغییر از چت را ندارند)
+# پارامترهای حساس — قابل خواندن (mask‌شده) ولی غیرقابل تغییر از چت
 _SENSITIVE_PARAMS = {
     "DEEPSEEK_API_KEY", "DB_PASSWORD", "LINKEDIN_PASSWORD",
     "BALE_PASSWORD", "EITAA_PASSWORD", "RUBIKA_PASSWORD",
     "MEMORY_API_KEY", "NOTIFY_TELEGRAM_TOKEN",
-    "MAIN_SKIP_VENV_CHECK",  # امنیتی — نباید از چت تغییر کند
+    "MAIN_SKIP_VENV_CHECK",
 }
+
+# 🎯 FIX #8: پارامترهای قابل خواندن = امن + حساس (mask‌شده)
+_READABLE_PARAMS = SAFE_PARAMS | _SENSITIVE_PARAMS
 
 _PLATFORMS = ("eitaa", "bale", "rubika", "telegram",
               "whatsapp", "linkedin", "web")
@@ -170,7 +172,6 @@ class AdminActions:
         self._get_requests_path = get_requests_path
         self._get_custom_kw_path = get_custom_kw_path
 
-        # 🟠 FIX: task reference برای restart (جلوگیری از GC)
         self._restart_task: asyncio.Task | None = None
 
     # ═══════════════════════════════════════
@@ -238,7 +239,6 @@ class AdminActions:
         if action == "set_param":
             return self.set_param(raw_text)
         if action == "restart":
-            # 🟠 FIX: نگه‌داشتن reference به task (جلوگیری از GC)
             self._restart_task = asyncio.create_task(self._do_restart())
             log_warning("🔄 [ADMIN:restart] درخواست ریاستارت")
             return "🔄 در حال ریاستارت... چند ثانیه دیگر دوباره بالا می‌آیم."
@@ -246,11 +246,10 @@ class AdminActions:
             return await self.explain_logs()
         if action == "feature_request":
             return self.log_request(raw_text)
-        # پیش‌فرض: سؤال آزاد از AI
         return await self.ask(raw_text)
 
     # ═══════════════════════════════════════
-    # CRM / Report — در thread جدا (sync functions)
+    # CRM / Report
     # ═══════════════════════════════════════
     async def crm_action(self, raw_text: str) -> str:
         platform = platform_in((raw_text or "").lower())
@@ -262,12 +261,10 @@ class AdminActions:
             log_error(f"❌ [ADMIN:crm] import | {type(e).__name__}: {e}")
             return f"❌ خطا در بارگذاری CRM: {e}"
 
-        # export_crm sync است — در thread جدا اجرا کن (بلاک event loop نشود)
         t0 = time.monotonic()
         try:
             res = await asyncio.to_thread(export_crm, 30, platform=platform)
         except TypeError:
-            # امضای قدیمی (بدون platform)
             try:
                 res = await asyncio.to_thread(export_crm, 30)
             except Exception as e:
@@ -308,7 +305,6 @@ class AdminActions:
 
         t0 = time.monotonic()
         try:
-            # sync → thread
             path = await asyncio.to_thread(
                 generate_executive_report, platform=platform
             )
@@ -328,9 +324,7 @@ class AdminActions:
         elapsed_ms = (time.monotonic() - t0) * 1000
         label = platform or "همه پلتفرم‌ها"
         if elapsed_ms > _SLOW_REPORT_MS:
-            log_warning(
-                f"🐌 [ADMIN:report] کند | {elapsed_ms:.0f}ms"
-            )
+            log_warning(f"🐌 [ADMIN:report] کند | {elapsed_ms:.0f}ms")
 
         if not path:
             log_warning("⚠️ [ADMIN:report] مسیر None برگشت")
@@ -373,7 +367,6 @@ class AdminActions:
 
         elapsed_ms = (time.monotonic() - t0) * 1000
 
-        # AI در بعضی حالت‌ها پیام خطای متنی برمی‌گرداند (نه None)
         if (
             not ans
             or "در دسترس نیست" in ans
@@ -519,7 +512,6 @@ class AdminActions:
     # سرنخ
     # ═══════════════════════════════════════
     async def lead_details(self, which: str) -> str:
-        # sanitize ورودی
         which = (which or "last").lower()
         if which not in ("first", "last"):
             which = "last"
@@ -552,14 +544,11 @@ class AdminActions:
             return "هنوز هیچ سرنخی ثبت نشده."
 
         label = "اولین" if which == "first" else "آخرین"
-        # برند را هم بگیر
         try:
             brand_info = row["brands"] if "brands" in row.keys() else ""
         except Exception:
             brand_info = ""
-        brand_line = (
-            f"🏢 برند: {brand_info}\n" if brand_info else ""
-        )
+        brand_line = f"🏢 برند: {brand_info}\n" if brand_info else ""
         detail = (
             f"🔎 {label} سرنخ:\n"
             f"📱 پلتفرم: {row['platform']}\n"
@@ -571,11 +560,10 @@ class AdminActions:
             f"🕒 {row['timestamp']}\n"
             f"💬 {(row['text'] or '')[:300]}"
         )
-        
+
         if row["chat_link"]:
             detail += f"\n🔗 {row['chat_link']}"
 
-        # narration اختیاری — خطا نده
         narration = ""
         try:
             from core.services.ai_assistant import PERSONA
@@ -587,7 +575,6 @@ class AdminActions:
                 system=PERSONA,
             )
             elapsed_ms = (time.monotonic() - t0) * 1000
-            # پاسخ نامعتبر AI → حذف
             if (
                 narration
                 and (
@@ -611,7 +598,6 @@ class AdminActions:
         return detail + (("\n\n🗣️ " + narration) if narration else "")
 
     async def platform_status(self, platform) -> str:
-        # sanitize
         p = (platform or "").lower() if isinstance(platform, str) else ""
         if not p or p not in _PLATFORMS:
             return self.status()
@@ -642,10 +628,9 @@ class AdminActions:
         )
 
     # ═══════════════════════════════════════
-    # لاگ — با seek از انتها (نه کل فایل)
+    # لاگ
     # ═══════════════════════════════════════
     def logs(self, n: int = 12) -> str:
-        # sanitize
         try:
             n = int(n)
         except (TypeError, ValueError):
@@ -661,7 +646,7 @@ class AdminActions:
             with open(path, "rb") as f:
                 if size > _LOG_TAIL_BYTES:
                     f.seek(-_LOG_TAIL_BYTES, os.SEEK_END)
-                    f.readline()  # خط ناقص اول را دور بریز
+                    f.readline()
                 data = f.read()
             lines = data.decode("utf-8", errors="ignore").splitlines()
         except Exception as e:
@@ -676,7 +661,6 @@ class AdminActions:
                 msg = (o.get("msg", "") or "")[:90]
                 out.append(f"[{lvl}] {msg}")
             except Exception:
-                # خط ناقص/invalid — کوتاه کن
                 out.append(ln.strip()[:90])
         return "🗒️ آخرین لاگ‌ها:\n" + "\n".join(out)
 
@@ -695,7 +679,6 @@ class AdminActions:
             )
             return logs
 
-        # پاسخ نامعتبر → raw logs
         if (
             not ans
             or "در دسترس نیست" in ans
@@ -705,35 +688,33 @@ class AdminActions:
         return ans
 
     # ═══════════════════════════════════════
-    # پارامترها — با mask حساس + atomic write
+    # پارامترها
     # ═══════════════════════════════════════
     def get_param(self, name) -> str:
+        # 🎯 FIX #8: خواندن پارامترهای حساس هم مجاز است (mask می‌شوند)
         if not name or not isinstance(name, str):
             return (
                 f"این پارامتر مجاز نیست. "
-                f"مجازها: {', '.join(sorted(SAFE_PARAMS))}"
+                f"مجازها: {', '.join(sorted(_READABLE_PARAMS))}"
             )
         key = name.upper()
-        if key not in SAFE_PARAMS:
+        if key not in _READABLE_PARAMS:
             return (
                 f"این پارامتر مجاز نیست. "
-                f"مجازها: {', '.join(sorted(SAFE_PARAMS))}"
+                f"مجازها: {', '.join(sorted(_READABLE_PARAMS))}"
             )
 
         raw = os.getenv(key, "(تنظیم‌نشده)")
-        # 🎯 FIX: سقف طول مقدار
         if raw and len(str(raw)) > _PARAM_VALUE_MAX_LEN:
             raw = str(raw)[:_PARAM_VALUE_MAX_LEN] + "..."
 
-        # اگه حساس بود، mask کن
-        if key in _SENSITIVE_PARAMS:
-            display = _mask_secret(raw)
-        else:
-            display = raw
+        # 🎯 FIX #8: حالا mask واقعاً اعمال می‌شود
+        is_sensitive = key in _SENSITIVE_PARAMS
+        display = _mask_secret(raw) if is_sensitive else raw
 
         log_info(
             f"⚙️ [ADMIN:get_param] {key} "
-            f"(masked={'yes' if key in _SENSITIVE_PARAMS else 'no'})"
+            f"(masked={'yes' if is_sensitive else 'no'})"
         )
         return f"{key} = {display}"
 
@@ -742,6 +723,7 @@ class AdminActions:
         if not name:
             return "قالب: set PARAM=VALUE"
         name = name.upper()
+        # 🎯 فقط SAFE_PARAMS قابل تغییرند (حساس‌ها تغییر نمی‌کنند)
         if name not in SAFE_PARAMS:
             log_warning(f"⚠️ [ADMIN:set_param] غیرمجاز | {name}")
             return (
@@ -749,15 +731,9 @@ class AdminActions:
                 f"مجازها: {', '.join(sorted(SAFE_PARAMS))}"
             )
 
-        # 🟠 FIX: چک بی‌فایده حذف شد
-        # (چون SAFE_PARAMS و _SENSITIVE_PARAMS همپوشانی ندارند،
-        #  پارامترهای حساس در SAFE_PARAMS نیستند → به چک دوم نیازی نیست)
-
         ok, err = self._update_env(name, val)
         if not ok:
-            log_error(
-                f"❌ [ADMIN:set_param] {name} | {err}"
-            )
+            log_error(f"❌ [ADMIN:set_param] {name} | {err}")
             return f"خطا در تغییر: {err}"
 
         log_success(f"✅ [ADMIN:set_param] {name}={val}")
@@ -785,18 +761,15 @@ class AdminActions:
                     found = True
                     break
             if not found:
-                # اطمینان از newline در آخر
                 if lines and not lines[-1].endswith("\n"):
                     lines[-1] += "\n"
                 lines.append(new_line)
 
-            # atomic write: tmp + replace
             with open(tmp_path, "w", encoding="utf-8") as f:
                 f.writelines(lines)
             os.replace(tmp_path, env_path)
             return True, ""
         except Exception as e:
-            # cleanup tmp اگه موند
             try:
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
@@ -829,15 +802,14 @@ class AdminActions:
             return f"خطا در ثبتِ درخواست: {e}"
 
     async def _do_restart(self):
-        """ری‌استارت با graceful shutdown — نه os._exit."""
+        """ری‌استارت با graceful shutdown + خروج واقعی پروسه."""
         await asyncio.sleep(1)
 
-        # تلاش برای shutdown تمیز
+        # ─── تلاش برای shutdown تمیز ───
         try:
             from main import _signal_handler
             log_info("🔁 [ADMIN:restart] shutdown تمیز...")
             _signal_handler()
-            # کمی صبر کن تا cleanup شروع شود (ولی نه تا کامل)
             await asyncio.sleep(3)
         except Exception as e:
             log_warning(
@@ -845,7 +817,8 @@ class AdminActions:
                 f"{type(e).__name__}: {e}"
             )
 
-        # spawn پروسهٔ جدید
+        # ─── spawn پروسهٔ جدید ───
+        spawned = False
         try:
             kwargs = {"cwd": self.root}
             if os.name == "nt":
@@ -859,6 +832,7 @@ class AdminActions:
                 [sys.executable, os.path.join(self.root, "main.py")],
                 **kwargs,
             )
+            spawned = True
             try:
                 with open(self.pid_file, "w") as f:
                     f.write(str(proc.pid))
@@ -874,23 +848,18 @@ class AdminActions:
             )
             return
 
-        # بعد از spawn، خروج از پروسهٔ قدیمی
-        # (وقتی main() در finally خودش cleanup می‌کند)
-        log_warning("🔄 [ADMIN:restart] خروج از پروسهٔ قدیمی")
-        # 🎯 FIX: sys.exit در try/except
-        try:
-            sys.exit(0)
-        except SystemExit:
-            raise
-        except Exception as e:
-            log_warning(
-                f"⚠️ [ADMIN:restart] sys.exit | "
-                f"{type(e).__name__}: {e}"
-            )
-            os._exit(0)  # آخرین راه‌حل
+        # ─── 🎯 FIX #2: خروج واقعی از پروسه ───
+        # sys.exit(0) داخل asyncio.Task کار نمی‌کند (SystemExit را تسک می‌بلعد)
+        # os._exit(0) فوراً پروسه را می‌بندد — تنها راه مطمئن
+        log_warning("🔄 [ADMIN:restart] خروج از پروسهٔ قدیمی (os._exit)")
+        if spawned:
+            os._exit(0)
+        else:
+            # اگر spawn موفق نشد، حداقل پروسه را نکش
+            log_error("❌ [ADMIN:restart] spawn نشد — پروسهٔ قدیمی می‌ماند")
 
     # ═══════════════════════════════════════
-    # راهنما — شامل همهٔ actionهای موجود
+    # راهنما
     # ═══════════════════════════════════════
     def help_text(self) -> str:
         return (

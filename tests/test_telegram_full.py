@@ -1,25 +1,26 @@
 # tests/test_telegram_full.py
 """
-تست کامل تلگرام — Pipeline end-to-end.
+تست کامل تلگرام — Pipeline end-to-end (نسخهٔ مرورگری).
 
 Pipeline:
   Collector → EventBus → StorageHandler → DB (isolated)
 
-نسخهٔ ۱ (این نسخه):
-  - هم‌راستا با test_bale_full.py و test_eitaa_full.py
+نسخهٔ ۲ (این نسخه — TelegramWeb):
+  - 🎯 استفاده از TelegramWebCollector (مرورگر، مثل بله/ایتا)
+  - ❌ حذف نیاز به api_id/api_hash (دیگه از my.telegram.org نمی‌خواد)
+  - ✅ فقط نیاز به نشست ذخیره‌شده (python login.py → گزینه تلگرام وب)
+  - ✅ سازگار با ساختار test_bale_full.py و test_eitaa_full.py
   - ⏭️ skip منطقی: اگر هیچ پیام کلیدواژه‌داری نبود → skip (نه fail)
-  - 🎯 چک پیش‌نیازهای تلگرام (API_ID, API_HASH, PHONE)
 
 پیش‌نیازها:
   - TELEGRAM_ENABLED=true
-  - TELEGRAM_API_ID (از my.telegram.org)
-  - TELEGRAM_API_HASH (از my.telegram.org)
-  - TELEGRAM_PHONE (شماره واقعی با +)
-  - نشست ساخته‌شده (python login.py → گزینه ۴)
+  - نشست ذخیره‌شده در storage/sessions/telegram_web/
+  - VPN روشن (web.telegram.org روی IP ایران بسته است)
 
 اجرا:
   python tests/test_telegram_full.py
   python tests/test_telegram_full.py --headless
+  python tests/test_telegram_full.py --max-chats 5
 """
 from __future__ import annotations
 
@@ -38,8 +39,44 @@ from tests.helpers import (
 from tests.pipeline_helpers import TestPipeline
 
 
-async def main():
-    banner("تست کامل تلگرام (Telegram) — Pipeline end-to-end")
+# ═════════════════════════════════════════════════════════
+# مسیر نشست مرورگر تلگرام
+# ═════════════════════════════════════════════════════════
+def _telegram_web_session_path() -> str:
+    """مسیر user_data_dir مرورگر تلگرام."""
+    try:
+        from config import STORAGE_DIR
+        return os.path.join(
+            STORAGE_DIR, "sessions", "telegram_web"
+        )
+    except Exception:
+        root = os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__))
+        )
+        return os.path.join(
+            root, "storage", "sessions", "telegram_web"
+        )
+
+
+def _session_has_data(path: str) -> bool:
+    """آیا پوشهٔ نشست محتوای واقعی دارد؟"""
+    if not path or not os.path.isdir(path):
+        return False
+    try:
+        entries = [
+            e for e in os.listdir(path)
+            if not e.startswith(".")
+        ]
+        return len(entries) > 0
+    except Exception:
+        return False
+
+
+# ═════════════════════════════════════════════════════════
+# main
+# ═════════════════════════════════════════════════════════
+async def main(headless: bool = False, max_chats: int = 0):
+    banner("تست کامل تلگرام (Telegram Web) — Pipeline end-to-end")
     report = TestReport("telegram")
 
     # ═══ ۱) env ═══
@@ -59,52 +96,46 @@ async def main():
         report.save()
         return False
 
-    # ─── چک پیش‌نیازها ───
-    api_id = raw.get("api_id", "") or ""
-    api_hash = raw.get("api_hash", "") or ""
-    phone = raw.get("phone", "") or ""
-
-    missing = []
-    if not api_id:
-        missing.append("TELEGRAM_API_ID")
-    if not api_hash:
-        missing.append("TELEGRAM_API_HASH")
-    if not phone:
-        missing.append("TELEGRAM_PHONE")
-
-    if missing:
+    # ─── توضیح نسخهٔ جدید ───
+    phone = (raw.get("phone") or "").strip()
+    report.add(
+        "env.mode", "ok",
+        "mode=web (مرورگر) — بدون نیاز به api_id/api_hash",
+    )
+    if phone:
         report.add(
-            "env.prerequisites", "fail",
-            f"missing={missing}",
+            "env.phone", "ok",
+            f"phone={phone[:6]}...",
         )
-        print(f"\n{C.FAIL}❌ پیش‌نیازهای تلگرام ناقص:{C.END}")
-        for m in missing:
-            print(f"     - {m} تنظیم نشده")
-        print(f"\n   💡 برای گرفتن API:")
-        print(f"      ۱) برو my.telegram.org")
-        print(f"      ۲) با شماره‌ات لاگین کن")
-        print(f"      ۳) API development tools")
-        print(f"      ۴) App api_id و App api_hash رو بگیر")
-        await pipeline_stop_safe(report)
+    else:
+        report.add(
+            "env.phone", "warn",
+            "TELEGRAM_PHONE خالی (اختیاری در نسخهٔ مرورگری)",
+        )
+
+    # ═══ ۲) نشست مرورگر ═══
+    section("مرحله ۲: بررسی نشست مرورگر")
+    session_path = _telegram_web_session_path()
+    report.add(
+        "session.path", "ok",
+        session_path,
+    )
+    session_exists = _session_has_data(session_path)
+    report.add(
+        "session.exists",
+        "ok" if session_exists else "fail",
+        f"exists={session_exists}",
+    )
+    if not session_exists:
+        print(f"\n{C.FAIL}❌ نشست تلگرام‌وب وجود ندارد{C.END}")
+        print(f"   راه‌حل:")
+        print(f"     ۱) VPN را روشن کن")
+        print(f"     ۲) python login.py → گزینه تلگرام وِب")
+        print(f"     ۳) در مرورگر با شماره و کد پیامکی وارد شو")
+        print(f"     ۴) بعد دوباره این تست را اجرا کن")
         report.print_summary()
         report.save()
         return False
-
-    report.add(
-        "env.prerequisites", "ok",
-        f"api_id={api_id[:6]}... | phone={phone[:6]}...",
-    )
-
-    # ═══ ۲) نشست ═══
-    section("مرحله ۲: بررسی نشست")
-    session_exists = check_session_exists(
-        env_info.get("session_path", "")
-    )
-    report.add(
-        "session.exists",
-        "ok" if session_exists else "warn",
-        f"exists={session_exists}",
-    )
 
     # ═══ ۳) pipeline ═══
     section("مرحله ۳: ساخت pipeline end-to-end")
@@ -122,16 +153,19 @@ async def main():
     # ═══ ۴) ساخت collector ═══
     section("مرحله ۴: ساخت collector")
     try:
-        from collectors.telegram import TelegramCollector
-
-        collector = TelegramCollector(
-            api_id=api_id,
-            api_hash=api_hash,
-            phone=phone,
+        from collectors.telegram import TelegramWebCollector
+        collector = TelegramWebCollector(
+            phone=phone or None,
+            headless=headless,
             poll_seconds=999,
+            max_chats=max_chats,
+            messages_per_chat=30,
+            backfill_scrolls=0,
         )
-        report.add("collector.init", "ok",
-                   f"platform={collector.platform_name}")
+        report.add(
+            "collector.init", "ok",
+            f"platform={collector.platform_name}",
+        )
     except Exception as e:
         report.add("collector.init", "fail", str(e))
         await pipeline.stop()
@@ -152,8 +186,10 @@ async def main():
             elapsed,
         )
         if not ok:
-            print(f"\n{C.WARN}⚠️ اتصال تلگرام شکست خورد.{C.END}")
-            print(f"   راه‌حل: python login.py → گزینهٔ ۴ (تلگرام)")
+            print(f"\n{C.WARN}⚠️ اتصال تلگرام‌وب شکست خورد{C.END}")
+            print(f"   راه‌حل:")
+            print(f"     ۱) VPN را چک کن (web.telegram.org)")
+            print(f"     ۲) python login.py → گزینه تلگرام وِب")
             await safe_disconnect(collector, report)
             await pipeline.stop()
             report.print_summary()
@@ -167,10 +203,22 @@ async def main():
         report.save()
         return False
 
-    # ═══ ۶) صبر برای رویدادهای زنده ═══
-    section("مرحله ۶: صبر ۵ ثانیه")
-    await asyncio.sleep(5)
-    report.add("wait.live", "ok", "5s")
+    # ═══ ۶) is_logged_in ═══
+    section("مرحله ۶: چک لاگین")
+    try:
+        logged = await collector._is_logged_in()
+        url = ""
+        try:
+            url = collector._page.url[:80] if collector._page else ""
+        except Exception:
+            pass
+        report.add(
+            "is_logged_in",
+            "ok" if logged else "fail",
+            f"logged={logged} | url={url}",
+        )
+    except Exception as e:
+        report.add("is_logged_in", "warn", str(e))
 
     # ═══ ۷) fetch_messages ═══
     section("مرحله ۷: fetch_messages")
@@ -188,32 +236,8 @@ async def main():
         report.add("fetch_messages", "fail", str(e))
         msgs = []
 
-    # ═══ ۸) fetch_history (اختصاصی تلگرام) ═══
-    section("مرحله ۸: fetch_history (اختصاصی)")
-    try:
-        from datetime import datetime, timedelta
-        since = datetime.now() - timedelta(days=1)
-        t0 = time.monotonic()
-        history = await collector.fetch_history(since)
-        elapsed = (time.monotonic() - t0) * 1000
-        report.add(
-            "fetch_history",
-            "ok" if history is not None else "warn",
-            f"count={len(history)} | {elapsed:.0f}ms",
-            elapsed,
-        )
-        # اگه تاریخچه پیام داشت، به msgs اضافه کن
-        if history:
-            msgs.extend(history)
-            report.add(
-                "fetch_history.merged", "ok",
-                f"total msgs after merge = {len(msgs)}",
-            )
-    except Exception as e:
-        report.add("fetch_history", "warn", str(e))
-
-    # ═══ ۹) ساختار پیام‌ها ═══
-    section("مرحله ۹: بررسی ساختار پیام‌ها")
+    # ═══ ۸) ساختار پیام‌ها ═══
+    section("مرحله ۸: بررسی ساختار پیام‌ها")
     if msgs:
         sample = msgs[0]
         required_keys = [
@@ -230,23 +254,28 @@ async def main():
         print(f"\n  📩 {min(5, len(msgs))} پیام scrape‌شده:")
         for m in msgs[:5]:
             txt = (m.get("text") or "")[:60].replace("\n", " ")
+            ctype = m.get("chat_type", "?")
             print(
                 f"     [{m.get('chat_name', '?')[:25]}] "
-                f"id={m.get('id', '?')[:20]} | {txt}"
+                f"({ctype}) id={m.get('id', '?')[:20]} | {txt}"
             )
 
         platforms = {m.get("platform") for m in msgs}
         chats = {m.get("chat_name") for m in msgs}
+        chat_types = {m.get("chat_type") for m in msgs}
         report.add(
             "msg.stats", "ok",
-            f"platforms={platforms} | chats={len(chats)}",
+            f"platforms={platforms} | chats={len(chats)} | "
+            f"types={chat_types}",
         )
     else:
-        report.add("msg.structure", "warn",
-                   "هیچ پیامی fetch نشد")
+        report.add(
+            "msg.structure", "warn",
+            "هیچ پیامی fetch نشد (طبیعی اگر چت جدیدی نبود)",
+        )
 
-    # ═══ ۱۰) feed pipeline ═══
-    section("مرحله ۱۰: عبور از pipeline (ذخیره در DB)")
+    # ═══ ۹) feed pipeline ═══
+    section("مرحله ۹: عبور از pipeline (ذخیره در DB)")
     try:
         t0 = time.monotonic()
         stored = await pipeline.feed(msgs)
@@ -260,9 +289,8 @@ async def main():
     except Exception as e:
         report.add("pipeline.feed", "fail", str(e))
 
-    # ═══ ۱۱) چک DB ═══
-    section("مرحله ۱۱: چک ذخیره‌سازی در DB")
-
+    # ═══ ۱۰) چک DB — فقط کلیدواژه‌دارها ═══
+    section("مرحله ۱۰: چک ذخیره‌سازی در DB")
     if msgs:
         try:
             from analyzers.keyword_finder import get_keyword_finder
@@ -311,8 +339,10 @@ async def main():
                     txt = (row.get("text") or "")[:50]
                     kwv = row.get("keywords") or "—"
                     print(f"     [{chat}] {txt}")
-                    print(f"        db_id={row.get('id', '')[:30]} | "
-                          f"kw={kwv[:40]}")
+                    print(
+                        f"        db_id={row.get('id', '')[:30]} | "
+                        f"kw={kwv[:40]}"
+                    )
         else:
             report.add(
                 "db.scrape_saved", "skip",
@@ -320,16 +350,15 @@ async def main():
             )
             print(f"\n  ℹ️ هیچ پیام کلیدواژه‌داری در این scrape نبود")
             print(f"     💡 برای تست کامل: پیام با برند "
-                  f"(مثل «یاراترا کریستا اس او پی») در یه گروه تلگرام بفرست")
+                  f"(مثل «یاراترا کریستا اس او پی») در یه چت بفرست")
     else:
         report.add(
             "db.scrape_saved", "skip",
             "هیچ پیامی برای چک نیست",
         )
 
-    # ═══ ۱۲) چک lead ═══
-    section("مرحله ۱۲: چک lead (پیام‌های کلیدواژه‌دار)")
-
+    # ═══ ۱۱) چک lead ═══
+    section("مرحله ۱۱: چک lead (پیام‌های کلیدواژه‌دار)")
     try:
         total_db = await pipeline.count_messages(platform="telegram")
         total_leads = await pipeline.count_leads(platform="telegram")
@@ -353,6 +382,23 @@ async def main():
     except Exception as e:
         report.add("db.leads_check", "warn", str(e))
 
+    # ═══ ۱۲) dump_dom ═══
+    section("مرحله ۱۲: dump_dom")
+    try:
+        dom_path = await collector.dump_dom()
+        size = (
+            os.path.getsize(dom_path)
+            if dom_path and os.path.exists(dom_path)
+            else 0
+        )
+        report.add(
+            "dump_dom",
+            "ok" if dom_path and size > 0 else "warn",
+            f"size={size}B",
+        )
+    except Exception as e:
+        report.add("dump_dom", "warn", str(e))
+
     # ═══ ۱۳) disconnect ═══
     section("مرحله ۱۳: disconnect")
     await safe_disconnect(collector, report)
@@ -365,23 +411,19 @@ async def main():
     except Exception as e:
         report.add("pipeline.cleanup", "warn", str(e))
 
+    # ═══ نتیجه ═══
     ok = report.print_summary()
     report.save()
     return ok
 
 
-async def pipeline_stop_safe(report: TestReport):
-    """پاک‌سازی امن pipeline در صورت خطا قبل از ساخت."""
-    try:
-        pass
-    except Exception:
-        pass
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--headless", action="store_true")
+    parser.add_argument("--max-chats", type=int, default=0)
     args = parser.parse_args()
 
-    ok = asyncio.run(main())
+    ok = asyncio.run(
+        main(headless=args.headless, max_chats=args.max_chats)
+    )
     sys.exit(0 if ok else 1)

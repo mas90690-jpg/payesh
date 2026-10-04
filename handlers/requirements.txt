@@ -1,0 +1,5 @@
+config==0.5.1
+data==0.4
+lead_monitor==3.0.0
+psutil==6.1.1
+psutil==7.2.2

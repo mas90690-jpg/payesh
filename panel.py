@@ -3,27 +3,18 @@ Control panel for the Srooyesh lead-monitoring bot — numeric menu.
 
 Run: double-click panel.bat  (or: python panel.py)
 
-منو:
-    1) Start              2) Restart            3) Stop
-    4) Status & stats     5) Login              6) Backup
-    7) Reports (platform) 8) CRM (mode)         9) Tests
-    10) Cleanup           11) Push to GitHub    12) Health & metrics
-    13) AI / Admin        14) Feature requests  15) Open local AI chat
-    16) Recent reports    17) Pull from GitHub  18) Git status   0) Exit
-
-نسخهٔ ۶ (تمیز + حرفه‌ای):
-  - ⭐ Push به هر دو remote (origin + backup) با گزارش دقیق
-  - ⭐ بازیابی فایل‌های پاک‌شده قبل از pull
-  - ⭐ Git status کامل (branch/remote/ahead-behind/changes)
-  - ⭐ نمایش صریح موفقیت/شکست هر remote
-  - 🔴 امنیت: جلوگیری از push .env
-  - 🟠 همه پیام‌ها با [OK]/[X]/[i] برچسب‌گذاری شده
+نسخهٔ ۱۲ (این نسخه):
+  - 🌐 همهٔ متن‌ها انگلیسی (کاملاً انگلیسی).
+  - 🎨 منوی جمع‌وجور شبکه‌ای (grid, 4 columns).
+  - 🎨 تراز کامل با _visible_len + _pad (ANSI-safe).
+  - 🎯 نوار وضعیت زنده در هدر.
+  - ✅ حفظ همهٔ ۱۸ عملکرد (سازگاری عقب‌رو).
 """
 from __future__ import annotations
 
-import atexit
 import json
 import os
+import re
 import signal
 import sqlite3
 import subprocess
@@ -33,13 +24,44 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any
 
-from core.kernel.console_compat import patch_console
 
-patch_console()
+# ══════════════════════════════════════════════════════════════════════
+#  🎨 ANSI setup (must run first)
+# ══════════════════════════════════════════════════════════════════════
+def _init_ansi() -> bool:
+    """Enable ANSI on Windows CMD."""
+    if os.name != "nt":
+        return True
+    try:
+        import colorama  # type: ignore
+        colorama.just_fix_windows_console()
+        return True
+    except Exception:
+        pass
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32  # type: ignore
+        handle = kernel32.GetStdHandle(-11)
+        mode = ctypes.c_uint32()
+        if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            if kernel32.SetConsoleMode(handle, mode.value | 0x0004):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+_ANSI_OK = _init_ansi()
+
+try:
+    from core.kernel.console_compat import patch_console
+    patch_console()
+except Exception:
+    pass
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  مسیرها و ثابت‌ها
+#  Paths & constants
 # ══════════════════════════════════════════════════════════════════════
 ROOT = os.path.dirname(os.path.abspath(__file__))
 PYEXE = sys.executable or "python"
@@ -52,15 +74,19 @@ LOG_FILE = os.path.join(ROOT, "storage", "logs", "app.jsonl")
 REQUESTS_FILE = os.path.join(ROOT, "storage", "requests.jsonl")
 
 _SQLITE_TIMEOUT_S = 5.0
-_PYTEST_TIMEOUT_S = 900
 _CLEANUP_TIMEOUT_S = 120
 _START_VERIFY_WAIT_S = 1.0
 _LOG_PREVIEW_LEN = 80
 _GIT_PREVIEW_LIMIT = 15
 _GIT_HARD_LIMIT = 20
+_MENU_DB_TIMEOUT_S = 0.5
 
-# ─── remoteهای هدف برای push ───
 _PUSH_REMOTES = ["origin", "backup"]
+
+# ─── Menu layout ───
+_HEADER_INNER_WIDTH = 56
+_MENU_COLS = 4
+_MENU_CELL_W = 17
 
 try:
     import psutil
@@ -69,24 +95,87 @@ except ImportError:
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  Exception برای لغو کاربر
+#  🎨 Colors
 # ══════════════════════════════════════════════════════════════════════
+class C:
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    RED = "\033[91m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    BLUE = "\033[94m"
+    MAGENTA = "\033[95m"
+    CYAN = "\033[96m"
+    WHITE = "\033[97m"
+    GRAY = "\033[90m"
+
+
+def _enable_colors() -> bool:
+    if not _ANSI_OK:
+        return False
+    if os.getenv("NO_COLOR"):
+        return False
+    return True
+
+
+_COLORS_OK = _enable_colors()
+
+if not _COLORS_OK:
+    for _attr in (
+        "RESET", "BOLD", "DIM", "RED", "GREEN", "YELLOW",
+        "BLUE", "MAGENTA", "CYAN", "WHITE", "GRAY",
+    ):
+        setattr(C, _attr, "")
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  Helpers
+# ══════════════════════════════════════════════════════════════════════
+_ANSI_RE = re.compile(r"\033\[[0-9;]*m")
+
+
+def _visible_len(s: str) -> int:
+    """Visible length (ignores ANSI codes)."""
+    return len(_ANSI_RE.sub("", s))
+
+
+def _pad(s: str, width: int) -> str:
+    """Right-pad s to width, taking ANSI into account."""
+    return s + " " * max(0, width - _visible_len(s))
+
+
+def _print(msg: str = "") -> None:
+    try:
+        print(msg)
+    except Exception:
+        pass
+
+
+def _cprint(color: str, msg: str) -> None:
+    if _COLORS_OK and color:
+        _print(f"{color}{msg}{C.RESET}")
+    else:
+        _print(msg)
+
+
 class _Cancelled(Exception):
-    """کاربر ورودی را با Ctrl+C یا EOF لغو کرد."""
+    """User cancelled with Ctrl+C or EOF."""
     pass
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  پلتفرم‌ها
+#  Platform labels (English)
 # ══════════════════════════════════════════════════════════════════════
-_PLATFORM_LABELS = {
-    "eitaa": "📱 ایتا",
-    "bale": "📨 بله",
-    "rubika": "🟣 روبیکا",
-    "telegram": "✈️ تلگرام",
-    "whatsapp": "🟢 واتساپ",
-    "web": "🌐 وب",
-    "linkedin": "💼 لینکدین",
+_PLATFORM_LABELS: dict[str, str] = {
+    "eitaa": "Eitaa",
+    "bale": "Bale",
+    "rubika": "Rubika",
+    "telegram": "Telegram",
+    "whatsapp": "WhatsApp",
+    "web": "Web",
+    "linkedin": "LinkedIn",
+    "instagram": "Instagram",   # ← اضافه
 }
 
 try:
@@ -99,18 +188,9 @@ except Exception:
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  helpers عمومی
+#  SQLite + input helpers
 # ══════════════════════════════════════════════════════════════════════
-def _print(msg: str = "") -> None:
-    """print امن (هرگز کرش نکند)."""
-    try:
-        print(msg)
-    except Exception:
-        pass
-
-
 def _sqlite_connect(path: str) -> sqlite3.Connection:
-    """اتصال SQLite با timeout."""
     conn = sqlite3.connect(path, timeout=_SQLITE_TIMEOUT_S)
     try:
         conn.execute(
@@ -122,8 +202,24 @@ def _sqlite_connect(path: str) -> sqlite3.Connection:
     return conn
 
 
+def _menu_lead_count() -> str:
+    if not os.path.exists(DB_PATH):
+        return "—"
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=_MENU_DB_TIMEOUT_S)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT COUNT(*) FROM messages WHERE keywords != ''"
+        )
+        row = cur.fetchone()
+        conn.close()
+        n = int(row[0]) if row else 0
+        return f"{n:,}"
+    except Exception:
+        return "?"
+
+
 def _ask_input(prompt: str) -> str | None:
-    """input امن — None در صورت EOF/Ctrl+C."""
     try:
         return input(prompt)
     except (EOFError, KeyboardInterrupt):
@@ -131,15 +227,39 @@ def _ask_input(prompt: str) -> str | None:
 
 
 def _confirm(prompt: str) -> bool:
-    """پرسش بله/خیر."""
     ans = _ask_input(prompt)
     if ans is None:
         return False
-    return ans.strip().lower() in ("y", "yes", "بله")
+    return ans.strip().lower() in ("y", "yes")
+
+
+def _run_script(filename: str, label: str) -> bool:
+    path = os.path.join(ROOT, "tests", filename)
+    if not os.path.exists(path):
+        _cprint(C.RED, f"  ✗ Not found: {path}")
+        return False
+
+    print()
+    _cprint(C.CYAN, f"  ▶  {label}")
+    _cprint(C.DIM, "  " + "─" * 56)
+
+    try:
+        rc = subprocess.call([PYEXE, path], cwd=ROOT)
+        if rc == 0:
+            _cprint(C.GREEN, f"\n  ✓ {label} PASSED.")
+            return True
+        _cprint(C.YELLOW, f"\n  ! {label} FAILED (rc={rc}).")
+        return False
+    except KeyboardInterrupt:
+        _cprint(C.GRAY, "\n  i) Cancelled.")
+        return False
+    except Exception as e:
+        _cprint(C.RED, f"\n  ✗ {label} failed: {type(e).__name__}: {e}")
+        return False
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  مدیریت فرآیند ربات
+#  Bot process management
 # ══════════════════════════════════════════════════════════════════════
 def _read_pid() -> int | None:
     try:
@@ -163,7 +283,6 @@ def _clear_pid() -> None:
 
 
 def _is_running() -> bool:
-    """آیا فرآیند ربات در حال اجراست؟ (با چک نام فرآیند)"""
     pid = _read_pid()
     if not pid:
         return False
@@ -182,7 +301,6 @@ def _is_running() -> bool:
     except (psutil.NoSuchProcess, psutil.ZombieProcess):
         return False
     except psutil.AccessDenied:
-        _print(f"[!] PID {pid} قابل بررسی نیست (AccessDenied)")
         return False
     except Exception:
         return False
@@ -199,7 +317,6 @@ def _is_running() -> bool:
         proc_name = ""
 
     if proc_name and "python" not in proc_name:
-        _print(f"[!] PID {pid} متعلق به «{proc_name}» است (نه python)")
         return False
 
     try:
@@ -215,14 +332,13 @@ def _is_running() -> bool:
 
 
 def start() -> None:
-    """شروع ربات."""
     if _is_running():
-        _print(f"[!] Bot is already running (PID: {_read_pid()})")
+        _cprint(C.YELLOW, f"  ! Bot is already running (PID {_read_pid()})")
         return
 
     main_py = os.path.join(ROOT, "main.py")
     if not os.path.exists(main_py):
-        _print(f"[X] main.py not found: {main_py}")
+        _cprint(C.RED, f"  ✗ main.py not found: {main_py}")
         return
 
     kwargs: dict[str, Any] = {"cwd": ROOT}
@@ -237,76 +353,66 @@ def start() -> None:
     try:
         proc = subprocess.Popen([PYEXE, main_py], **kwargs)
         _write_pid(proc.pid)
-        _print(f"[OK] Bot started (PID: {proc.pid}). Verifying...")
+        _cprint(C.GREEN, f"  ✓ Bot started (PID {proc.pid}) — verifying...")
 
         time.sleep(_START_VERIFY_WAIT_S)
         if proc.poll() is not None:
-            _print(
-                f"[!] Bot exited immediately (rc={proc.returncode})"
-            )
+            _cprint(C.RED, f"  ✗ Bot exited immediately (rc={proc.returncode})")
             _clear_pid()
             return
 
-        _print("[OK] Verified — bot is running.")
+        _cprint(C.GREEN, "  ✓ Verified — bot is running.")
     except Exception as e:
-        _print(f"[X] Failed to start bot: {e}")
+        _cprint(C.RED, f"  ✗ Failed to start: {e}")
 
 
 def stop() -> None:
-    """توقف ربات."""
     pid = _read_pid()
     if not _is_running():
-        _print("[i] Bot is not running.")
+        _cprint(C.GRAY, "  i) Bot is not running.")
         _clear_pid()
         return
 
     if pid is None:
-        _print("[!] PID missing — clearing stale file.")
+        _cprint(C.YELLOW, "  ! PID missing — clearing stale file.")
         _clear_pid()
         return
 
     try:
         if psutil:
             p = psutil.Process(pid)
-
-            # ─── روی Windows: سیگنال «تمیز بمیر» ───
             if os.name == "nt":
                 try:
                     p.send_signal(signal.CTRL_BREAK_EVENT)
-                    _print("[..] Sent Ctrl+Break — waiting...")
-                except Exception as e:
-                    _print(f"[!] CTRL_BREAK failed: {e}")
+                except Exception:
                     try:
                         p.terminate()
                     except Exception:
                         pass
             else:
-                # ─── Linux/macOS: SIGTERM ───
                 try:
                     p.terminate()
                 except Exception:
                     pass
 
-            # ─── صبر برای خروج تمیز ───
             try:
                 p.wait(timeout=15)
-                _print("[OK] Bot stopped cleanly.")
+                _cprint(C.GREEN, "  ✓ Bot stopped cleanly.")
             except psutil.TimeoutExpired:
-                _print("[!] Timeout — forcing kill...")
+                _cprint(C.YELLOW, "  ! Timeout — forcing kill...")
                 try:
-                    children = p.children(recursive=True)
+                    for child in p.children(recursive=True):
+                        try:
+                            child.kill()
+                        except Exception:
+                            pass
                 except Exception:
-                    children = []
-                for child in children:
-                    try:
-                        child.kill()
-                    except Exception:
-                        pass
+                    pass
                 try:
                     p.kill()
                 except Exception:
                     pass
-                _print("[OK] Bot killed (forced).")
+                _cprint(C.GREEN, "  ✓ Bot killed.")
         else:
             try:
                 os.kill(pid, signal.SIGTERM)
@@ -320,16 +426,15 @@ def stop() -> None:
                     os.kill(pid, signal.SIGKILL)
             except Exception:
                 pass
-            _print("[OK] Bot stopped.")
+            _cprint(C.GREEN, "  ✓ Bot stopped.")
     except Exception as e:
-        _print(f"[X] Error while stopping: {e}")
+        _cprint(C.RED, f"  ✗ Error while stopping: {e}")
 
     _clear_pid()
 
 
 def restart() -> None:
-    """ری‌استارت."""
-    _print("[..] Restarting...")
+    _cprint(C.CYAN, "  ..) Restarting...")
     stop()
     _clear_pid()
     time.sleep(2)
@@ -337,16 +442,16 @@ def restart() -> None:
 
 
 def status() -> None:
-    """نمایش وضعیت + آمار."""
     running = _is_running()
     pid_str = str(_read_pid()) if running else "—"
-    _print(
-        f"Bot status: "
-        f"{'RUNNING (PID ' + pid_str + ')' if running else 'STOPPED'}"
-    )
+
+    if running:
+        _cprint(C.GREEN, f"  ● Bot is RUNNING (PID {pid_str})")
+    else:
+        _cprint(C.YELLOW, "  ● Bot is STOPPED")
 
     if not os.path.exists(DB_PATH):
-        _print("(No database yet — run the bot once.)")
+        _cprint(C.GRAY, "  (No database yet — run the bot once.)")
         return
 
     conn = None
@@ -354,32 +459,32 @@ def status() -> None:
         conn = _sqlite_connect(DB_PATH)
         cur = conn.cursor()
 
-        row = cur.execute("SELECT COUNT(*) FROM messages").fetchone()
-        total = row[0] if row else 0
-
-        row = cur.execute(
+        total = cur.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        leads = cur.execute(
             "SELECT COUNT(*) FROM messages WHERE keywords!=''"
-        ).fetchone()
-        leads = row[0] if row else 0
-
-        row = cur.execute(
+        ).fetchone()[0]
+        hot = cur.execute(
             "SELECT COUNT(*) FROM messages "
             "WHERE opportunity_type='داغ'"
-        ).fetchone()
-        hot = row[0] if row else 0
+        ).fetchone()[0]
 
-        _print("--- Leads by platform ---")
-        for row in cur.execute(
+        print()
+        _cprint(C.DIM, "  ─── Overall stats ───")
+        _cprint(C.WHITE, f"    Total messages : {total:,}")
+        _cprint(C.WHITE, f"    Leads          : {leads:,}")
+        _cprint(C.WHITE, f"    Hot            : {hot:,}")
+
+        rows = list(cur.execute(
             "SELECT platform, COUNT(*) FROM messages "
-            "WHERE keywords!='' GROUP BY platform"
-        ):
-            _print(f"   {row[0]}: {row[1]}")
-
-        _print(
-            f"[#] Total messages: {total} | Leads: {leads} | Hot: {hot}"
-        )
+            "WHERE keywords!='' GROUP BY platform ORDER BY 2 DESC"
+        ))
+        if rows:
+            print()
+            _cprint(C.DIM, "  ─── By platform ───")
+            for p, n in rows:
+                _cprint(C.WHITE, f"    {p:12s} : {n:,}")
     except Exception as e:
-        _print(f"(could not read stats: {e})")
+        _cprint(C.RED, f"  ✗ Error reading stats: {e}")
     finally:
         if conn is not None:
             try:
@@ -389,11 +494,10 @@ def status() -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  ورودی‌های تعاملی
+#  Interactive inputs
 # ══════════════════════════════════════════════════════════════════════
 def _ask_days(default: int = 30) -> int:
-    """بازهٔ روز."""
-    s = _ask_input(f"بازه روز [{default}] (۰ = همه): ")
+    s = _ask_input(f"  Days [{default}] (0 = all): ")
     if s is None:
         return default
     s = s.strip()
@@ -402,18 +506,18 @@ def _ask_days(default: int = 30) -> int:
     try:
         return max(0, int(s))
     except ValueError:
-        _print(f"[i] مقدار نامعتبر → {default}")
+        _cprint(C.YELLOW, f"  ! Invalid value → {default}")
         return default
 
 
 def _ask_platform() -> str | None:
-    """زیرمنوی انتخاب پلتفرم."""
-    _print("\n  انتخاب پلتفرم:")
-    _print("    [0] همه پلتفرم‌ها (پیش‌فرض)")
+    print()
+    _cprint(C.DIM, "  ─── Select platform ───")
+    _cprint(C.GRAY, "    [0] All platforms (default)")
     for i, (_code, label) in enumerate(_PLATFORM_CHOICES, 1):
         _print(f"    [{i}] {label}")
 
-    c = _ask_input("شماره: ")
+    c = _ask_input("  Number: ")
     if c is None:
         raise _Cancelled()
 
@@ -428,19 +532,19 @@ def _ask_platform() -> str | None:
     except ValueError:
         pass
 
-    _print("[i] انتخاب نامعتبر → همه پلتفرم‌ها")
+    _cprint(C.YELLOW, "  ! Invalid selection → all platforms")
     return None
 
 
 def _ask_crm_mode() -> tuple[str | None, bool, bool] | None:
-    """حالت خروجی CRM."""
-    _print("\n  حالت خروجی CRM:")
-    _print("    [1] همه پلتفرم‌ها در یک فایل (پیش‌فرض)")
-    _print("    [2] فقط یک پلتفرم مشخص")
-    _print("    [3] هر پلتفرم، فایل جدا (split)")
-    _print("    [4] یک فایل Excel با شیت جدا (multi_sheet)")
+    print()
+    _cprint(C.DIM, "  ─── CRM export mode ───")
+    _cprint(C.GRAY, "    [1] All platforms in one file (default)")
+    _cprint(C.GRAY, "    [2] Single platform only")
+    _cprint(C.GRAY, "    [3] One file per platform (split)")
+    _cprint(C.GRAY, "    [4] Single Excel with multiple sheets")
 
-    c = _ask_input("شماره [1]: ")
+    c = _ask_input("  Number [1]: ")
     if c is None:
         return None
     c = (c or "1").strip() or "1"
@@ -458,26 +562,24 @@ def _ask_crm_mode() -> tuple[str | None, bool, bool] | None:
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  ابزارها
+#  Tools — Data
 # ══════════════════════════════════════════════════════════════════════
 def login() -> None:
-    """ورود تعاملی به پلتفرم‌ها."""
-    _print("[..] Platform login (interactive)...")
+    _cprint(C.CYAN, "  ..) Interactive platform login...")
     try:
         subprocess.call(
             [PYEXE, os.path.join(ROOT, "login.py")],
             cwd=ROOT,
         )
     except Exception as e:
-        _print(f"[X] Login failed: {e}")
+        _cprint(C.RED, f"  ✗ Login failed: {e}")
 
 
 def backup() -> None:
-    """پشتیبان امن از DB."""
     os.makedirs(BACKUP_DIR, exist_ok=True)
 
     if not os.path.exists(DB_PATH):
-        _print("[!] No database to back up.")
+        _cprint(C.YELLOW, "  ! No database to back up.")
         return
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -493,26 +595,22 @@ def backup() -> None:
                 dst.close()
         finally:
             src.close()
-        _print(f"[OK] Backup saved: {dest}")
+        _cprint(C.GREEN, f"  ✓ Backup saved: {dest}")
     except Exception as e:
-        _print(f"[X] Backup failed: {e}")
+        _cprint(C.RED, f"  ✗ Backup failed: {e}")
 
 
 def report() -> None:
-    """گزارش‌گیری."""
     days = _ask_days(default=7)
 
     try:
         platform = _ask_platform()
     except _Cancelled:
-        _print("[i] لغو شد.")
+        _cprint(C.GRAY, "  i) Cancelled.")
         return
 
-    label = platform or "همه پلتفرم‌ها"
-    _print(
-        f"[..] Generating reports "
-        f"(بازه={days or 'همه'} روز، {label})..."
-    )
+    label = platform or "all platforms"
+    _cprint(C.CYAN, f"  ..) Generating reports (days={days or 'all'}, {label})...")
 
     date_from = None
     if days and days > 0:
@@ -533,24 +631,23 @@ def report() -> None:
             platform=platform, date_from=date_from, limit=200,
         )
         if exec_path or detail_path:
-            _print(f"[OK] گزارش‌ها ساخته شدند (platform={platform or 'all'})")
+            _cprint(C.GREEN, f"  ✓ Reports generated ({label})")
             if exec_path:
-                _print(f"     • مدیریتی: {exec_path}")
+                _cprint(C.WHITE, f"      • Executive : {exec_path}")
             if detail_path:
-                _print(f"     • تخصصی : {detail_path}")
+                _cprint(C.WHITE, f"      • Detailed  : {detail_path}")
         else:
-            _print("[!] هیچ گزارشی ساخته نشد (شاید سرنخی نیست).")
+            _cprint(C.YELLOW, "  ! No reports generated.")
     except Exception as e:
-        _print(f"[X] Report error: {type(e).__name__}: {e}")
+        _cprint(C.RED, f"  ✗ Error: {type(e).__name__}: {e}")
 
 
 def crm() -> None:
-    """خروجی CRM."""
     days = _ask_days(default=30)
 
     mode = _ask_crm_mode()
     if mode is None:
-        _print("[i] لغو شد.")
+        _cprint(C.GRAY, "  i) Cancelled.")
         return
 
     platform, split, multi_sheet = mode
@@ -558,12 +655,9 @@ def crm() -> None:
     mode_label = (
         "split" if split
         else "multi_sheet" if multi_sheet
-        else (platform or "همه")
+        else (platform or "all")
     )
-    _print(
-        f"[..] Exporting CRM "
-        f"(بازه={days or 'همه'} روز، حالت={mode_label})..."
-    )
+    _cprint(C.CYAN, f"  ..) Exporting CRM (days={days or 'all'}, mode={mode_label})...")
 
     try:
         from core.services.crm_export import export_crm
@@ -573,41 +667,37 @@ def crm() -> None:
             split=split, multi_sheet=multi_sheet,
         )
         if not res:
-            _print("[!] خروجی ساخته نشد (شاید سرنخی نیست).")
+            _cprint(C.YELLOW, "  ! No export generated.")
             return
         _print_crm_result(res, split)
     except Exception as e:
-        _print(f"[X] CRM export error: {type(e).__name__}: {e}")
+        _cprint(C.RED, f"  ✗ Error: {type(e).__name__}: {e}")
 
 
 def _print_crm_result(res: dict[str, Any], split: bool) -> None:
-    """نمایش خروجی CRM."""
     if split or "by_platform" in res:
         by = res.get("by_platform") or {}
         if not by:
-            _print("[i] هیچ پلتفرمی سرنخ نداشت.")
+            _cprint(C.GRAY, "  i) No platform had any leads.")
             return
-        _print(f"\n[OK] {res.get('count', 0)} سرنخ در {len(by)} پلتفرم:")
+        _cprint(C.GREEN, f"\n  ✓ {res.get('count', 0)} leads across {len(by)} platforms:")
         for p, info in by.items():
-            _print(f"   • {p}: {info.get('count', 0)} سرنخ")
+            _cprint(C.WHITE, f"      • {p}: {info.get('count', 0)} leads")
             if info.get("csv"):
-                _print(f"     CSV : {info['csv']}")
+                _cprint(C.GRAY, f"        CSV : {info['csv']}")
             if info.get("xlsx"):
-                _print(f"     XLSX: {info['xlsx']}")
+                _cprint(C.GRAY, f"        XLSX: {info['xlsx']}")
     else:
-        label = res.get("platform") or "همه پلتفرم‌ها"
-        _print(f"\n[OK] {res.get('count', 0)} سرنخ ({label}):")
-        if res.get("csv"):
-            _print(f"   • CSV : {res['csv']}")
-        if res.get("json"):
-            _print(f"   • JSON: {res['json']}")
-        if res.get("xlsx"):
-            _print(f"   • XLSX: {res['xlsx']}")
+        label = res.get("platform") or "all"
+        _cprint(C.GREEN, f"\n  ✓ {res.get('count', 0)} leads ({label}):")
+        for k in ("csv", "json", "xlsx"):
+            if res.get(k):
+                _cprint(C.WHITE, f"      {k.upper():5s}: {res[k]}")
+
 
 def recent_reports() -> None:
-    """آخرین فایل‌های reports."""
     if not os.path.isdir(REPORTS_DIR):
-        _print("[!] پوشهٔ reports وجود ندارد.")
+        _cprint(C.YELLOW, "  ! Reports folder does not exist.")
         return
 
     files: list[tuple[float, str, int]] = []
@@ -624,88 +714,98 @@ def recent_reports() -> None:
 
     files.sort(reverse=True)
     if not files:
-        _print("[i] هیچ فایلی در reports نیست.")
+        _cprint(C.GRAY, "  i) No files in reports.")
         return
 
-    _print(f"\n  آخرین {min(15, len(files))} فایل در storage/reports:")
+    _cprint(C.CYAN, f"\n  Latest {min(15, len(files))} files:")
     for mtime, name, size in files[:15]:
         ts = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
-        kb = size / 1024
-        _print(f"   [{ts}] {name:50s}  ({kb:.1f} KB)")
-        
+        _cprint(C.WHITE, f"    [{ts}] {name:45s}  ({size/1024:.1f} KB)")
+
+
 def tests() -> None:
-    """اجرای تست‌های end-to-end — با منوی انتخاب پلتفرم."""
-    _print("\n  📋 پلتفرم‌های موجود برای تست:")
-    _print("    [0] همه (bale + eitaa + rubika + telegram + whatsapp + linkedin + web)")
-    _print("    [1] بله (bale)")
-    _print("    [2] ایتا (eitaa)")
-    _print("    [3] روبیکا (rubika)")
-    _print("    [4] تلگرام (telegram)")
-    _print("    [5] واتساپ (whatsapp)")
-    _print("    [6] لینکدین (linkedin)")
-    _print("    [7] وب (web)")
-
-    choice = _ask_input("\n  انتخاب [0-7] (Enter = همه): ")
+    print()
+    _cprint(C.DIM, "  ─── Test options ───")
+    _cprint(C.GRAY, "    [ 0] All (8 platforms + Storage + DB + Health)")
+    _print("    [ 1] Bale         [ 2] Eitaa")
+    _print("    [ 3] Rubika       [ 4] Telegram")
+    _print("    [ 5] WhatsApp     [ 6] LinkedIn")
+    _print("    [ 7] Web          [ 8] Health Check")
+    _print("    [ 9] Storage      [10] Database")
+    _print("    [11] Instagram")
+    
+    choice = _ask_input("\n  Choice [0-10] (Enter = all): ")
     if choice is None:
-        _print("[i] لغو شد.")
+        _cprint(C.GRAY, "  i) Cancelled.")
         return
-
     choice = (choice or "0").strip() or "0"
 
-    # ─── نگاشت انتخاب به پلتفرم ───
-    _TEST_PLATFORMS = {
-        "0": None,                          # همه
-        "1": ["bale"],
-        "2": ["eitaa"],
-        "3": ["rubika"],
-        "4": ["telegram"],
-        "5": ["whatsapp"],
-        "6": ["linkedin"],
-        "7": ["web"],
+    if choice == "8":
+        _run_script("test_healthcheck_full.py", "Health Check")
+        return
+    if choice == "9":
+        _run_script("test_storage_full.py", "StorageHandler")
+        return
+    if choice == "10":
+        _run_script("test_db_full.py", "Database")
+        return
+
+    if choice == "11":
+        _run_script("test_instagram_full.py", "Instagram")
+        return
+        
+        return
+    _TEST_PLATFORMS: dict[str, list[str] | None] = {
+        "0": None,
+        "1": ["bale"], "2": ["eitaa"], "3": ["rubika"],
+        "4": ["telegram"], "5": ["whatsapp"],
+        "6": ["linkedin"], "7": ["web"],
+        "11": ["instagram"],   # ← اضافه
     }
 
     if choice not in _TEST_PLATFORMS:
-        _print(f"[X] انتخاب نامعتبر: {choice}")
+        _cprint(C.RED, f"  ✗ Invalid choice: {choice}")
         return
 
     platforms = _TEST_PLATFORMS[choice]
 
-    runner = os.path.join(ROOT, "tests", "run_all_tests.py")
-    if not os.path.exists(runner):
-        _print(f"[X] Test runner not found: {runner}")
+    if platforms is None:
+        _cprint(C.CYAN, "\n  ..) Mode [ALL] — running all tests")
+        _run_script("run_all_tests.py", "8 platforms + Health Check")
+        _run_script("test_storage_full.py", "StorageHandler")
+        _run_script("test_db_full.py", "Database")
         return
 
-    # ─── ساخت دستور ───
-    cmd = [PYEXE, runner]
-    if platforms:
-        cmd.append("--only")
-        cmd.extend(platforms)
-        _print(f"\n[..] Running tests for: {', '.join(platforms)}...")
-    else:
-        _print("\n[..] Running ALL tests (7 platforms)...")
+    runner = os.path.join(ROOT, "tests", "run_all_tests.py")
+    if not os.path.exists(runner):
+        _cprint(C.RED, f"  ✗ Test runner not found: {runner}")
+        return
 
-    _print("     (این ممکنه چند دقیقه طول بکشه)\n")
+    cmd = [PYEXE, runner, "--only"] + platforms
+    _cprint(C.CYAN, f"\n  ..) Running tests for: {', '.join(platforms)}...")
+    _cprint(C.GRAY, "      (may take a few minutes)\n")
 
     try:
         rc = subprocess.call(cmd, cwd=ROOT)
         if rc == 0:
-            _print("\n[OK] Tests passed.")
+            _cprint(C.GREEN, "\n  ✓ Tests PASSED.")
         else:
-            _print(f"\n[!] Tests failed (rc={rc}).")
+            _cprint(C.YELLOW, f"\n  ! Tests FAILED (rc={rc}).")
     except KeyboardInterrupt:
-        _print("\n[i] لغو شد.")
+        _cprint(C.GRAY, "\n  i) Cancelled.")
     except Exception as e:
-        _print(f"\n[X] Tests failed: {type(e).__name__}: {e}")      
+        _cprint(C.RED, f"\n  ✗ Error: {type(e).__name__}: {e}")
 
 
+# ══════════════════════════════════════════════════════════════════════
+#  Tools — System
+# ══════════════════════════════════════════════════════════════════════
 def cleanup() -> None:
-    """پاک‌سازی خودکار."""
-    _print("[..] Cleaning old files...")
+    _cprint(C.CYAN, "  ..) Cleaning up old files...")
 
     loop = None
     try:
         import asyncio
-
         from core.database import create_database
         from core.services.cleanup_service import CleanupService
 
@@ -723,13 +823,13 @@ def cleanup() -> None:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(_run())
-        _print("[OK] Cleanup done.")
+        _cprint(C.GREEN, "  ✓ Cleanup complete.")
     except Exception as e:
         name = type(e).__name__
         if name == "TimeoutError":
-            _print(f"[X] Cleanup timed out after {_CLEANUP_TIMEOUT_S}s")
+            _cprint(C.RED, f"  ✗ Timeout after {_CLEANUP_TIMEOUT_S}s")
         else:
-            _print(f"[X] Cleanup error: {name}: {e}")
+            _cprint(C.RED, f"  ✗ Error: {name}: {e}")
     finally:
         if loop is not None:
             try:
@@ -739,36 +839,35 @@ def cleanup() -> None:
 
 
 def health() -> None:
-    """وضعیت سلامت + متریک‌ها."""
-    _print("[..] Health & metrics")
+    _cprint(C.CYAN, "  ..) Health & metrics")
     port = os.getenv("OBS_PORT", "8787")
-    _print("  Endpoints (while bot is running):")
-    _print(f"    http://localhost:{port}/health   (JSON health)")
-    _print(f"    http://localhost:{port}/metrics  (Prometheus)")
+    _cprint(C.DIM, "  ─── Endpoints ───")
+    _cprint(C.WHITE, f"    http://localhost:{port}/health")
+    _cprint(C.WHITE, f"    http://localhost:{port}/metrics")
 
     try:
         import psutil as _ps
         disk_path = "C:\\" if os.name == "nt" else "/"
-        _print(
-            f"  CPU: {_ps.cpu_percent(interval=0.3)}%  |  "
-            f"RAM: {_ps.virtual_memory().percent}%  |  "
-            f"Disk: {_ps.disk_usage(disk_path).percent}%"
-        )
+        print()
+        _cprint(C.DIM, "  ─── System resources ───")
+        _cprint(C.WHITE, f"    CPU  : {_ps.cpu_percent(interval=0.3)}%")
+        _cprint(C.WHITE, f"    RAM  : {_ps.virtual_memory().percent}%")
+        _cprint(C.WHITE, f"    Disk : {_ps.disk_usage(disk_path).percent}%")
     except Exception:
         pass
 
+    print()
     status()
 
 
 def ai_status() -> None:
-    """وضعیت AI (Ollama) + adminها."""
-    _print("[..] AI assistant (Ollama) & admins")
+    _cprint(C.CYAN, "  ..) AI + Admin status")
     import urllib.request
 
     try:
         from config import AI, PLUGINS_CONFIG
     except Exception as e:
-        _print(f"[X] config error: {type(e).__name__}: {e}")
+        _cprint(C.RED, f"  ✗ config error: {type(e).__name__}: {e}")
         return
 
     try:
@@ -776,33 +875,24 @@ def ai_status() -> None:
         with urllib.request.urlopen(url, timeout=4) as r:
             tags = json.loads(r.read().decode("utf-8"))
         models = [m.get("name") for m in tags.get("models", [])]
-        _print(
-            f"  Ollama: UP at {AI['url']}  |  model in use: {AI['model']}"
-        )
-        _print(f"  installed models: {', '.join(models) or 'none'}")
-    except Exception as e:
-        _print(
-            f"  Ollama: DOWN ({type(e).__name__}: {e}) — "
-            f"launch Ollama or check OLLAMA_URL"
-        )
+        _cprint(C.GREEN, f"  ✓ Ollama UP at {AI['url']}")
+        _cprint(C.WHITE, f"    model: {AI['model']}")
+        _cprint(C.GRAY, f"    installed: {', '.join(models) or 'none'}")
+    except Exception:
+        _cprint(C.YELLOW, "  ! Ollama DOWN")
 
     ids = PLUGINS_CONFIG.get("adminhandler", {}).get("admin_ids", [])
     if ids:
-        _print(f"  Admins (ADMIN_IDS): {', '.join(ids)}")
+        _cprint(C.WHITE, f"  Admin IDs: {', '.join(ids)}")
     else:
-        _print(
-            "  Admins: NONE — DM the bot on Bale; it logs your "
-            "id (pairing) → put it in ADMIN_IDS"
-        )
+        _cprint(C.GRAY, "  Admin IDs: (empty)")
 
 
 def open_chat() -> None:
-    """باز کردن چت AI لوکال."""
     port = os.getenv("OBS_PORT", "8787")
     url = f"http://localhost:{port}/chat"
-    _print("[..] Local AI chat (works offline, no internet/Bale needed):")
-    _print(f"     {url}")
-    _print("     (ربات باید روشن باشد — گزینهٔ ۱)")
+    _cprint(C.CYAN, f"  ..) Opening local AI chat: {url}")
+    _cprint(C.GRAY, "      (bot must be running)")
     try:
         import webbrowser
         webbrowser.open(url)
@@ -811,25 +901,19 @@ def open_chat() -> None:
 
 
 def requests_and_errors() -> None:
-    """درخواست‌های قابلیت + خطاهای اخیر."""
-    _print("[..] Feature requests & recent errors")
+    _cprint(C.CYAN, "  ..) Feature requests + recent errors")
 
     if os.path.exists(REQUESTS_FILE):
         try:
             with open(REQUESTS_FILE, encoding="utf-8") as f:
-                reqs = [
-                    json.loads(line) for line in f if line.strip()
-                ]
-            _print(f"  feature requests logged: {len(reqs)}")
+                reqs = [json.loads(line) for line in f if line.strip()]
+            _cprint(C.WHITE, f"  feature requests: {len(reqs)}")
             for r in reqs[-5:]:
-                _print(
-                    "   - "
-                    + str(r.get("request", ""))[:_LOG_PREVIEW_LEN]
-                )
+                _cprint(C.GRAY, "    - " + str(r.get("request", ""))[:80])
         except Exception as e:
-            _print(f"  [X] could not read requests: {e}")
+            _cprint(C.RED, f"  ✗ reading requests: {e}")
     else:
-        _print("  feature requests: none")
+        _cprint(C.GRAY, "  feature requests: 0")
 
     errs = 0
     if os.path.exists(LOG_FILE):
@@ -838,31 +922,24 @@ def requests_and_errors() -> None:
                 lines = f.readlines()[-500:]
             for line in lines:
                 try:
-                    if json.loads(line).get("level") in (
-                        "ERROR", "CRITICAL"
-                    ):
+                    if json.loads(line).get("level") in ("ERROR", "CRITICAL"):
                         errs += 1
                 except Exception:
                     pass
         except Exception as e:
-            _print(f"  [X] could not read log: {e}")
-    _print(f"  recent errors in log: {errs}")
+            _cprint(C.RED, f"  ✗ reading log: {e}")
+    _cprint(C.WHITE, f"  recent errors: {errs}")
 
 
 # ══════════════════════════════════════════════════════════════════════
 #  Git helpers
 # ══════════════════════════════════════════════════════════════════════
 def _git(args: list[str]) -> tuple[int, str]:
-    """اجرای دستور git. خروجی UTF-8."""
     try:
         r = subprocess.run(
-            ["git"] + args,
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            encoding="utf-8",
-            errors="replace",
+            ["git"] + args, cwd=ROOT,
+            capture_output=True, text=True, timeout=120,
+            encoding="utf-8", errors="replace",
         )
         return r.returncode, (r.stdout or "") + (r.stderr or "")
     except FileNotFoundError:
@@ -874,44 +951,35 @@ def _git(args: list[str]) -> tuple[int, str]:
 
 
 def _git_branch() -> str:
-    """نام شاخهٔ فعلی."""
     rc, out = _git(["rev-parse", "--abbrev-ref", "HEAD"])
-    if rc != 0:
-        return "main"
-    return (out or "main").strip() or "main"
+    return (out or "main").strip() or "main" if rc == 0 else "main"
 
 
 def _git_has_remote(name: str) -> bool:
-    """آیا remote با این نام وجود دارد؟"""
     rc, out = _git(["remote"])
     return rc == 0 and name in (out or "")
 
 
 def _git_is_repo() -> bool:
-    """آیا در مخزن گیت هستیم؟"""
     rc, _ = _git(["rev-parse", "--is-inside-work-tree"])
     return rc == 0
 
 
 def _git_ahead_behind(branch: str) -> tuple[int, int]:
-    """تعداد (ahead, behind) نسبت به origin/<branch>."""
-    rc, behind = _git(["rev-list", "--count", f"HEAD..origin/{branch}"])
+    _, behind = _git(["rev-list", "--count", f"HEAD..origin/{branch}"])
+    _, ahead = _git(["rev-list", "--count", f"origin/{branch}..HEAD"])
     try:
         behind_n = int((behind or "0").strip() or "0")
     except ValueError:
         behind_n = 0
-
-    rc, ahead = _git(["rev-list", "--count", f"origin/{branch}..HEAD"])
     try:
         ahead_n = int((ahead or "0").strip() or "0")
     except ValueError:
         ahead_n = 0
-
     return ahead_n, behind_n
 
 
 def _git_deleted_tracked_files() -> list[str]:
-    """فایل‌های trackشده‌ای که از دیسک پاک شده‌اند."""
     rc, out = _git(["diff", "--name-only", "--diff-filter=D", "HEAD"])
     if rc != 0:
         return []
@@ -919,18 +987,14 @@ def _git_deleted_tracked_files() -> list[str]:
 
 
 def _git_restore_files(files: list[str]) -> int:
-    """برگرداندن فایل‌های پاک‌شده از HEAD."""
     if not files:
         return 0
-
     rc, _ = _git(["restore"] + files)
     if rc == 0:
         return len(files)
-
     rc, _ = _git(["checkout", "HEAD", "--"] + files)
     if rc == 0:
         return len(files)
-
     restored = 0
     for f in files:
         rc, _ = _git(["restore", f])
@@ -943,375 +1007,300 @@ def _git_restore_files(files: list[str]) -> int:
     return restored
 
 
-def _git_print_status_lines(
-    status_out: str, limit: int = _GIT_PREVIEW_LIMIT
-) -> None:
-    """نمایش خطوط status --short."""
+def _git_print_status_lines(status_out: str, limit: int = _GIT_PREVIEW_LIMIT) -> None:
     lines = [ln for ln in (status_out or "").strip().splitlines() if ln]
     for line in lines[:limit]:
-        _print(f"    {line}")
+        _cprint(C.WHITE, f"      {line}")
     if len(lines) > limit:
-        _print(f"    ... و {len(lines) - limit} خط دیگر")
+        _cprint(C.GRAY, f"      ... and {len(lines) - limit} more")
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  Git — Push (هر دو remote)
+#  Git — Push / Pull / Status
 # ══════════════════════════════════════════════════════════════════════
 def github_push() -> None:
-    """Stage, commit, push به همه remoteهای _PUSH_REMOTES.
+    _cprint(C.CYAN, "  ..) Push to GitHub")
 
-    - فقط remoteهایی که وجود دارند پوش می‌شوند.
-    - گزارش دقیق موفقیت/شکست هر remote.
-    - امنیت: اگر .env توسط git track شده باشد، abort.
-    """
-    _print("[..] Push to GitHub")
-
-    # ─── امنیت ───
     rc, tracked = _git(["ls-files", ".env"])
     if ".env" in (tracked or ""):
-        _print(
-            "[X] ABORT: .env is tracked by git — pushing would "
-            "leak secrets. Run: git rm --cached .env"
-        )
+        _cprint(C.RED, "  ✗ ABORT: .env is tracked by git — pushing would leak secrets")
+        _cprint(C.GRAY, "      Fix: git rm --cached .env")
         return
 
     if not _git_is_repo():
-        _print("[X] Not a git repository.")
+        _cprint(C.RED, "  ✗ Not a git repository.")
         return
 
-    # ─── چک remoteها ───
-    available_remotes = [
-        r for r in _PUSH_REMOTES if _git_has_remote(r)
-    ]
+    available_remotes = [r for r in _PUSH_REMOTES if _git_has_remote(r)]
     if not available_remotes:
-        _print("[X] No remote found. Add one:")
-        _print(
-            "    git remote add origin "
-            "https://github.com/<you>/<repo>.git"
-        )
+        _cprint(C.RED, "  ✗ No remote found.")
         return
 
-    _print(f"  remoteهای موجود: {', '.join(available_remotes)}")
+    _cprint(C.WHITE, f"    Remotes: {', '.join(available_remotes)}")
 
-    # ─── preview تغییرات ───
     rc, status_out = _git(["status", "--short"])
     if status_out.strip():
-        _print("  تغییرات pending:")
+        _cprint(C.CYAN, "    Pending changes:")
         _git_print_status_lines(status_out, _GIT_HARD_LIMIT)
     else:
-        _print("  (بدون تغییر — فقط push حالت فعلی)")
+        _cprint(C.GRAY, "    (no changes)")
 
-    # ─── تأیید ───
-    if not _confirm("\n  ادامه؟ [y/N]: "):
-        _print("[i] لغو شد.")
+    if not _confirm("\n  Continue? [y/N]: "):
+        _cprint(C.GRAY, "  i) Cancelled.")
         return
 
-    # ─── پیام commit ───
-    msg = _ask_input("Commit message (Enter = auto): ")
+    msg = _ask_input("  Commit message (Enter = auto): ")
     if msg is None:
-        _print("[i] لغو شد.")
+        _cprint(C.GRAY, "  i) Cancelled.")
         return
-    msg = msg.strip()
-    if not msg:
-        msg = (
-            "Update via panel "
-            + datetime.now().strftime("%Y-%m-%d %H:%M")
-        )
+    msg = msg.strip() or f"Update via panel {datetime.now():%Y-%m-%d %H:%M}"
 
     _git(["add", "-A"])
     rc, out = _git(["commit", "-m", msg])
     if rc != 0 and "nothing to commit" in out.lower():
-        _print("[i] Nothing new to commit; pushing current state...")
+        _cprint(C.YELLOW, "    Nothing new to commit.")
     elif rc != 0:
-        _print(f"[X] Commit failed:\n{out}")
+        _cprint(C.RED, f"  ✗ Commit failed:\n{out}")
         return
     else:
-        _print("[OK] Committed.")
+        _cprint(C.GREEN, "  ✓ Committed.")
 
-    # ─── پوش به همه remoteها ───
     branch = _git_branch()
     results: dict[str, bool] = {}
 
     for remote in available_remotes:
-        _print(f"\n  [..] Pushing to {remote}/{branch}...")
+        _cprint(C.CYAN, f"\n  ..) Pushing to {remote}/{branch}...")
         rc, out = _git(["push", "-u", remote, branch])
         if rc == 0:
-            _print(f"[OK] Pushed to {remote}/{branch}.")
+            _cprint(C.GREEN, f"  ✓ {remote}/{branch}")
             results[remote] = True
         else:
-            _print(f"[X] Push to {remote} failed:")
-            _print(f"     {out.strip()[:300]}")
+            _cprint(C.RED, f"  ✗ {remote}:")
+            _cprint(C.GRAY, f"      {out.strip()[:300]}")
             results[remote] = False
 
-    # ─── خلاصه ───
     ok = [r for r, v in results.items() if v]
     fail = [r for r, v in results.items() if not v]
-    _print("\n  ═══ خلاصه ═══")
+    print()
+    _cprint(C.DIM, "  ─── Summary ───")
     if ok:
-        _print(f"  ✅ موفق: {', '.join(ok)}")
+        _cprint(C.GREEN, f"    ✓ {', '.join(ok)}")
     if fail:
-        _print(f"  ❌ ناموفق: {', '.join(fail)}")
-        _print(
-            "  💡 اگر SSL error بود، VPN/فیلترشکن روشن کن "
-            "و دوباره امتحان کن."
-        )
+        _cprint(C.RED, f"    ✗ {', '.join(fail)}")
+        _cprint(C.YELLOW, "    💡 If SSL error, turn on VPN and retry.")
 
 
-# ══════════════════════════════════════════════════════════════════════
-#  Git — Pull
-# ══════════════════════════════════════════════════════════════════════
 def github_pull() -> None:
-    """Pull از origin + بازیابی فایل‌های پاک‌شده قبل از pull."""
-    _print("[..] Pull from GitHub")
+    _cprint(C.CYAN, "  ..) Pull from GitHub")
 
     if not _git_is_repo():
-        _print("[X] Not a git repository.")
+        _cprint(C.RED, "  ✗ Not a git repository.")
         return
-
     if not _git_has_remote("origin"):
-        _print("[X] No 'origin' remote.")
+        _cprint(C.RED, "  ✗ No 'origin' remote.")
         return
 
     branch = _git_branch()
 
-    # ─── ۱) بازیابی فایل‌های پاک‌شده ───
     deleted = _git_deleted_tracked_files()
     if deleted:
-        _print(
-            f"\n  ⚠️ {len(deleted)} فایل trackشده که از دیسک "
-            f"پاک شده‌اند:"
-        )
+        _cprint(C.YELLOW, f"\n  ! {len(deleted)} deleted files:")
         for f in deleted[:_GIT_PREVIEW_LIMIT]:
-            _print(f"    D  {f}")
-        if len(deleted) > _GIT_PREVIEW_LIMIT:
-            _print(f"    ... و {len(deleted) - _GIT_PREVIEW_LIMIT} فایل دیگر")
-
-        if _confirm("\n  برگردانم؟ [y/N]: "):
+            _cprint(C.WHITE, f"      D  {f}")
+        if _confirm("\n  Restore them? [y/N]: "):
             n = _git_restore_files(deleted)
-            if n:
-                _print(f"[OK] {n} فایل برگشت.")
-            else:
-                _print("[X] بازیابی ناموفق (شاید مشکل permission).")
-        else:
-            _print("[i] بازیابی رد شد.")
+            _cprint(C.GREEN if n else C.RED, f"  {'✓' if n else '✗'} {n} files")
 
-    # ─── ۲) fetch ───
-    _print(f"\n  [..] Fetching origin/{branch}...")
+    _cprint(C.CYAN, f"\n  ..) Fetching origin/{branch}...")
     rc, out = _git(["fetch", "origin", branch])
     if rc != 0:
-        _print(f"[X] Fetch failed:\n{out}")
+        _cprint(C.RED, f"  ✗ Fetch failed:\n{out}")
         return
 
-    # ─── ۳) ahead / behind ───
     ahead_n, behind_n = _git_ahead_behind(branch)
-    _print(f"  وضعیت: {ahead_n} commit جلوتر، {behind_n} commit عقب‌تر")
+    _cprint(C.WHITE, f"    {ahead_n} ahead, {behind_n} behind")
 
     if behind_n == 0:
-        _print("[i] چیز جدیدی برای pull نیست (local و remote یکسان).")
+        _cprint(C.GRAY, "  i) Nothing new to pull.")
         return
 
-    # ─── ۴) تغییرات uncommitted ───
-    rc, status_out = _git(["status", "--short"])
-    has_local_changes = bool(status_out.strip())
-
-    if has_local_changes:
-        _print("\n  ⚠️ تغییرات محلی uncommitted:")
-        _git_print_status_lines(status_out, _GIT_PREVIEW_LIMIT)
-
-    if ahead_n > 0:
-        _print(f"\n  ⚠️ شما {ahead_n} commit محلی دارید که در GitHub نیست.")
-        _print("     Pull ممکن است باعث merge یا conflict شود.")
-
-    # ─── ۵) تأیید ───
-    if not _confirm(
-        f"\n  Pull {behind_n} commit از origin/{branch}؟ [y/N]: "
-    ):
-        _print("[i] لغو شد.")
+    if not _confirm(f"\n  Pull {behind_n} commit(s)? [y/N]: "):
+        _cprint(C.GRAY, "  i) Cancelled.")
         return
 
-    # ─── ۶) stash اختیاری ───
-    stashed = False
-    if has_local_changes and _confirm(
-        "  تغییرات محلی را موقتاً stash کنم؟ [y/N]: "
-    ):
-        rc, out = _git([
-            "stash", "push", "-u", "-m",
-            f"panel-pull-{datetime.now():%Y%m%d-%H%M}",
-        ])
-        if rc == 0:
-            stashed = True
-            _print("[OK] تغییرات محلی stash شد.")
-        else:
-            _print(f"[X] Stash failed:\n{out}")
-            return
-
-    # ─── ۷) pull ───
-    _print(f"  [..] Pulling origin/{branch}...")
+    _cprint(C.CYAN, f"  ..) Pulling origin/{branch}...")
     rc, out = _git(["pull", "--no-rebase", "origin", branch])
     if rc == 0:
-        _print(f"[OK] Pull موفق — {behind_n} commit به‌روز شد.")
-        if stashed:
-            _print("  💡 تغییرات شما در stash است: git stash pop")
+        _cprint(C.GREEN, f"  ✓ {behind_n} commit(s) applied.")
     else:
-        _print(f"[X] Pull failed:\n{out}")
-        if stashed:
-            _print("  💡 تغییرات شما در stash است: git stash pop")
+        _cprint(C.RED, f"  ✗ Pull failed:\n{out}")
 
 
-# ══════════════════════════════════════════════════════════════════════
-#  Git — Status
-# ══════════════════════════════════════════════════════════════════════
 def github_status() -> None:
-    """نمایش وضعیت کامل گیت."""
-    _print("[..] Git status")
+    _cprint(C.CYAN, "  ..) Git status")
 
     if not _git_is_repo():
-        _print("[X] Not a git repository.")
+        _cprint(C.RED, "  ✗ Not a git repository.")
         return
 
-    # ─── ۱) شاخه ───
     branch = _git_branch()
-    _print(f"\n  🌿 Branch: {branch}")
+    _cprint(C.BOLD + C.CYAN, f"\n  Branch: {branch}")
 
-    # ─── ۲) remoteها ───
-    rc, remotes = _git(["remote", "-v"])
+    _, remotes = _git(["remote", "-v"])
     if (remotes or "").strip():
         for line in remotes.strip().splitlines()[:6]:
-            _print(f"  🔗 {line.strip()}")
+            _cprint(C.WHITE, f"      {line.strip()}")
     else:
-        _print("  🔗 Remote: (none)")
+        _cprint(C.GRAY, "      (none)")
 
-    # ─── ۳) آخرین commit ───
-    rc, last = _git(["log", "-1", "--pretty=%h  %s  (%cr)"])
+    _, last = _git(["log", "-1", "--pretty=%h  %s  (%cr)"])
     if (last or "").strip():
-        _print(f"  📌 Last commit: {last.strip()}")
+        _cprint(C.WHITE, f"  Last commit: {last.strip()}")
 
-    # ─── ۴) fetch + ahead/behind ───
     if _git_has_remote("origin"):
-        _print(f"\n  [..] Fetching origin/{branch}...")
+        _cprint(C.CYAN, f"\n  ..) Fetching origin/{branch}...")
         rc, _ = _git(["fetch", "origin", branch])
         if rc == 0:
             ahead_n, behind_n = _git_ahead_behind(branch)
-            icon = "✅" if (ahead_n == 0 and behind_n == 0) else "⚠️"
-            _print(
-                f"  {icon} {ahead_n} ahead، {behind_n} "
-                f"behind origin/{branch}"
-            )
-        else:
-            _print("  [!] Fetch ناموفق (اینترنت/اعتبارسنجی؟)")
+            if ahead_n == 0 and behind_n == 0:
+                _cprint(C.GREEN, "  ✓ 0 ahead, 0 behind")
+            else:
+                _cprint(C.YELLOW, f"  ! {ahead_n} ahead, {behind_n} behind")
 
-    # ─── ۵) تغییرات uncommitted ───
     rc, status_out = _git(["status", "--short"])
     if not status_out.strip():
-        _print("\n  ✅ Working tree clean (هیچ تغییر uncommitted نیست).")
+        _cprint(C.GREEN, "\n  ✓ Working tree clean.")
         return
 
     lines = [ln for ln in status_out.strip().splitlines() if ln]
-    _print(f"\n  📝 تغییرات uncommitted ({len(lines)} فایل):")
+    _cprint(C.YELLOW, f"\n  ! {len(lines)} uncommitted change(s):")
     _git_print_status_lines(status_out, _GIT_HARD_LIMIT)
 
-    # ─── ۶) خلاصه ───
-    deleted: list[str] = []
-    modified = 0
-    added = 0
-
-    for line in lines:
-        if len(line) < 4:
-            continue
-        xy = line[:2]
-        path = line[3:].strip()
-        if "D" in xy:
-            deleted.append(path)
-        elif "?" in xy or "A" in xy:
-            added += 1
-        elif "M" in xy or "R" in xy:
-            modified += 1
-
-    _print("\n  خلاصه:")
-    if deleted:
-        _print(f"    ❌ {len(deleted)} فایل پاک‌شده (trackشده)")
-        for f in deleted[:5]:
-            _print(f"        D  {f}")
-        if len(deleted) > 5:
-            _print(f"        ... و {len(deleted) - 5} فایل دیگر")
-        _print("    💡 برای بازیابی: گزینهٔ ۱۷ (Pull from GitHub)")
-    if modified:
-        _print(f"    📝 {modified} فایل تغییرکرده")
-    if added:
-        _print(f"    ➕ {added} فایل جدید")
-
 
 # ══════════════════════════════════════════════════════════════════════
-#  منو
+#  Menu — compact grid layout
 # ══════════════════════════════════════════════════════════════════════
-MENU: list[tuple[str, str, Callable[[], None]]] = [
-    ("1", "Start the bot", start),
-    ("2", "Restart", restart),
-    ("3", "Stop", stop),
-    ("4", "Status & stats", status),
-    ("5", "Login to platforms", login),
-    ("6", "Backup database", backup),
-    ("7", "Generate reports (platform)", report),
-    ("8", "Export CRM (platform/split/sheet)", crm),
-    ("9", "Run tests", tests),
-    ("10", "Cleanup old files", cleanup),
-    ("11", "Push to GitHub (origin + backup)", github_push),
-    ("12", "Health & metrics", health),
-    ("13", "AI / Admin status", ai_status),
-    ("14", "Feature requests & errors", requests_and_errors),
-    ("15", "Open local AI chat (offline)", open_chat),
-    ("16", "Recent reports & CRM files", recent_reports),
-    ("17", "Pull from GitHub (restore + pull)", github_pull),
-    ("18", "Git status (branch/changes)", github_status),
-]
+_ACTIONS: dict[str, Callable[[], None]] = {
+    "1": start, "2": restart, "3": stop, "4": status,
+    "5": login, "6": backup, "7": report, "8": crm, "9": tests,
+    "10": cleanup, "11": github_push, "12": health,
+    "13": ai_status, "14": requests_and_errors, "15": open_chat,
+    "16": recent_reports, "17": github_pull, "18": github_status,
+}
+
+
+def _show_header() -> None:
+    """Compact header with live status."""
+    running = _is_running()
+    leads = _menu_lead_count()
+
+    if running:
+        dot = f"{C.GREEN}●{C.RESET}" if _COLORS_OK else "●"
+        status_str = f"{dot} RUNNING"
+    else:
+        dot = f"{C.YELLOW}○{C.RESET}" if _COLORS_OK else "○"
+        status_str = f"{dot} STOPPED"
+
+    W = _HEADER_INNER_WIDTH
+    title_line = "  Srooyesh Lead-Monitor"
+    status_line = f"  {status_str}     Leads: {leads}"
+
+    _cprint(C.BOLD + C.MAGENTA, "╭" + "─" * W + "╮")
+    _cprint(C.WHITE, f"│{_pad(title_line, W)}│")
+    _cprint(C.GRAY, f"│{_pad(status_line, W)}│")
+    _cprint(C.BOLD + C.MAGENTA, "╰" + "─" * W + "╯")
+
+
+def _section(title: str, items: list[tuple[str, str]]) -> None:
+    """Render a section as a 4-column grid."""
+    print()
+    _cprint(C.BOLD + C.CYAN, f"  {title}")
+
+    cells: list[str] = []
+    for num, label in items:
+        if _COLORS_OK:
+            cells.append(f"{C.GRAY}[{num:>2}]{C.RESET} {label}")
+        else:
+            cells.append(f"[{num:>2}] {label}")
+
+    for i in range(0, len(cells), _MENU_COLS):
+        row = cells[i:i + _MENU_COLS]
+        line = "    " + " ".join(
+            _pad(c, _MENU_CELL_W) for c in row
+        ).rstrip()
+        _print(line)
 
 
 def show_menu() -> None:
-    """نمایش منو."""
-    _print("\n" + "=" * 55)
-    _print("   Srooyesh Lead-Monitor  |  Control Panel")
-    _print("=" * 55)
-    for num, label, _ in MENU:
-        _print(f"  [{num:>2}] {label}")
-    _print("  [ 0] Exit")
-    _print("-" * 55)
+    """Compact, clean menu."""
+    print()
+    _show_header()
 
+    _section("🎮  Bot Control", [
+        ("1", "Start"),
+        ("2", "Restart"),
+        ("3", "Stop"),
+        ("4", "Status"),
+    ])
 
-def _cleanup_on_exit() -> None:
-    """atexit."""
-    pass
+    _section("📊  Data & Reports", [
+        ("5", "Login"),
+        ("6", "Backup"),
+        ("7", "Reports"),
+        ("8", "CRM"),
+        ("9", "Tests"),
+    ])
+
+    _section("🔧  System", [
+        ("10", "Cleanup"),
+        ("12", "Health"),
+        ("13", "AI/Admin"),
+        ("14", "Requests"),
+        ("15", "AI Chat"),
+        ("16", "Recent"),
+    ])
+
+    _section("🌿  Git", [
+        ("11", "Push"),
+        ("17", "Pull"),
+        ("18", "Git status"),
+    ])
+
+    print()
+    if _COLORS_OK:
+        _print(f"    {C.GRAY}[ 0]{C.RESET}  Exit")
+    else:
+        _print("    [ 0]  Exit")
+    print()
 
 
 def main() -> None:
-    """حلقهٔ اصلی منو."""
-    atexit.register(_cleanup_on_exit)
-    actions = {num: fn for num, _, fn in MENU}
-
+    """Main loop."""
     while True:
         show_menu()
 
-        choice = _ask_input("Enter a number: ")
+        choice = _ask_input("  → ")
         if choice is None:
-            _print("\nBye.")
+            _cprint(C.GRAY, "\n  Bye.")
             break
         choice = choice.strip()
 
         if choice == "0":
-            _print("Bye.")
+            _cprint(C.GRAY, "  Bye.")
             break
 
-        fn = actions.get(choice)
+        fn = _ACTIONS.get(choice)
         if not fn:
-            _print("[X] Invalid number.")
+            _cprint(C.RED, "  ✗ Invalid choice.")
             continue
 
         try:
             fn()
         except KeyboardInterrupt:
-            _print("\n[i] لغو شد.")
+            _cprint(C.GRAY, "\n  i) Cancelled.")
             continue
         except Exception as e:
-            _print(f"[X] Error: {type(e).__name__}: {e}")
+            _cprint(C.RED, f"  ✗ Error: {type(e).__name__}: {e}")
 
         if os.name == "nt":
             try:

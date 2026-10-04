@@ -93,7 +93,12 @@ _BAD_ANSWER_MARKERS = (
     "timed out", "TimeoutError", "ConnectionError",
     "Traceback", "Exception:", "Stack trace", "HTTP 4", "HTTP 5",
     "not available", "در دسترس نیست", "موجودی حساب",
+    # 🎯 جدید:
+    "WinDoctor:", "هوش مصنوعی در دسترس نیست",
+    "متوجه نشدم", "مغز مشغول است",
+    "درخواست قابلیت جدید ثبت شد",
 )
+
 _BAD_ANSWER_PREFIXES = ("❌", "⚠️", "🚫", "⛔")
 
 _PLATFORM_FA: dict[str, str] = {
@@ -103,6 +108,8 @@ _PLATFORM_FA: dict[str, str] = {
     "eitaa": "eitaa", "bale": "bale", "rubika": "rubika",
     "telegram": "telegram", "whatsapp": "whatsapp",
     "linkedin": "linkedin", "web": "web",
+    "اینستاگرام": "instagram",
+    "اینستا": "instagram",
 }
 
 
@@ -2433,7 +2440,7 @@ class ManualBrain:
                     )
                     saved = self.learn_from_ai(
                         text, ai_reply,
-                        source="ai", auto_promote=auto,
+                        source="ai", auto_promote=false,
                     )
                     if saved and auto:
                         log_success(

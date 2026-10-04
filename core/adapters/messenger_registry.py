@@ -27,13 +27,11 @@ messenger_registry — رجیستری سبک برای فرستنده‌های پ
   - 🧹 type hints دقیق (Callable[..., Awaitable[Any]])
 """
 from __future__ import annotations
-import asyncio
-import time
+
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from core.kernel.logger import log_error, log_info, log_success, log_warning
-
+from core.kernel.logger import log_info, log_success, log_warning
 # ─── ثابت‌ها ───
 _SLOW_SEND_MS = 3000   # هر ارسال > 3s = کند
 

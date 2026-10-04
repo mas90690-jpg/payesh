@@ -30,7 +30,9 @@ from analyzers.keyword_finder import get_keyword_finder
 from analyzers.target_filter import get_target_groups
 from core.adapters import messenger_registry
 from core.contracts.base_collector import BaseCollector, ConnectionStatus
-from core.kernel.logger import log_error, log_info, log_success, log_warning
+from core.kernel.logger import (
+    log_debug, log_error, log_info, log_success, log_warning,
+)
 
 try:
     from playwright.async_api import async_playwright
@@ -38,7 +40,7 @@ except ImportError:
     async_playwright = None
 
 # ─── ثابت‌ها ───
-_MAX_SEEN = 8000
+_MAX_SEEN = 100000
 BALE_WEB_URL = "https://web.bale.ai/"
 _MAX_CHAT_NAME_LEN = 40
 _PLATFORM = "bale"
@@ -609,11 +611,16 @@ class BaleCollector(BaseCollector):
             pass
         return ""
         
-    # 🎯 FIX: منطق ساده و درست (URL-based) — نسخهٔ قدیمی
+    # 🎯 FIX #15: regex دقیق — "/g" substring دیگر کافی نیست
     async def _detect_chat_type(self) -> str:
         try:
-            url = (self._page.url or "").lower()
-            if "/g" in url or "group" in url:
+            url = self._page.url or ""
+            # فقط الگوی دقیق #/g/<id> = گروه
+            if re.search(r"#/g/[A-Za-z0-9_]+", url):
+                return "group"
+            low = url.lower()
+            # مسیر صریح /group یا ?group=
+            if "/group" in low or "?group=" in low:
                 return "group"
         except Exception:
             pass
@@ -813,6 +820,14 @@ class BaleCollector(BaseCollector):
                     chat
                 )
 
+                # 🎯 FIX #6: هر دو خالی → skip (بدون نام معتبر نرو)
+                if not chat_name and not peer_id:
+                    log_warning(
+                        f"   ⏭️ [{idx+1}] بدون نام و peer_id — skip"
+                    )
+                    failed += 1
+                    continue
+
                 # 🎯 FIX: چتِ مدیر skip شود
                 if self._is_admin_chat(chat_name, peer_id):
                     log_info(
@@ -882,13 +897,28 @@ class BaleCollector(BaseCollector):
             except Exception:
                 continue
         try:
-            for attr in ("data-peer-id", "data-name"):
+            for attr in (
+                "data-peer-id", "data-name", "data-id",
+                "data-uid", "data-chat-id", "data-object-guid",
+            ):
                 v = await chat_item.get_attribute(attr)
-                if v:
-                    return str(v)
+                if v and str(v).strip():
+                    return str(v).strip()
         except Exception:
             pass
-        return "بله"
+
+        # 🎯 FIX #6: اگر هیچ نامی پیدا نشد، hash یکتا از متن آیتم
+        try:
+            txt = (await chat_item.inner_text() or "").strip()
+            if txt:
+                h = hashlib.md5(txt.encode("utf-8")).hexdigest()[:12]
+                return f"_anon_{h}"
+        except Exception:
+            pass
+
+        # 🎯 FIX #6: آخرین تلاش — رشتهٔ خالی (نه «بله»)
+        # این باعث می‌شود caller تشخیص دهد نام واقعی نیست.
+        return ""
         
     async def _scrape_current_chat(
         self, chat_name: str = None, peer_id: str = None
@@ -896,8 +926,16 @@ class BaleCollector(BaseCollector):
         page = self._page
         if not chat_name:
             chat_name = await self._get_open_chat_title()
+
+        # 🎯 FIX #6: اگر نام چت پیدا نشد، از peer_id استفاده کن
         if not chat_name:
-            return
+            if peer_id:
+                chat_name = f"peer_{peer_id[:16]}"
+            else:
+                log_warning(
+                    "⚠️ [bale:scrape] نام چت و peer_id هر دو خالی — skip"
+                )
+                return
 
         chat_type = await self._detect_chat_type()
         if not peer_id:
@@ -942,6 +980,7 @@ class BaleCollector(BaseCollector):
         count = 0
         checked = 0
 
+        _seen_in_this_chat: set[str] = set()
         for msg in messages[-limit:]:
             try:
                 mid = (
@@ -952,23 +991,31 @@ class BaleCollector(BaseCollector):
                 text = (await msg.inner_text() or "").strip()
 
                 if not mid and text:
+                    # 🎯 FIX: chat_id را هم داخل hash بیاور
                     mid = hashlib.md5(
-                        text.encode("utf-8")
+                        f"{chat_id}:{text}".encode("utf-8")
                     ).hexdigest()[:16]
 
-                if not mid or not text:
+                if not mid or mid == "0" or not text:
                     continue
-
+                    
                 checked += 1
                 uniq = f"{chat_id}:{mid}"
+
+                # 🎯 FIX: جلوگیری از دوبار در یک چت (DOM تکراری)
+                if uniq in _seen_in_this_chat:
+                    continue
+                _seen_in_this_chat.add(uniq)
 
                 if (
                     chat_type != "private"
                     and not self._kw.has_match(text)
                 ):
+                    log_debug(f"⏭️ [kw] بدون کلیدواژه | {chat_name} | {text[:40]}")
                     continue
 
                 if uniq in self._seen_ids:
+                    log_debug(f"⏭️ [seen] تکراری | {chat_name} | {mid}")
                     continue
                 self._seen_ids.add(uniq)
 
@@ -1046,7 +1093,8 @@ class BaleCollector(BaseCollector):
                             return first
             except Exception:
                 continue
-        return "بله"
+        # 🎯 FIX #6: رشتهٔ خالی به‌جای «بله»
+        return ""
         
     # ═══════════════════════════════════════════════════
     # ارسال پیام — غیرفعال

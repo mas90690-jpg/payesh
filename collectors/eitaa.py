@@ -31,7 +31,9 @@ from analyzers.keyword_finder import get_keyword_finder
 from analyzers.target_filter import get_target_groups
 from core.adapters.web_media import download_dom_image
 from core.contracts.base_collector import BaseCollector, ConnectionStatus
-from core.kernel.logger import log_error, log_info, log_success, log_warning
+from core.kernel.logger import (
+    log_debug, log_error, log_info, log_success, log_warning,
+)
 
 # ایمپورتِ playwright در سطح ماژول با محافظ
 try:
@@ -40,7 +42,7 @@ except ImportError:
     async_playwright = None
 
 # ─── ثابت‌ها ───
-_MAX_SEEN = 8000
+_MAX_SEEN = 100000
 EITAA_WEB_URL = "https://web.eitaa.com/"
 _PLATFORM = "eitaa"
 
@@ -92,6 +94,10 @@ class EitaaCollector(BaseCollector):
         self._processed_chats = set()
         self._targets = get_target_groups()
         self._kw = get_keyword_finder()
+
+        # 🎯 قفل سراسری connect — جلوگیری از race
+        if not hasattr(EitaaCollector, "_connect_lock"):
+            EitaaCollector._connect_lock = asyncio.Lock()
 
         from config import STORAGE_DIR
 
@@ -538,21 +544,23 @@ class EitaaCollector(BaseCollector):
 
                 # شناسهٔ پایدار با md5
                 if not mid and text:
+                    # 🎯 FIX: chat_name را هم داخل hash بیاور
                     mid = hashlib.md5(
-                        text.encode("utf-8")
+                        f"{chat_name}:{text}".encode("utf-8")
                     ).hexdigest()[:16]
-
                 if not mid or not text:
                     continue
 
                 uniq = f"{chat_name}:{mid}"
                 if uniq in self._seen_ids:
+                    log_debug(f"⏭️ [seen] تکراری | {chat_name} | {mid}")
                     continue
 
                 self._seen_ids.add(uniq)
 
                 # فیلتر کلیدواژه
                 if not self._kw.has_match(text):
+                    log_debug(f"⏭️ [kw] بدون کلیدواژه | {chat_name} | {text[:40]}")
                     continue
 
                 # دانلود عکس پیام (این پیام کلیدواژه دارد)

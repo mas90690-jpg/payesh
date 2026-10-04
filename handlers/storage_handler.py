@@ -1,12 +1,27 @@
 # handlers/storage_handler.py
 """
-ذخیرهٔ پیامهای کلیدواژهدار بهعنوان سرنخ.
+ذخیرهٔ پیام‌های کلیدواژه‌دار به‌عنوان سرنخ.
 
 چهار گارد (به ترتیب اجرا):
+  ۰) پیامِ خودی / Saved Messages → رد (مگر save_self_messages=True و «فضای شخصی»).
   ۱) پیامِ خصوصیِ «مدیر» روی هر پلتفرمی → دستور است، نه سرنخ → رد.
   ۲) گروهِ غیرهدف (data/target_groups.txt) → رد.
   ۳) پیامِ بدون کلیدواژه (نه از finder، نه preset از کلکتور) → رد.
-  ۴) پیامِ بدون tier مجاز → رد. پیشفرض فقط T1.
+  ۴) پیامِ بدون tier مجاز → رد. پیش‌فرض فقط T1.
+
+نسخهٔ ۳ (این نسخه):
+  - 🐛 FIX بحرانی: گارد ۰ دیگر از chat_id==user_id و chat_name==user_id
+    استفاده نمی‌کند. در چت‌های خصوصی بله/ایتا/تلگرام، chat_id و user_id
+    هر دو برابر با شناسهٔ طرف مقابل هستند → تمام پیام‌های خصوصی به‌عنوان
+    «پیام خودی» رد می‌شدند.
+  - ✅ تشخیص self/saved فقط بر اساس نام‌های marker (پیام‌های ذخیره شده،
+    فضای شخصی، Saved Messages، ذخیره‌شده).
+  - 🎯 لاگ گارد ۰ حالا نشان می‌دهد کدام marker باعث رد شد.
+  - ✅ حفظ همهٔ رفتار نسخهٔ ۲ (kwargs override، گارد ۳ لاگ واضح).
+
+نسخهٔ ۲:
+  - 🐛 FIX: __init__ حالا kwargs را می‌پذیرد (تست pipeline).
+  - 🐛 FIX: گارد ۳ حالا واضح لاگ می‌کند (اولین ۵ + هر ۲۰).
 """
 from __future__ import annotations
 
@@ -22,10 +37,12 @@ from core.kernel.logger import log_error, log_info, log_success, log_warning
 _LOG_PREVIEW_LEN = 100
 _SLOW_HANDLE_MS = 3000
 _STATS_INTERVAL = 100
+_GUARD3_FIRST_LOG = 5
+_GUARD3_LOG_EVERY = 20
 
 
 class StorageHandler(BaseHandler):
-    """پیام کلیدواژهدار را بهعنوان سرنخ ذخیره میکند (بعد از چهار گارد)."""
+    """پیام کلیدواژه‌دار را به‌عنوان سرنخ ذخیره می‌کند (بعد از چهار گارد)."""
 
     _TARGET_FILTERED_PLATFORMS = (
         "eitaa", "bale", "rubika", "telegram", "whatsapp",
@@ -42,17 +59,39 @@ class StorageHandler(BaseHandler):
         from config import PLUGINS_CONFIG
 
         cfg = PLUGINS_CONFIG.get("storagehandler", {})
-        self.keywords_only = cfg.get("keywords_only", True)
-        self.require_t1 = cfg.get("require_t1", True)
-        self._allowed_tiers = self._parse_allowed_tiers(cfg)
-        # _alert_tiers حذف شد (پایشگر فقط‌خواندنی)
+
+        self.keywords_only = kwargs.get(
+            "keywords_only",
+            cfg.get("keywords_only", True),
+        )
+        self.require_t1 = kwargs.get(
+            "require_t1",
+            cfg.get("require_t1", True),
+        )
+        self.save_self_messages = kwargs.get(
+            "save_self_messages",
+            cfg.get("save_self_messages", False),
+        )
+
+        raw_tiers = (
+            kwargs.get("allowed_tiers")
+            or cfg.get("allowed_tiers")
+        )
+        self._allowed_tiers = self._parse_allowed_tiers(
+            {"allowed_tiers": raw_tiers}
+        )
+
+        self.save_leads = kwargs.get(
+            "save_leads", cfg.get("save_leads", True)
+        )
+        self.save_media = kwargs.get(
+            "save_media", cfg.get("save_media", True)
+        )
 
         _adm = PLUGINS_CONFIG.get("adminhandler", {})
         self._admin_ids = {
             str(x).strip() for x in _adm.get("admin_ids", []) if x
         }
-
-        # _alert_tasks حذف شد (پایشگر فقط‌خواندنی)
 
         self.stats: dict[str, int] = {
             "total": 0,
@@ -71,6 +110,7 @@ class StorageHandler(BaseHandler):
             f"keywords_only={self.keywords_only} | "
             f"require_t1={self.require_t1} | "
             f"allowed_tiers={self._allowed_tiers} | "
+            f"save_self_messages={self.save_self_messages} | "
             f"admin_ids={len(self._admin_ids)}"
         )
 
@@ -150,7 +190,7 @@ class StorageHandler(BaseHandler):
                 return True
 
         return False
-  
+
     # ═══════════════════════════════════════════
     # گارد ۰: پیام خودی / Saved Messages
     # ═══════════════════════════════════════════
@@ -162,33 +202,49 @@ class StorageHandler(BaseHandler):
         "ذخیره‌شده",
     )
 
-    def _is_self_or_saved(self, raw: dict) -> bool:
-        """تشخیص پیام خودی یا Saved Messages — باید رد شود.
+    # فضای شخصی در حالت save_self_messages=True مجاز است
+    _SELF_CHAT_MARKER = "فضای شخصی"
 
-        سه شرط:
-          ۱) chat_name یکی از نشانه‌های Saved باشد.
-          ۲) chat_id == user_id (چت با خودت).
-          ۳) chat_name == user_id (چت با خودت — روبیکا).
+    def _is_self_or_saved(self, raw: dict) -> bool:
+        """تشخیص پیام خودی / Saved Messages.
+
+        🎯 FIX #3: فقط بر اساس نام چت تشخیص می‌دهیم — نه chat_id/user_id.
+        دلیل: در چت‌های خصوصی بله/ایتا/تلگرام، chat_id و user_id هر دو برابر
+        با شناسهٔ طرف مقابل هستند. استفاده از chat_id == user_id باعث
+        می‌شد همهٔ پیام‌های خصوصی به‌عنوان «پیام خودی» رد شوند.
+
+        Returns:
+            True → پیام خودی/Saved → باید رد شود
+            False → پیام عادی → ادامه بده
         """
         chat_name = str(raw.get("chat_name") or "").strip()
-        chat_id = str(raw.get("chat_id") or "").strip()
-        user_id = str(raw.get("user_id") or "").strip()
+        if not chat_name:
+            return False
 
-        # شرط ۱: Saved Messages
+        # ─── حالت save_self_messages=True: «فضای شخصی» مجاز است ───
+        if self.save_self_messages:
+            for marker in self._SAVED_MARKERS:
+                if marker == self._SELF_CHAT_MARKER:
+                    continue  # ← اجازه بده از این بگذرد
+                if marker in chat_name:
+                    log_info(
+                        f"⏭️ [STORAGE:guard0] marker=«{marker}» "
+                        f"| chat_name=«{chat_name}»"
+                    )
+                    return True
+            return False
+
+        # ─── حالت پیش‌فرض: همهٔ Savedها رد شوند ───
         for marker in self._SAVED_MARKERS:
             if marker in chat_name:
+                log_info(
+                    f"⏭️ [STORAGE:guard0] marker=«{marker}» "
+                    f"| chat_name=«{chat_name}»"
+                )
                 return True
 
-        # شرط ۲: chat_id == user_id
-        if chat_id and user_id and chat_id == user_id:
-            return True
-
-        # شرط ۳: chat_name == user_id (روبیکا)
-        if chat_name and user_id and chat_name == user_id:
-            return True
-
         return False
-        
+
     # ═══════════════════════════════════════════
     # گارد ۲: گروه هدف
     # ═══════════════════════════════════════════
@@ -209,7 +265,7 @@ class StorageHandler(BaseHandler):
         except Exception as e:
             log_warning(
                 f"⚠️ [STORAGE:target] خطا در target_filter | "
-                f"{type(e).__name__}: {e} — پیشفرض: قبول"
+                f"{type(e).__name__}: {e} — پیش‌فرض: قبول"
             )
             return True
 
@@ -257,12 +313,12 @@ class StorageHandler(BaseHandler):
     async def _handle_inner(self, event, t0: float):
         raw = self._to_dict(event.data)
 
-        # ─── لاگ دیباگ ───
         log_info(
             f"🔍 [STORAGE:enter] platform={raw.get('platform')} | "
             f"chat_type={raw.get('chat_type')} | "
             f"user_id={raw.get('user_id')} | "
             f"chat_id={raw.get('chat_id')} | "
+            f"chat_name={raw.get('chat_name')!r} | "
             f"admin_ids={self._admin_ids}"
         )
 
@@ -307,10 +363,16 @@ class StorageHandler(BaseHandler):
         # ─── گارد ۳: کلیدواژه ───
         if self.keywords_only and not analyzed.keywords:
             self.stats["dropped"] += 1
-            if self.stats["dropped"] % 200 == 0:
+            dropped = self.stats["dropped"]
+            if (
+                dropped <= _GUARD3_FIRST_LOG
+                or dropped % _GUARD3_LOG_EVERY == 0
+            ):
                 log_info(
-                    f"🚮 [STORAGE:guard3] تا الان "
-                    f"{self.stats['dropped']} پیام بدون کلیدواژه رد شده"
+                    f"🚮 [STORAGE:guard3] رد شد (بدون کلیدواژه) "
+                    f"#{dropped} | platform={platform} | "
+                    f"chat={chat_name[:_LOG_PREVIEW_LEN]!r} | "
+                    f"text={text[:80]!r}"
                 )
             return
 
@@ -327,7 +389,7 @@ class StorageHandler(BaseHandler):
             )
             return
 
-        # ─── غنیسازی + ذخیره ───
+        # ─── غنی‌سازی + ذخیره ───
         raw["keywords"] = ",".join(analyzed.keywords)
         raw = self._apply_score(raw, analyzed)
         raw = self._make_platform_unique_id(raw)
@@ -344,7 +406,6 @@ class StorageHandler(BaseHandler):
             )
 
         await self._save_lead(raw, analyzed.keywords)
-        # self._schedule_alert(raw)   ← غیرفعال (پایشگر فقط‌خواندنی)
 
         self.stats["messages_with_keywords"] += 1
         total = self.stats["messages_with_keywords"]
@@ -369,7 +430,7 @@ class StorageHandler(BaseHandler):
             )
 
     # ═══════════════════════════════════════════
-    # گامهای داخلی
+    # گام‌های داخلی
     # ═══════════════════════════════════════════
     async def _analyze(self, raw: dict):
         from core.kernel.models import AnalyzedMessage
