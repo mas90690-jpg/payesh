@@ -127,12 +127,10 @@ class BaseCollector(ABC):
     @abstractmethod
     def platform_name(self) -> str:
         """اسم پلتفرم (مثلاً 'bale', 'telegram', 'rubika')."""
-        pass
 
     @abstractmethod
     async def connect(self) -> bool:
         """اتصال به پیام‌رسان. Returns: True اگر موفق."""
-        pass
 
     @abstractmethod
     async def fetch_messages(
@@ -145,12 +143,10 @@ class BaseCollector(ABC):
               id, text, chat_id, chat_name, user_id, sender_name,
               timestamp, media_type, file_id, reply_to
         """
-        pass
 
     @abstractmethod
     async def disconnect(self) -> None:
         """قطع اتصال از پیام‌رسان."""
-        pass
 
     # ═══════════════════════════════════════════
     # capabilities (قابل override)

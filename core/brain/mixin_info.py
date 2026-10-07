@@ -127,6 +127,27 @@ class InfoMixin:
         if not self.semantic_search.collection:
             return "❌ حافظهٔ معنایی غیرفعال است."
 
+        # 🎯 fallback به MemoryStore جدید
+        if not self.semantic_search.collection:
+            try:
+                from core.adapters.memory_store import MemoryStore
+                store = MemoryStore()
+                results = store.query(
+                    category="knowledge",
+                    query=query,
+                    limit=n_results,
+                )
+                if results:
+                    lines = []
+                    for r in results:
+                        lines.append(f"📄 {r.get('key', '?')}")
+                        lines.append(f"   {r.get('value', '')[:200]}...")
+                    return "\n".join(lines)
+            except Exception as e:
+                log_warning(f"⚠️ [BRAIN:sem:fallback] {e}")
+            return "❌ حافظهٔ معنایی غیرفعال است."
+            
+
         try:
             t0 = time.monotonic()
             res = self.semantic_search.search(query, n_results)

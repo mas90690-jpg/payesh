@@ -1,6 +1,12 @@
 """ثابت‌ها + کش کلیدواژه + مسیرها — برای SafeBrain.
 
-نسخهٔ ۲ (این نسخه):
+نسخهٔ ۳ (این نسخه):
+  - 🎯 `SAFE_ACTIONS` و `SAFE_ACTIONS_HANDLED_LOCALLY` حالا از
+    `data/configs/actions.json` خوانده می‌شوند (تمرکز داده‌ها).
+  - 🎯 `_load_actions_from_data()` — تابع جدید با fallback امن.
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۲ (سازگاری کامل عقب‌رو).
+
+نسخهٔ ۲ (قبلی):
   - 🎯 مسیرهای SafeBrain حالا از `data.paths` می‌آیند (منبع یکتا).
   - 🐛 FIX: `MAX_API_CALLS_PER_HOUR` حالا با `_env_int` (sanitize).
   - 🐛 FIX: `_BRAIN_FAIL_RETRY_S` حالا env-based.
@@ -103,38 +109,58 @@ _ensure_safe_brain_dirs()
 
 
 # ════════════════════════════════════════════
-# اکشن‌ها
+# اکشن‌ها (از data/configs/actions.json — متمرکز)
 # ════════════════════════════════════════════
 
-# 🎯 FIX: هماهنگ با `ai_assistant._ALLOWED_ACTIONS`
-SAFE_ACTIONS: frozenset[str] = frozenset({
-    "status",
-    "report",
-    "crm",
-    "logs",
-    "keywords",
-    "add_keyword",
-    "remove_keyword",
-    "has_keyword",
-    "platform_status",
-    "health",
-    "lead_details",
-    "get_param",
-    "set_param",
-    "restart",
-    "explain_logs",
-    "feature_request",
-    "ask",
-    "help",
+# 🎯 Fallback: اگه فایل actions.json نبود یا خراب بود
+_FALLBACK_SAFE_ACTIONS: frozenset[str] = frozenset({
+    "status", "report", "crm", "logs", "keywords",
+    "add_keyword", "remove_keyword", "has_keyword",
+    "platform_status", "health", "lead_details",
+    "get_param", "set_param", "restart", "explain_logs",
+    "feature_request", "ask", "help",
 })
 
-# اکشن‌هایی که SafeBrain خودش انجام می‌دهد
-SAFE_ACTIONS_HANDLED_LOCALLY: frozenset[str] = frozenset({
-    "help",
-    "add_keyword",
-    "remove_keyword",
-    "feature_request",
+_FALLBACK_HANDLED_LOCALLY: frozenset[str] = frozenset({
+    "help", "add_keyword", "remove_keyword", "feature_request",
 })
+
+
+def _load_actions_from_data() -> tuple[frozenset[str], frozenset[str]]:
+    """🎯 خواندن اکشن‌ها از data/configs/actions.json — با fallback امن.
+
+    Returns:
+        (safe_actions, handled_locally)
+        اگه فایل نبود یا خراب بود → مقادیر fallback.
+    """
+    try:
+        from data.loader import load_json
+        data = load_json("actions", default={})
+
+        if not isinstance(data, dict):
+            return _FALLBACK_SAFE_ACTIONS, _FALLBACK_HANDLED_LOCALLY
+
+        safe = data.get("safe_actions")
+        local = data.get("handled_locally")
+
+        # validate: باید list و غیرخالی باشد
+        safe_set: frozenset[str] = (
+            frozenset(str(x) for x in safe)
+            if isinstance(safe, list) and safe
+            else _FALLBACK_SAFE_ACTIONS
+        )
+        local_set: frozenset[str] = (
+            frozenset(str(x) for x in local)
+            if isinstance(local, list) and local
+            else _FALLBACK_HANDLED_LOCALLY
+        )
+        return safe_set, local_set
+    except Exception:
+        # هر خطایی → fallback
+        return _FALLBACK_SAFE_ACTIONS, _FALLBACK_HANDLED_LOCALLY
+
+
+SAFE_ACTIONS, SAFE_ACTIONS_HANDLED_LOCALLY = _load_actions_from_data()
 
 
 def is_safe_action(action: str) -> bool:

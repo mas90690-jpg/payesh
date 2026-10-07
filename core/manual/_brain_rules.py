@@ -19,9 +19,8 @@ from __future__ import annotations
 import time
 from datetime import datetime
 from difflib import SequenceMatcher
-from typing import Any
 
-from core.kernel.logger import log_success, log_warning
+from core.kernel.logger import log_warning
 
 from core.manual._brain_core import (
     FUZZY_THRESHOLD,

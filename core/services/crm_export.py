@@ -11,12 +11,18 @@ XLSX (اگر openpyxl).
   - split=True:        یک فایل جدا برای هر پلتفرم
   - multi_sheet=True:  یک XLSX با شیت جدا per platform
 
-نسخهٔ ۷ (این نسخه):
-  - 🔒 SEC FIX: حذف f-string در SQL query اصلی.
-    * `where` فقط از placeholder های ثابت + `?` ساخته می‌شود
-    * مقادیر از طریق `params` به SQLite پاس می‌شوند
-    * SQL نهایی با `+` (نه f-string) ساخته می‌شود
-  - ✅ حفظ همهٔ FIXهای نسخهٔ ۶.
+نسخهٔ ۹ (این نسخه):
+  - 🎯 `_HEADERS_LOADED_FROM_FILE` — فلگ جدید برای تشخیص منبع دقیق.
+  - 🎯 `_load_and_track()` — لود + ثبت منبع (file/fallback).
+  - 🎯 `get_stats()` حالا `headers_source` را **دقیق** نشان می‌دهد.
+  - 🎯 `reload_crm_headers()` از تابع جدید استفاده می‌کند.
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۸ (هدرها از data).
+
+نسخهٔ ۸ (قبلی):
+  - 🎯 هدرهای CRM حالا از `data/configs/crm_headers.json` می‌آیند.
+  - 🎯 `_load_crm_headers_from_data()` — تابع جدید با fallback امن.
+  - 🎯 `reload_crm_headers()` — برای hot-reload.
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۷ (SEC FIX SQL).
 """
 from __future__ import annotations
 
@@ -119,9 +125,11 @@ except Exception:
 
 
 # ═══════════════════════════════════════════
-# ستون‌های CRM
+# 🆕 هدرهای CRM (از data/configs/crm_headers.json)
 # ═══════════════════════════════════════════
-CRM_HEADERS: list[str] = [
+
+# ─── Fallback: اگه فایل نبود یا خراب بود ───
+_FALLBACK_CRM_HEADERS: list[str] = [
     "منبع (پلتفرم)",
     "کانال/گروه",
     "فرد/فرستنده",
@@ -136,6 +144,138 @@ CRM_HEADERS: list[str] = [
     "رسانه",
     "شناسه",
 ]
+
+# تعداد مورد انتظار (چون _row_cells دقیقاً ۱۳ سلول می‌دهد)
+_EXPECTED_HEADERS_COUNT = 13
+
+# 🎯 فلگ: آیا از فایل خونده شده یا fallback؟
+_HEADERS_LOADED_FROM_FILE: bool = False
+
+
+def _validate_headers(headers: Any) -> list[str] | None:
+    """🎯 اعتبارسنجی لیست هدرها.
+
+    Returns:
+        لیست clean یا None اگه نامعتبر بود.
+    """
+    if not isinstance(headers, list) or not headers:
+        return None
+
+    if len(headers) != _EXPECTED_HEADERS_COUNT:
+        log_warning(
+            f"⚠️ [CRM:headers] تعداد ستون‌ها "
+            f"{len(headers)} ≠ {_EXPECTED_HEADERS_COUNT}"
+        )
+        return None
+
+    clean: list[str] = []
+    for h in headers:
+        if not isinstance(h, str) or not h.strip():
+            log_warning(
+                f"⚠️ [CRM:headers] ستون نامعتبر «{h!r}»"
+            )
+            return None
+        clean.append(h.strip())
+
+    return clean
+
+
+def _load_crm_headers_from_data() -> list[str]:
+    """🎯 خواندن هدرهای CRM از data — با fallback امن.
+
+    Returns:
+        لیست هدرها. اگه فایل نبود یا نامعتبر بود → fallback.
+    """
+    try:
+        from data.loader import load_json
+        data = load_json("crm_headers", default={})
+
+        if not isinstance(data, dict):
+            return list(_FALLBACK_CRM_HEADERS)
+
+        headers = data.get("headers")
+        clean = _validate_headers(headers)
+
+        if clean is None:
+            log_warning(
+                f"⚠️ [CRM:headers] فایل نامعتبر — "
+                f"fallback ({_EXPECTED_HEADERS_COUNT} ستون)"
+            )
+            return list(_FALLBACK_CRM_HEADERS)
+
+        log_info(
+            f"✅ [CRM:headers] {len(clean)} ستون از "
+            f"crm_headers.json بارگذاری شد"
+        )
+        return clean
+
+    except Exception as e:
+        log_warning(
+            f"⚠️ [CRM:headers] بارگذاری ناموفق | "
+            f"{type(e).__name__}: {e} — fallback"
+        )
+        return list(_FALLBACK_CRM_HEADERS)
+
+
+def _load_and_track() -> list[str]:
+    """🎯 لود + ثبت منبع (file یا fallback).
+
+    Returns:
+        لیست هدرها.
+    """
+    global _HEADERS_LOADED_FROM_FILE
+
+    try:
+        from data.loader import load_json
+        data = load_json("crm_headers", default={})
+
+        if isinstance(data, dict):
+            clean = _validate_headers(data.get("headers"))
+            if clean is not None:
+                _HEADERS_LOADED_FROM_FILE = True
+                log_info(
+                    f"✅ [CRM:headers] {len(clean)} ستون از "
+                    f"crm_headers.json بارگذاری شد (source=file)"
+                )
+                return clean
+    except Exception as e:
+        log_warning(
+            f"⚠️ [CRM:headers] لود | "
+            f"{type(e).__name__}: {e}"
+        )
+
+    # ─── fallback ───
+    _HEADERS_LOADED_FROM_FILE = False
+    log_warning(
+        f"⚠️ [CRM:headers] fallback "
+        f"({len(_FALLBACK_CRM_HEADERS)} ستون)"
+    )
+    return list(_FALLBACK_CRM_HEADERS)
+
+
+# ─── لود اولیه ───
+CRM_HEADERS: list[str] = _load_and_track()
+
+
+def reload_crm_headers() -> list[str]:
+    """🎯 hot-reload — برای تست/دستی.
+
+    Returns:
+        لیست جدید هدرها.
+    """
+    global CRM_HEADERS
+    try:
+        from data.loader import clear_cache
+        clear_cache()
+    except Exception:
+        pass
+    CRM_HEADERS = _load_and_track()
+    return CRM_HEADERS
+
+
+def get_headers_source() -> str:
+    """🎯 منبع هدرها: file یا fallback."""
+    return "file" if _HEADERS_LOADED_FROM_FILE else "fallback"
 
 
 # ═══════════════════════════════════════════
@@ -265,8 +405,6 @@ def _rows(
     where_sql = " AND ".join(where_parts)
 
     # 🔒 SEC FIX: concatenation با + — نه f-string.
-    # `where_sql` فقط شامل placeholder های ثابت + `?` است.
-    # مقادیر واقعی از `params` می‌آیند (parameter binding).
     query = (
         "SELECT platform, chat_name, chat_link, "
         "sender_name, user_id, text, keywords, "
@@ -408,17 +546,7 @@ def _atomic_write_text_with_encoding(
     encoding: str = "utf-8",
     newline: str | None = None,
 ) -> None:
-    """🎯 FIX: نوشتن atomic با encoding + fsync.
-
-    Args:
-        path: مسیر نهایی.
-        write_fn: callback که فایل handle باز را می‌گیرد.
-        encoding: انکودینگ فایل.
-        newline: حالت newline (None یا "" برای CSV).
-
-    Raises:
-        Exception: در صورت شکست در نوشتن.
-    """
+    """🎯 FIX: نوشتن atomic با encoding + fsync."""
     tmp = path + ".tmp"
 
     try:
@@ -744,17 +872,7 @@ def export_crm(
     split: bool = False,
     multi_sheet: bool = False,
 ) -> dict[str, Any] | None:
-    """خروجی CRM.
-
-    Args:
-        days: بازه (۰ = همه). منفی → ۰.
-        platform: فیلتر پلتفرم (None = همه).
-        split: True → یک فایل جدا per platform.
-        multi_sheet: True → یک XLSX با شیت جدا per platform.
-
-    Returns:
-        dict | None.
-    """
+    """خروجی CRM."""
     t_all = time.monotonic()
 
     if platform:
@@ -967,6 +1085,7 @@ def get_stats() -> dict[str, Any]:
         "max_xlsx_records": _MAX_XLSX_RECORDS,
         "platforms": list(PLATFORM_ORDER),
         "csv_headers_count": len(CRM_HEADERS),
+        "headers_source": get_headers_source(),
     }
 
 
@@ -1037,6 +1156,9 @@ __all__ = [
     "DB_PATH",
     "REPORTS_DIR",
     "get_stats",
+    "reload_crm_headers",
+    "get_headers_source",
+    "_FALLBACK_CRM_HEADERS",
 ]
 
 

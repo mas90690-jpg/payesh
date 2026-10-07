@@ -27,7 +27,6 @@
 from __future__ import annotations
 
 import time
-from typing import Any
 
 from core.adapters.formula_manager import get_formula_manager
 from core.kernel.logger import log_info, log_success, log_warning

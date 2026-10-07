@@ -18,12 +18,14 @@
   - ✅ حفظ همهٔ رفتار نسخهٔ ۱.
 """
 from __future__ import annotations
-
+import threading
 import asyncio
 import json
 import os
 import re
 import time
+import threading as _threading
+from core.adapters.memory_store import MemoryStore
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -263,6 +265,19 @@ class LearningEngine:
             )
 
         self._save_learned_data()
+                # 🎯 ذخیره در MemoryStore جدید
+        try:
+            from core.adapters.memory_store import MemoryStore
+            store = MemoryStore()
+            store.add(
+                category="interactions",
+                key=user_input[:200],
+                value=response[:500],
+                importance=1.0 if success else 0.3,
+            )
+        except Exception as e:
+            log_warning(f"⚠️ [BRAIN:learn] memory_store | {e}")
+            
         log_info(
             f"📝 [BRAIN:learn] ثبت | success={success}"
         )
@@ -318,7 +333,26 @@ class LearningEngine:
             return best_tool
         return None
 
-
+    # ═══════════════════════════════════════════
+    # 🎯 حافظهٔ جدید (SQLite + Bitemporal)
+    # ═══════════════════════════════════════════
+    def to_memory_store(self) -> None:
+        """ذخیرهٔ همهٔ الگوها در MemoryStore جدید."""
+        try:
+            from core.adapters.memory_store import MemoryStore
+            store = MemoryStore()
+            for key, data in self.learned_patterns.items():
+                count = data.get("count", 0)
+                keywords = data.get("keywords", [])
+                store.add(
+                    category="patterns",
+                    key=key,
+                    value=f"count={count}, keywords={keywords}",
+                    importance=min(1.0, count / 10.0),
+                )
+        except Exception as e:
+            log_warning(f"⚠️ [BRAIN:learn] to_memory_store | {e}")
+            
 # ═══════════════════════════════════════════════════════════
 # TaskPlanner
 # ═══════════════════════════════════════════════════════════
@@ -766,3 +800,267 @@ Review this code (bugs, security, smells, perf):
                 f"❌ [BRAIN:review] {type(e).__name__}: {e}"
             )
             return f"❌ خطا در بازبینی: {e}"
+            
+# ═══════════════════════════════════════════════════════════
+# ProductLearner — یادگیری خودکار محصولات
+# ═══════════════════════════════════════════════════════════
+class ProductLearner:
+    """یادگیری خودکار محصولات جدید از گفتگو.
+
+    - فقط products.py و products_en.py رو می‌خونه
+    - هیچ‌وقت بهشون دست نمی‌زنه
+    - هر چی یاد گرفت → products_learned.json
+    """
+
+    def __init__(self, agent):
+        self.agent = agent
+        self._learn_file = (
+            BRAIN_DIR / "products_learned.json"
+        )
+        self._pending: dict[str, int] = {}
+        self._lock = threading.RLock()
+        self._load()
+
+        log_info(
+            f"🧬 [BRAIN:product_learner] آماده | "
+            f"file={self._learn_file.name}"
+        )
+
+    # ═══════════════════════════════════════════
+    # load / save
+    # ═══════════════════════════════════════════
+    def _load(self):
+        """لود products_learned.json."""
+        if not self._learn_file.exists():
+            self._learned: dict = {
+                "version": "1.0.0",
+                "products": {},
+                "aliases": {},
+                "updated_at": None,
+            }
+            return
+
+        try:
+            with open(
+                str(self._learn_file), encoding="utf-8"
+            ) as f:
+                data = json.load(f)
+
+            if not isinstance(data, dict):
+                self._learned = {
+                    "version": "1.0.0",
+                    "products": {},
+                    "aliases": {},
+                    "updated_at": None,
+                }
+                return
+
+            self._learned = data
+            log_info(
+                f"📚 [BRAIN:product_learner] لود شد | "
+                f"learned={len(data.get('products', {}))} برند"
+            )
+        except Exception as e:
+            log_warning(
+                f"⚠️ [BRAIN:product_learner:load] "
+                f"{type(e).__name__}: {e}"
+            )
+            self._learned = {
+                "version": "1.0.0",
+                "products": {},
+                "aliases": {},
+                "updated_at": None,
+            }
+
+    def _save(self) -> bool:
+        """ذخیره با atomic + fsync."""
+        self._learned["updated_at"] = (
+            datetime.now().isoformat()
+        )
+        return _atomic_write_json(
+            self._learn_file, self._learned
+        )
+
+    # ═══════════════════════════════════════════
+    # public API
+    # ═══════════════════════════════════════════
+    def get_learned(self) -> dict:
+        """برمی‌گرداند {brand: [products]}."""
+        return dict(
+            self._learned.get("products", {}) or {}
+        )
+
+    def get_all(self) -> dict[str, list[str]]:
+        """products.py + products_learned.json merge."""
+        # ─── base ───
+        try:
+            from data.products import PRODUCTS_BY_BRAND
+            base = {
+                k: list(v)
+                for k, v in PRODUCTS_BY_BRAND.items()
+            }
+        except Exception as e:
+            log_warning(
+                f"⚠️ [BRAIN:product_learner:base] "
+                f"{type(e).__name__}: {e}"
+            )
+            base = {}
+
+        # ─── learned ───
+        for brand, products in self.get_learned().items():
+            if brand not in base:
+                base[brand] = []
+            for p in products:
+                if p not in base[brand]:
+                    base[brand].append(p)
+
+        return base
+
+    def get_all_flat(self) -> list[str]:
+        """لیست تخت همهٔ محصولات."""
+        out: list[str] = []
+        for products in self.get_all().values():
+            out.extend(products)
+        return sorted(set(out))
+
+    # ═══════════════════════════════════════════
+    # یادگیری
+    # ═══════════════════════════════════════════
+    def track_mention(self, text: str) -> None:
+        """ردیابی یه محصول جدید در متن.
+
+        اگه ۳ بار تکرار شد → یاد بگیر.
+        """
+        if not text or len(text) < 3:
+            return
+
+        # ─── استخراج کاندیدها ───
+        candidates = self._extract_candidates(text)
+
+        with self._lock:
+            for cand in candidates:
+                # ─── اگه از قبل توی لیست اصلی هست → skip ───
+                if self._is_in_base(cand):
+                    continue
+
+                # ─── اگه از قبل یاد گرفته → skip ───
+                if self._is_learned(cand):
+                    continue
+
+                # ─── شمارش ───
+                self._pending[cand] = (
+                    self._pending.get(cand, 0) + 1
+                )
+
+            # ─── چک یادگیری ───
+            self._maybe_learn()
+
+    def _is_in_base(self, product: str) -> bool:
+        """آیا توی products.py هست؟"""
+        try:
+            from data.products import ALL_PRODUCTS
+            from data.products_en import ALL_PRODUCTS_EN
+
+            p_low = product.lower()
+            for p in ALL_PRODUCTS:
+                if p.lower() == p_low:
+                    return True
+            for p in ALL_PRODUCTS_EN:
+                if p.lower() == p_low:
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _is_learned(self, product: str) -> bool:
+        """آیا قبلاً یاد گرفته شده؟"""
+        p_low = product.lower()
+        for products in self.get_learned().values():
+            for p in products:
+                if p.lower() == p_low:
+                    return True
+        return False
+
+    @staticmethod
+    def _extract_candidates(text: str) -> list[str]:
+        """استخراج کاندیدهای محصول از متن."""
+        # ─── کلمه‌های کلیدی ───
+        KEYWORDS = (
+            "کود", "سم", "قارچ‌کش", "حشره‌کش",
+            "علف‌کش", "کلسیم", "منیزیم", "روی",
+            "آهن", "مس", "منگنز", "بور",
+            "نیتروژن", "فسفر", "پتاسیم",
+            "مایع", "پودر", "گرانول",
+            "محلول", "کنسانتره",
+        )
+
+        candidates: list[str] = []
+
+        # ─── پیدا کردن عبارت‌های ۱-۳ کلمه‌ای ───
+        words = text.split()
+        for i, word in enumerate(words):
+            w = word.strip("،.:؛!?؟«»\"'")
+            if len(w) < 3:
+                continue
+
+            # ─── چک کلیدواژه ───
+            for kw in KEYWORDS:
+                if kw in w:
+                    # ─── ۱ کلمه ───
+                    candidates.append(w)
+                    # ─── ۲ کلمه ───
+                    if i + 1 < len(words):
+                        nxt = words[i + 1].strip(
+                            "،.:؛!?؟«»\"'"
+                        )
+                        if len(nxt) >= 3:
+                            candidates.append(f"{w} {nxt}")
+                    break
+
+        return candidates
+
+    def _maybe_learn(self) -> None:
+        """اگه تکرار کافی بود، یاد بگیر."""
+        MIN_REPEAT = 3
+        learned_any = False
+
+        for cand in list(self._pending.keys()):
+            count = self._pending.get(cand, 0)
+            if count < MIN_REPEAT:
+                continue
+
+            # ─── ذخیره ───
+            products = self._learned.setdefault(
+                "products", {}
+            )
+            if "یادگرفته" not in products:
+                products["یادگرفته"] = []
+            if cand not in products["یادگرفته"]:
+                products["یادگرفته"].append(cand)
+                learned_any = True
+
+            # ─── حذف از pending ───
+            self._pending.pop(cand, None)
+
+        if learned_any and self._save():
+            log_success(
+                f"🧬 [BRAIN:product_learner] "
+                f"یاد گرفت | file={self._learn_file.name}"
+            )
+
+    # ═══════════════════════════════════════════
+    # debug
+    # ═══════════════════════════════════════════
+    def get_stats(self) -> dict[str, Any]:
+        """آمار."""
+        with self._lock:
+            return {
+                "learned_brands": len(
+                    self.get_learned()
+                ),
+                "learned_products": sum(
+                    len(v) for v in self.get_learned().values()
+                ),
+                "pending": dict(self._pending),
+                "file": str(self._learn_file),
+            }           

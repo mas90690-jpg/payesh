@@ -22,11 +22,10 @@ from __future__ import annotations
 
 import json
 import os
-import time
 from datetime import datetime
 from typing import Any
 
-from core.kernel.logger import log_error, log_info, log_warning
+from core.kernel.logger import log_info, log_warning
 
 # ═══════════════════════════════════════════════════════════
 # ثابت‌ها
@@ -348,7 +347,6 @@ class AdminMemory:
 
         (این کلاس فایل را باز نگه نمی‌دارد، پس چیز خاصی برای بستن نیست.)
         """
-        pass
 
     # ═══════════════════════════════════════════
     # __enter__ / __exit__ (compat)

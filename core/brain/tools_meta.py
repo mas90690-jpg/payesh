@@ -1,20 +1,24 @@
 """
 تعریف ابزارهای Brain — metadata (بدون پیاده‌سازی).
 
-نسخهٔ ۳ (این نسخه):
-  - 🎯 NEW: `append_knowledge` — افزودن به bot_knowledge.md
-    (فقط append، هرگز overwrite، بدون نیاز به تأیید).
+نسخهٔ ۴ (این نسخه):
+  - 🎯 NEW: `audit_code` — بررسی کد با pyflakes + flake8.
+  - 🎯 NEW: `audit_file` — بررسی یک فایل خاص.
+  - 🎯 NEW: `fix_fstrings` — درست کردن f-string های بی‌placeholder.
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۳.
+
+نسخهٔ ۳ (قبلی):
+  - 🎯 NEW: `append_knowledge` — افزودن به bot_knowledge.md.
   - ✅ حفظ همهٔ FIXهای نسخهٔ ۲.
 
 نسخهٔ ۲ (قبلی):
-  - 🎯 `ALLOWED_DIRECT_COMMANDS` حالا به `DIRECT_COMMANDS` تغییر نام
-    یافت (کوتاه‌تر، بدون «ALLOWED» اضافه).
-  - 🎯 `ALLOWED_TOOLS` و `DIRECT_COMMANDS` حالا به‌صورت
-    `MappingProxyType` (immutable) export می‌شوند.
-  - 🐛 FIX: `build_tool_definitions()` حالا `deepcopy` می‌کند.
-  - 🎯 `get_tool_info(name)` متد جدید برای دسترسی سریع.
-  - 🎯 `get_tools_by_risk(risk)` متد جدید برای فیلتر.
-  - 🎯 `_td` helper حالا یک `returns` اختیاری هم می‌گیرد.
+  - 🎯 `ALLOWED_DIRECT_COMMANDS` حالا به `DIRECT_COMMANDS` تغییر نام.
+  - 🎯 `ALLOWED_TOOLS` و `DIRECT_COMMANDS` حالا
+    `MappingProxyType` (immutable).
+  - 🐛 FIX: `build_tool_definitions()` حالا `deepcopy`.
+  - 🎯 `get_tool_info(name)` متد جدید.
+  - 🎯 `get_tools_by_risk(risk)` متد جدید.
+  - 🎯 `_td` helper حالا `returns` اختیاری هم می‌گیرد.
 """
 from __future__ import annotations
 
@@ -88,14 +92,21 @@ _ALLOWED_TOOLS_RAW: dict[str, dict] = {
     # ─── backup (low — فقط zip) ───
     "backup_project": _tool("low"),
 
+    # ─── 🎯 NEW: audit (low — فقط بررسی، بدون تغییر) ───
+    "audit_code": _tool("low"),
+    "audit_file": _tool("low"),
+
     # ─── فایل (medium — write) ───
     "write_file": _tool("medium", True),
     "edit_file": _tool("medium", True),
     "move_file": _tool("medium", True),
     "fix_bug": _tool("medium", True),
 
-    # ─── 🎯 NEW: append_knowledge (medium — بدون تأیید، فقط append) ───
+    # ─── 🎯 NEW: append_knowledge (medium — بدون تأیید) ───
     "append_knowledge": _tool("medium", False),
+
+    # ─── 🎯 NEW: fix_fstrings (medium — تغییر فایل، نیاز به تأیید) ───
+    "fix_fstrings": _tool("medium", True),
 
     # ─── Git (medium) ───
     "git_commit": _tool("medium", True),
@@ -266,6 +277,93 @@ TOOL_DEFINITIONS: list[dict] = [
         },
         ["content"],
         returns="✅ موفق / ℹ️ تکراری / ❌ خطا",
+    ),
+
+    # ─── 🎯 NEW: audit_code ───
+    _td(
+        "audit_code",
+        "بررسی کامل کد پایتون با pyflakes + flake8 (+ vulture + bandit). "
+        "پیدا کردن: import اضافه، متغیر استفاده‌نشده، "
+        "اسم تعریف‌نشده، f-string بی‌placeholder، غلط تایپی، "
+        "مشکلات منطقی. خروجی: dict ساختاریافته با دسته‌بندی.",
+        {
+            "paths": {
+                "type": "string",
+                "description": (
+                    "مسیرها با فاصله "
+                    "(پیش‌فرض: core/ handlers/ collectors/ "
+                    "analyzers/ main.py)"
+                ),
+                "default": (
+                    "core/ handlers/ collectors/ "
+                    "analyzers/ main.py"
+                ),
+            },
+            "include_flake8": {
+                "type": "boolean",
+                "description": "بررسی با flake8 (پیش‌فرض True)",
+                "default": True,
+            },
+            "include_vulture": {
+                "type": "boolean",
+                "description": "بررسی کد بلااستفاده (کندتر)",
+                "default": False,
+            },
+            "include_bandit": {
+                "type": "boolean",
+                "description": "بررسی امنیت (کندتر)",
+                "default": False,
+            },
+        },
+        [],
+        returns="dict با summary + details + raw_output",
+    ),
+
+    # ─── 🎯 NEW: audit_file ───
+    _td(
+        "audit_file",
+        "بررسی یک فایل پایتون خاص با pyflakes + flake8.",
+        {
+            "file_path": {
+                "type": "string",
+                "description": (
+                    "مسیر فایل (مثلاً: core/brain/main.py)"
+                ),
+            },
+            "include_flake8": {
+                "type": "boolean",
+                "default": True,
+            },
+        },
+        ["file_path"],
+        returns="dict با summary + details",
+    ),
+
+    # ─── 🎯 NEW: fix_fstrings ───
+    _td(
+        "fix_fstrings",
+        "درست کردن f-string های بی‌placeholder (f\"...\" → \"...\"). "
+        "⚠️ فایل‌ها را تغییر می‌دهد — قبلش بکاپ بگیر. "
+        "با dry_run=True فقط نشان می‌دهد.",
+        {
+            "paths": {
+                "type": "string",
+                "description": "مسیرها با فاصله",
+                "default": (
+                    "core/ handlers/ collectors/ "
+                    "analyzers/ main.py"
+                ),
+            },
+            "dry_run": {
+                "type": "boolean",
+                "description": (
+                    "اگه True، فقط نشون بده (پیش‌فرض)"
+                ),
+                "default": True,
+            },
+        },
+        [],
+        returns="dict با files_fixed + fixes",
     ),
 
     # ─── Git ───
@@ -534,10 +632,7 @@ TOOL_DEFINITIONS: list[dict] = [
 # API عمومی
 # ═══════════════════════════════════════════════════════════
 def build_tool_definitions() -> list[dict]:
-    """🎯 FIX: برگرداندن deep-copy از TOOL_DEFINITIONS.
-
-    (قبلاً shallow copy بود → mutation روی عناصر خطرناک بود)
-    """
+    """🎯 FIX: برگرداندن deep-copy از TOOL_DEFINITIONS."""
     return copy.deepcopy(TOOL_DEFINITIONS)
 
 

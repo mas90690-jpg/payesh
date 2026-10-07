@@ -1,26 +1,26 @@
 """
 handlers/auto_subscribe.py — ثبت خودکار هندلرها در EventBus.
 
-استراتژی اصلی (نسخهٔ ۳):
+استراتژی اصلی (نسخهٔ ۴ — داده‌محور):
   - هر هندلر خودش می‌گه به چه رویدادهایی علاقه داره — از طریق can_handle()
   - اگه can_handle() برای همه رویدادهای شناخته‌شده False بده، از نام
     هندلر (fallback) استفاده می‌کنیم — برای سازگاری با هندلرهای قدیمی
   - فقط یک‌بار ثبت می‌شه (ضدتکراری)
 
-نسخهٔ ۳ (این نسخه):
-  - 🔴 FIX: `_KNOWN_EVENTS` حالا فقط شامل رویدادهای واقعی است
-    (brain.command, brain.response حذف شدند — چون هیچ هندلری به آن‌ها
-    subscribe نمی‌کند و بی‌استفاده بودند).
-  - 🎯 NEW: استفاده از `handler.priority` برای ترتیب subscribe
-    (بعد از اتصال به BaseHandler.priority — که در R1.8 آپدیت شد).
-  - 🐛 FIX: `_FALLBACK_BY_NAME` حالا با نام‌های فعلی هماهنگ است
-    (storage, admin, crm, log, notify, scoring, telegram, whatsapp,
-     instagram).
-  - 🎯 NEW: پشتیبانی از رویدادهای پویا — اگر `handler.listens_to()`
-    تعریف شده باشد، اول از آن استفاده می‌شود.
-  - 🎯 `_get_handler_events`: منطق بازنویسی برای وضوح.
-  - 🎯 لاگ‌های دقیق‌تر با prefixهای یکدست [SUBSCRIBE:events:*].
-  - ✅ حفظ همهٔ FIXهای نسخهٔ ۲ (can_handle به‌عنوان منبع اصلی،
+🎯 داده‌محور:
+  - `data/configs/events.json`:
+      * known             → لیست رویدادهای شناخته‌شده
+      * fallback_by_name  → نگاشت نام هندلر → رویدادها
+
+نسخهٔ ۴ (این نسخه):
+  - 🎯 `_KNOWN_EVENTS` و `_FALLBACK_BY_NAME` حذف شدند از top-level.
+  - 🎯 حالا `self._known_events` و `self._fallback_by_name` از
+    `events.json` بارگذاری می‌شوند.
+  - 🐛 FIX: اگر فایل events.json نبود → مقادیر پیش‌فرض امن استفاده می‌شود
+    (تا subscribe کاملاً از کار نیفتد).
+  - 🐛 FIX: `get_known_events()` حالا `self._known_events` برمی‌گرداند
+    (نه متغیر ماژول حذف‌شده).
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۳ (can_handle به‌عنوان منبع اصلی،
     ضدتکراری، خطای subscribe بقیه را متوقف نمی‌کند).
 """
 from __future__ import annotations
@@ -31,35 +31,27 @@ from typing import Any
 from core.contracts.base_handler import BaseHandler, HandlerPriority
 from core.kernel.logger import log_error, log_info, log_success, log_warning
 
+# 🎯 داده‌محور
+from data.loader import load_json
+
 
 # ═══════════════════════════════════════════════════════════
-# رویدادهای شناخته‌شده در سیستم
+# helpers — داده‌محور
 # ═══════════════════════════════════════════════════════════
-# اگه رویداد جدیدی اضافه شد، اینجا اضافه کن.
-# auto_subscribe از همین لیست برای پرسیدن از can_handle() استفاده می‌کند.
-#
-# 🔴 FIX: `brain.command` و `brain.response` حذف شدند — هیچ هندلری
-# در پروژه فعلی به آن‌ها subscribe نمی‌کند. اگر در آینده لازم شد،
-# به این لیست برگردانده شوند.
-_KNOWN_EVENTS: tuple[str, ...] = (
+# مقادیر پیش‌فرض (اگر events.json نبود یا خراب بود)
+_DEFAULT_KNOWN_EVENTS: tuple[str, ...] = (
     "message.received",
     "lead.saved",
     "error.occurred",
 )
 
-
-# ═══════════════════════════════════════════════════════════
-# fallback: نام هندلر → رویدادها
-# ═══════════════════════════════════════════════════════════
-# فقط اگه can_handle کار نکرد، از این نگاشت استفاده می‌شود.
-_FALLBACK_BY_NAME: dict[str, list[str]] = {
+_DEFAULT_FALLBACK_BY_NAME: dict[str, list[str]] = {
     "storage": ["message.received"],
     "admin": ["message.received"],
     "crm": ["lead.saved"],
     "log": ["error.occurred", "lead.saved"],
     "notify": ["lead.saved"],
     "scoring": ["message.received"],
-    # 🎯 افزودن هندلرهای احتمالی جدید:
     "telegram": ["message.received"],
     "whatsapp": ["message.received"],
     "instagram": ["message.received"],
@@ -68,22 +60,81 @@ _FALLBACK_BY_NAME: dict[str, list[str]] = {
 }
 
 
+def _get_events_data() -> dict:
+    """بارگذاری events.json — با fallback امن."""
+    return load_json("events")
+
+
+def _load_known_events() -> tuple[str, ...]:
+    """خواندن known از events.json — با sanitize."""
+    data = _get_events_data()
+    raw = data.get("known")
+
+    if not isinstance(raw, list) or not raw:
+        return _DEFAULT_KNOWN_EVENTS
+
+    out: list[str] = []
+    for x in raw:
+        s = str(x).strip()
+        if s:
+            out.append(s)
+
+    return tuple(out) if out else _DEFAULT_KNOWN_EVENTS
+
+
+def _load_fallback_by_name() -> dict[str, list[str]]:
+    """خواندن fallback_by_name از events.json — با sanitize."""
+    data = _get_events_data()
+    raw = data.get("fallback_by_name")
+
+    if not isinstance(raw, dict) or not raw:
+        return dict(_DEFAULT_FALLBACK_BY_NAME)
+
+    out: dict[str, list[str]] = {}
+    for keyword, events in raw.items():
+        k = str(keyword).strip().lower()
+        if not k:
+            continue
+
+        if isinstance(events, list):
+            evs = [
+                str(e).strip()
+                for e in events
+                if str(e).strip()
+            ]
+            if evs:
+                out[k] = evs
+
+    return out if out else dict(_DEFAULT_FALLBACK_BY_NAME)
+
+
 _LOG_PREVIEW_LEN = 80
 
 
+# ═══════════════════════════════════════════════════════════
+# AutoSubscriber
+# ═══════════════════════════════════════════════════════════
 class AutoSubscriber:
-    """ثبت خودکار هندلرها در EventBus — از can_handle() هر هندلر استفاده می‌کند."""
+    """ثبت خودکار هندلرها در EventBus — داده‌محور."""
 
     def __init__(self, event_bus, plugin_loader):
         self.event_bus = event_bus
         self.plugin_loader = plugin_loader
+
+        # 🎯 داده‌محور — بارگذاری از events.json
+        self._known_events: tuple[str, ...] = _load_known_events()
+        self._fallback_by_name: dict[str, list[str]] = (
+            _load_fallback_by_name()
+        )
+
         # ضدتکراری: نگه‌داری (handler_name, event_name)های ثبت‌شده
         self._subscribed: set[tuple[str, str]] = set()
 
         log_info(
             f"🔌 [SUBSCRIBE:init] AutoSubscriber ساخته شد | "
-            f"known_events={len(_KNOWN_EVENTS)} | "
-            f"events={list(_KNOWN_EVENTS)}"
+            f"known_events={len(self._known_events)} | "
+            f"fallback_names={len(self._fallback_by_name)} | "
+            f"events={list(self._known_events)}"
         )
 
     # ═══════════════════════════════════════════
@@ -112,7 +163,6 @@ class AutoSubscriber:
             return 0
 
         # ─── مرتب‌سازی بر اساس priority (بالاترین اول) ───
-        # 🎯 FIX: استفاده از handler.priority
         try:
             handlers = sorted(
                 handlers,
@@ -195,8 +245,8 @@ class AutoSubscriber:
         elapsed_ms = (time.monotonic() - t0) * 1000
         log_success(
             f"🏁 [SUBSCRIBE:register] کامل | "
-            f"subs={total_subs} errors={total_errors} dupes={skipped_dupe} | "
-            f"{elapsed_ms:.0f}ms"
+            f"subs={total_subs} errors={total_errors} "
+            f"dupes={skipped_dupe} | {elapsed_ms:.0f}ms"
         )
         return total_subs
 
@@ -205,7 +255,7 @@ class AutoSubscriber:
     # ═══════════════════════════════════════════
     @staticmethod
     def _get_priority_value(handler: Any) -> int:
-        """🎯 FIX: استخراج مقدار priority از handler.
+        """استخراج مقدار priority از handler.
 
         ترتیب اولویت: CRITICAL=0 < HIGH=10 < NORMAL=20 < LOW=30
         → هرچه کمتر، اول اجرا می‌شود.
@@ -225,7 +275,7 @@ class AutoSubscriber:
     # کشف رویدادها برای یک هندلر
     # ═══════════════════════════════════════════
     def _get_handler_events(self, handler: BaseHandler) -> list[str]:
-        """🎯 رویدادهایی که این هندلر به آن‌ها علاقه دارد.
+        """رویدادهایی که این هندلر به آن‌ها علاقه دارد.
 
         ترتیب اولویت:
           ۱) `handler.listens_to()` اگر تعریف شده باشد (رویدادهای پویا)
@@ -246,7 +296,9 @@ class AutoSubscriber:
                 if dynamic_events and isinstance(
                     dynamic_events, (list, tuple, set)
                 ):
-                    events_list = [str(e) for e in dynamic_events if e]
+                    events_list = [
+                        str(e) for e in dynamic_events if e
+                    ]
                     if events_list:
                         log_info(
                             f"🎯 [SUBSCRIBE:events:dynamic] {hname} | "
@@ -261,7 +313,7 @@ class AutoSubscriber:
 
         # ─── ۲) can_handle ───
         via_can_handle: list[str] = []
-        for event in _KNOWN_EVENTS:
+        for event in self._known_events:
             try:
                 if handler.can_handle(event):
                     via_can_handle.append(event)
@@ -280,7 +332,7 @@ class AutoSubscriber:
 
         # ─── ۳) fallback بر اساس نام ───
         hname_low = hname.lower()
-        for keyword, events in _FALLBACK_BY_NAME.items():
+        for keyword, events in self._fallback_by_name.items():
             if keyword in hname_low:
                 log_warning(
                     f"⚠️ [SUBSCRIBE:events:fallback] {hname} | "
@@ -324,4 +376,19 @@ class AutoSubscriber:
 
     def get_known_events(self) -> list[str]:
         """لیست رویدادهای شناخته‌شده — برای debug."""
-        return list(_KNOWN_EVENTS)
+        return list(self._known_events)
+
+    def get_fallback_names(self) -> list[str]:
+        """لیست نام‌های fallback — برای debug."""
+        return sorted(self._fallback_by_name.keys())
+
+    def get_stats(self) -> dict:
+        """خلاصهٔ وضعیت — برای debug."""
+        return {
+            "known_events": list(self._known_events),
+            "known_events_count": len(self._known_events),
+            "fallback_names": sorted(self._fallback_by_name.keys()),
+            "fallback_names_count": len(self._fallback_by_name),
+            "subscribed_count": len(self._subscribed),
+            "subscribed": sorted(self._subscribed),
+        }

@@ -123,7 +123,6 @@ _enforce_venv()
 # ═══════════════════════════════════════════
 from config import (
     BRAIN_CONFIG,
-    MAIN_CONFIG,
     MONITOR,
     PYCACHE_DIR,
 )

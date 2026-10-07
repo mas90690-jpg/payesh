@@ -6,34 +6,33 @@
 
 ⚠️ هیچ import از config یا logger در این فایل نیست.
 
-نسخهٔ ۲ (این نسخه):
-  - 🐛 FIX: `_PLATFORM_MAP` حالا `instagram` + اختصارات
-    (`tg`, `wa`, `li`, `insta`) دارد.
-  - 🐛 FIX: `platform_in` حالا با word-boundary چک می‌کند
-    (قبلاً substring بود → «وب» در «سرویس» match می‌شد).
-  - 🐛 FIX: `_VALUE_RE` حالا پشتیبانی از `«»`، `""`, `''`
-    و مقادیر تک‌کاراکتری.
-  - 🐛 FIX: `parse_command` حالا priority صریح دارد:
-    restart > help > feature_request > lead_details > has_keyword
-    > add_keyword > remove_keyword > keywords > health > report
-    > crm > explain_logs > logs > status > platform_status
-  - 🐛 FIX: `_SET_PARAM_RE` حالا value با quote را می‌فهمد.
-  - 🎯 `_KEYWORD_WORDS` شامل «کلیدواژه‌ها» (جمع).
-  - 🎯 `_LEAD_WORDS` شامل «سرنخ‌ها» (جمع).
-  - 🎯 `_PLATFORM_STATUS_WORDS` شامل «کار می‌کنه» (محاوره‌ای).
-  - 🎯 `__all__` export.
-  - 🎯 type hints صریح‌تر.
+نسخهٔ ۳ (این نسخه):
+  - 🎯 کلمات کلیدی و نگاشت پلتفرم‌ها از
+    `data/configs/commands.json` می‌آیند (تمرکز داده‌ها).
+  - 🎯 `_load_commands_from_data()` — با fallback امن.
+  - 🎯 `reload_commands()` — برای hot-reload.
+  - 🎯 `get_commands_source()` — file یا fallback.
+  - ✅ حفظ همهٔ رفتار نسخهٔ ۲.
+
+نسخهٔ ۲ (قبلی):
+  - 🐛 FIX: `_PLATFORM_MAP` حالا `instagram` + اختصارات دارد.
+  - 🐛 FIX: `platform_in` حالا با word-boundary چک می‌کند.
+  - 🐛 FIX: `_VALUE_RE` پشتیبانی از «» و "" و '' و تک‌کاراکتری.
+  - 🐛 FIX: `parse_command` priority صریح دارد.
+  - 🐛 FIX: `_SET_PARAM_RE` value با quote را می‌فهمد.
   - ✅ حفظ همهٔ رفتار نسخهٔ ۱.
 """
 from __future__ import annotations
 
 import re
 
+
 # ═══════════════════════════════════════════
-# نگاشت پلتفرم (فارسی/انگلیسی/اختصار → canonical)
+# 🆕 کلمات کلیدی + پلتفرم‌ها (از data)
 # ═══════════════════════════════════════════
-_PLATFORM_MAP: dict[str, str] = {
-    # ─── فارسی ───
+
+# ─── Fallback: نگاشت پلتفرم ───
+_FALLBACK_PLATFORM_MAP: dict[str, str] = {
     "ایتا": "eitaa",
     "ایتاوب": "eitaa",
     "بله": "bale",
@@ -49,7 +48,6 @@ _PLATFORM_MAP: dict[str, str] = {
     "اینستاگرام": "instagram",
     "اینستا": "instagram",
     "اینستگرام": "instagram",
-    # ─── انگلیسی (کامل) ───
     "eitaa": "eitaa",
     "bale": "bale",
     "rubika": "rubika",
@@ -58,7 +56,6 @@ _PLATFORM_MAP: dict[str, str] = {
     "linkedin": "linkedin",
     "web": "web",
     "instagram": "instagram",
-    # ─── انگلیسی (اختصار) ───
     "tg": "telegram",
     "wa": "whatsapp",
     "li": "linkedin",
@@ -66,17 +63,269 @@ _PLATFORM_MAP: dict[str, str] = {
     "ig": "instagram",
 }
 
+# ─── Fallback: کلمات کلیدی ───
+_FALLBACK_WORDS: dict[str, tuple[str, ...]] = {
+    "help": (
+        "help", "راهنما", "کمک", "دستورات", "منو",
+        "/help", "/راهنما",
+    ),
+    "restart": (
+        "restart", "ری‌استارت", "ری استارت", "ریستارت",
+        "راه‌اندازی مجدد", "راه اندازی مجدد", "/restart",
+    ),
+    "remove": (
+        "حذف", "remove", "پاک", "delete",
+        "بردار", "پاک کن",
+    ),
+    "add": (
+        "اضافه", "اضاف", "add", "insert",
+        "بیفزا", "بذار", "ثبت",
+    ),
+    "has": (
+        "دار", "هست", "has", "exist",
+        "داری", "دارد",
+    ),
+    "lead": (
+        "سرنخ", "سرنخ‌ها", "سرنخ ها",
+        "پایش", "lead", "leads",
+    ),
+    "lead_detail": (
+        "جزئیات", "اولین", "آخرین",
+        "detail", "first", "last",
+        "نشون", "نشان", "بگو",
+    ),
+    "health": (
+        "سلامت", "health",
+        "چک کامل", "تندرستی",
+        "همه پلتفرم", "وضعیت کامل",
+    ),
+    "want": (
+        "می‌خوام", "میخوام", "می‌خواهم", "میخواهم",
+        "کاش", "اضافه کن", "اضاف کن",
+    ),
+    "cap": (
+        "بتون", "بتونی", "قابلیت", "feature", "توانایی",
+    ),
+    "keyword": (
+        "کلیدواژه", "کلید واژه", "کلیدواژه‌ها",
+        "کلید واژه ها", "keyword", "keywords",
+    ),
+    "report": ("گزارش", "report", "reports"),
+    "crm": ("crm", "سی آر ام", "خروجی"),
+    "log": ("لاگ", "log", "logs"),
+    "log_explain": (
+        "چیه", "یعنی", "توضیح", "معنی",
+        "explain", "چرا", "دلیل",
+    ),
+    "status": (
+        "وضعیت", "آمار", "اوضاع", "حال",
+        "status", "stat",
+    ),
+    "platform_status": (
+        "کار", "کار می‌کنه", "کار میکنه",
+        "وصل", "وصل هست", "working", "status",
+        "?", "؟", "فعال", "فعاله",
+    ),
+}
+
+_COMMANDS_LOADED_FROM_FILE: bool = False
+
+
+def _validate_platforms(data: any) -> dict[str, str]:
+    """اعتبارسنجی + پاک‌سازی platform map."""
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, str] = {}
+    for k, v in data.items():
+        if (
+            isinstance(k, str) and k.strip()
+            and isinstance(v, str) and v.strip()
+        ):
+            out[k.strip()] = v.strip().lower()
+    return out
+
+
+def _validate_words(data: any) -> dict[str, tuple[str, ...]]:
+    """اعتبارسنجی + پاک‌سازی words."""
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, tuple[str, ...]] = {}
+    for k, v in data.items():
+        if (
+            isinstance(k, str) and k.strip()
+            and isinstance(v, list) and v
+        ):
+            items = tuple(
+                str(x).strip() for x in v
+                if isinstance(x, str) and x.strip()
+            )
+            if items:
+                out[k.strip()] = items
+    return out
+
+
+def _load_commands_from_data() -> tuple[
+    dict[str, str], dict[str, tuple[str, ...]]
+]:
+    """🎯 خواندن پلتفرم‌ها + کلمات کلیدی از data — با fallback امن.
+
+    Returns:
+        (platform_map, words_dict)
+    """
+    global _COMMANDS_LOADED_FROM_FILE
+
+    try:
+        from data.loader import load_json
+        data = load_json("commands", default={})
+
+        if not isinstance(data, dict):
+            _COMMANDS_LOADED_FROM_FILE = False
+            return dict(_FALLBACK_PLATFORM_MAP), dict(_FALLBACK_WORDS)
+
+        platforms = _validate_platforms(data.get("platforms"))
+        words = _validate_words(data.get("words"))
+
+        if not platforms or not words:
+            _COMMANDS_LOADED_FROM_FILE = False
+            return dict(_FALLBACK_PLATFORM_MAP), dict(_FALLBACK_WORDS)
+
+        _COMMANDS_LOADED_FROM_FILE = True
+        return platforms, words
+
+    except Exception:
+        _COMMANDS_LOADED_FROM_FILE = False
+        return dict(_FALLBACK_PLATFORM_MAP), dict(_FALLBACK_WORDS)
+
+
+# ─── لود اولیه ───
+_PLATFORM_MAP, _WORDS = _load_commands_from_data()
+
+
+# ─── کلمات کلیدی (پس از لود) ───
+_HELP_WORDS: tuple[str, ...] = _WORDS.get(
+    "help", _FALLBACK_WORDS["help"]
+)
+_RESTART_WORDS: tuple[str, ...] = _WORDS.get(
+    "restart", _FALLBACK_WORDS["restart"]
+)
+_REMOVE_WORDS: tuple[str, ...] = _WORDS.get(
+    "remove", _FALLBACK_WORDS["remove"]
+)
+_ADD_WORDS: tuple[str, ...] = _WORDS.get(
+    "add", _FALLBACK_WORDS["add"]
+)
+_HAS_WORDS: tuple[str, ...] = _WORDS.get(
+    "has", _FALLBACK_WORDS["has"]
+)
+_LEAD_WORDS: tuple[str, ...] = _WORDS.get(
+    "lead", _FALLBACK_WORDS["lead"]
+)
+_LEAD_DETAIL_WORDS: tuple[str, ...] = _WORDS.get(
+    "lead_detail", _FALLBACK_WORDS["lead_detail"]
+)
+_HEALTH_WORDS: tuple[str, ...] = _WORDS.get(
+    "health", _FALLBACK_WORDS["health"]
+)
+_WANT_WORDS: tuple[str, ...] = _WORDS.get(
+    "want", _FALLBACK_WORDS["want"]
+)
+_CAP_WORDS: tuple[str, ...] = _WORDS.get(
+    "cap", _FALLBACK_WORDS["cap"]
+)
+_KEYWORD_WORDS: tuple[str, ...] = _WORDS.get(
+    "keyword", _FALLBACK_WORDS["keyword"]
+)
+_REPORT_WORDS: tuple[str, ...] = _WORDS.get(
+    "report", _FALLBACK_WORDS["report"]
+)
+_CRM_WORDS: tuple[str, ...] = _WORDS.get(
+    "crm", _FALLBACK_WORDS["crm"]
+)
+_LOG_WORDS: tuple[str, ...] = _WORDS.get(
+    "log", _FALLBACK_WORDS["log"]
+)
+_LOG_EXPLAIN_WORDS: tuple[str, ...] = _WORDS.get(
+    "log_explain", _FALLBACK_WORDS["log_explain"]
+)
+_STATUS_WORDS: tuple[str, ...] = _WORDS.get(
+    "status", _FALLBACK_WORDS["status"]
+)
+_PLATFORM_STATUS_WORDS: tuple[str, ...] = _WORDS.get(
+    "platform_status", _FALLBACK_WORDS["platform_status"]
+)
+
+
+def reload_commands() -> None:
+    """🎯 hot-reload کلمات کلیدی + پلتفرم‌ها."""
+    global _PLATFORM_MAP, _WORDS
+    global _HELP_WORDS, _RESTART_WORDS, _REMOVE_WORDS
+    global _ADD_WORDS, _HAS_WORDS, _LEAD_WORDS
+    global _LEAD_DETAIL_WORDS, _HEALTH_WORDS
+    global _WANT_WORDS, _CAP_WORDS, _KEYWORD_WORDS
+    global _REPORT_WORDS, _CRM_WORDS, _LOG_WORDS
+    global _LOG_EXPLAIN_WORDS, _STATUS_WORDS
+    global _PLATFORM_STATUS_WORDS
+
+    try:
+        from data.loader import clear_cache
+        clear_cache()
+    except Exception:
+        pass
+
+    _PLATFORM_MAP, _WORDS = _load_commands_from_data()
+
+    _HELP_WORDS = _WORDS.get("help", _FALLBACK_WORDS["help"])
+    _RESTART_WORDS = _WORDS.get(
+        "restart", _FALLBACK_WORDS["restart"]
+    )
+    _REMOVE_WORDS = _WORDS.get(
+        "remove", _FALLBACK_WORDS["remove"]
+    )
+    _ADD_WORDS = _WORDS.get("add", _FALLBACK_WORDS["add"])
+    _HAS_WORDS = _WORDS.get("has", _FALLBACK_WORDS["has"])
+    _LEAD_WORDS = _WORDS.get("lead", _FALLBACK_WORDS["lead"])
+    _LEAD_DETAIL_WORDS = _WORDS.get(
+        "lead_detail", _FALLBACK_WORDS["lead_detail"]
+    )
+    _HEALTH_WORDS = _WORDS.get(
+        "health", _FALLBACK_WORDS["health"]
+    )
+    _WANT_WORDS = _WORDS.get("want", _FALLBACK_WORDS["want"])
+    _CAP_WORDS = _WORDS.get("cap", _FALLBACK_WORDS["cap"])
+    _KEYWORD_WORDS = _WORDS.get(
+        "keyword", _FALLBACK_WORDS["keyword"]
+    )
+    _REPORT_WORDS = _WORDS.get(
+        "report", _FALLBACK_WORDS["report"]
+    )
+    _CRM_WORDS = _WORDS.get("crm", _FALLBACK_WORDS["crm"])
+    _LOG_WORDS = _WORDS.get("log", _FALLBACK_WORDS["log"])
+    _LOG_EXPLAIN_WORDS = _WORDS.get(
+        "log_explain", _FALLBACK_WORDS["log_explain"]
+    )
+    _STATUS_WORDS = _WORDS.get(
+        "status", _FALLBACK_WORDS["status"]
+    )
+    _PLATFORM_STATUS_WORDS = _WORDS.get(
+        "platform_status", _FALLBACK_WORDS["platform_status"]
+    )
+
+
+def get_commands_source() -> str:
+    """🎯 منبع کلمات: file یا fallback."""
+    return (
+        "file" if _COMMANDS_LOADED_FROM_FILE
+        else "fallback"
+    )
+
 
 # ═══════════════════════════════════════════
 # Regex ها
 # ═══════════════════════════════════════════
-# مقدار داخل « » یا " " یا ' ' (شامل تک‌کاراکتری)
 _VALUE_RE = re.compile(
     r"[«\"']([^«»\"']*)[»\"']"
 )
 
-# set PARAM=VALUE یا set PARAM:VALUE
-# value می‌تواند با quote باشد یا بدون
 _SET_PARAM_RE = re.compile(
     r"([A-Z][A-Z0-9_]{2,})\s*[=:]\s*"
     r"(?:\"([^\"]+)\"|'([^']+)'|(\S+))"
@@ -84,105 +333,17 @@ _SET_PARAM_RE = re.compile(
 
 
 # ═══════════════════════════════════════════
-# لیست کلمات کلیدی
-# ═══════════════════════════════════════════
-_HELP_WORDS = (
-    "help", "راهنما", "کمک", "دستورات", "منو",
-    "/help", "/راهنما",
-)
-
-_RESTART_WORDS = (
-    "restart", "ری‌استارت", "ری استارت", "ریستارت",
-    "راه‌اندازی مجدد", "راه اندازی مجدد",
-    "/restart",
-)
-
-_REMOVE_WORDS = (
-    "حذف", "remove", "پاک", "delete",
-    "بردار", "پاک کن",
-)
-
-_ADD_WORDS = (
-    "اضافه", "اضاف", "add", "insert",
-    "بیفزا", "بذار", "ثبت",
-)
-
-_HAS_WORDS = (
-    "دار", "هست", "has", "exist",
-    "داری", "دارد",
-)
-
-_LEAD_WORDS = (
-    "سرنخ", "سرنخ‌ها", "سرنخ ها",
-    "پایش", "lead", "leads",
-)
-
-_LEAD_DETAIL_WORDS = (
-    "جزئیات", "اولین", "آخرین",
-    "detail", "first", "last",
-    "نشون", "نشان", "بگو",
-)
-
-_HEALTH_WORDS = (
-    "سلامت", "health",
-    "چک کامل", "تندرستی",
-    "همه پلتفرم", "وضعیت کامل",
-)
-
-_WANT_WORDS = (
-    "می‌خوام", "میخوام", "می‌خواهم", "میخواهم",
-    "کاش", "اضافه کن", "اضاف کن",
-)
-
-_CAP_WORDS = (
-    "بتون", "بتونی", "قابلیت", "feature", "توانایی",
-)
-
-_KEYWORD_WORDS = (
-    "کلیدواژه", "کلید واژه", "کلیدواژه‌ها", "کلید واژه ها",
-    "keyword", "keywords",
-)
-
-_REPORT_WORDS = ("گزارش", "report", "reports")
-
-_CRM_WORDS = ("crm", "سی آر ام", "خروجی")
-
-_LOG_WORDS = ("لاگ", "log", "logs")
-
-_LOG_EXPLAIN_WORDS = (
-    "چیه", "یعنی", "توضیح", "معنی",
-    "explain", "چرا", "دلیل",
-)
-
-_STATUS_WORDS = (
-    "وضعیت", "آمار", "اوضاع", "حال",
-    "status", "stat",
-)
-
-_PLATFORM_STATUS_WORDS = (
-    "کار", "کار می‌کنه", "کار میکنه",
-    "وصل", "وصل هست", "working", "status",
-    "?", "؟", "فعال", "فعاله",
-)
-
-
-# ═══════════════════════════════════════════
 # helpers
 # ═══════════════════════════════════════════
 def _has_word(text_low: str, word: str) -> bool:
-    """آیا `word` به‌عنوان کلمهٔ مستقل در متن هست؟
-
-    برای کلمات فارسی (که word-boundary استاندارد کار نمی‌کند)
-    از `in` استفاده می‌کنیم. برای کلمات ASCII از word-boundary.
-    """
+    """آیا `word` به‌عنوان کلمهٔ مستقل در متن هست؟"""
     if not text_low or not word:
         return False
 
     w = word.lower()
 
-    # ─── ASCII: word-boundary ───
+    # ─── ASCII کوتاه: word-boundary ───
     if w.isascii() and w.isalnum() and len(w) <= 4:
-        # کلمات کوتاه ASCII (tg, wa, ...) → مرز دقیق
         return bool(re.search(
             rf"(?<![A-Za-z0-9_]){re.escape(w)}(?![A-Za-z0-9_])",
             text_low,
@@ -192,8 +353,12 @@ def _has_word(text_low: str, word: str) -> bool:
     return w in text_low
 
 
-def _any_word(text_low: str, words: tuple[str, ...]) -> bool:
+def _any_word(
+    text_low: str, words: tuple[str, ...]
+) -> bool:
     """آیا هر یک از کلمات در متن هست؟"""
+    if not words:
+        return False
     return any(_has_word(text_low, w) for w in words)
 
 
@@ -201,14 +366,7 @@ def _any_word(text_low: str, words: tuple[str, ...]) -> bool:
 # توابع کمکی عمومی
 # ═══════════════════════════════════════════
 def extract_value(text: str) -> str | None:
-    """مقدار داخل « » یا " " یا ' ' را برمی‌گرداند.
-
-    Args:
-        text: پیام.
-
-    Returns:
-        مقدار (strip شده) یا None.
-    """
+    """مقدار داخل « » یا " " یا ' ' را برمی‌گرداند."""
     if not text:
         return None
     m = _VALUE_RE.search(text)
@@ -219,20 +377,10 @@ def extract_value(text: str) -> str | None:
 
 
 def platform_in(low: str) -> str | None:
-    """نام پلتفرم را در متن پیدا می‌کند (canonical).
-
-    اولویت: کلمات بلندتر اول (جلوگیری از match اشتباه).
-
-    Args:
-        low: متن lowercase شده.
-
-    Returns:
-        نام canonical (eitaa/bale/...) یا None.
-    """
-    if not low:
+    """نام پلتفرم را در متن پیدا می‌کند (canonical)."""
+    if not low or not _PLATFORM_MAP:
         return None
 
-    # ─── مرتب بر اساس طول (بلندتر = اولویت بالاتر) ───
     sorted_words = sorted(
         _PLATFORM_MAP.items(),
         key=lambda x: -len(x[0]),
@@ -250,43 +398,7 @@ def platform_in(low: str) -> str | None:
 def parse_command(
     text: str,
 ) -> tuple[str | None, str | None]:
-    """متن → (action, value). خالص.
-
-    ترتیب اولویت (بالا به پایین):
-      1. restart
-      2. help
-      3. feature_request
-      4. lead_details
-      5. has_keyword
-      6. add_keyword
-      7. remove_keyword
-      8. keywords (لیست)
-      9. health
-      10. report
-      11. crm
-      12. explain_logs
-      13. logs
-      14. status
-      15. platform_status
-
-    Args:
-        text: پیام کاربر.
-
-    Returns:
-        tuple[action, value]:
-          - action: نام دستور یا None
-          - value:  مقدار (معمولاً برای کلیدواژه/پلتفرم)
-
-    Examples:
-        >>> parse_command("سلام")
-        (None, None)
-        >>> parse_command("وضعیت")
-        ("status", None)
-        >>> parse_command("کلیدواژه «کود» را اضافه کن")
-        ("add_keyword", "کود")
-        >>> parse_command("وضعیت ایتا")
-        ("platform_status", "eitaa")
-    """
+    """متن → (action, value). خالص."""
     if not text:
         return None, None
 
@@ -316,10 +428,7 @@ def parse_command(
     ):
         which = (
             "first"
-            if (
-                "اولین" in low
-                or "first" in low
-            )
+            if ("اولین" in low or "first" in low)
             else "last"
         )
         return "lead_details", which
@@ -391,26 +500,7 @@ def parse_command(
 def parse_set_param(
     text: str,
 ) -> tuple[str | None, str | None]:
-    """پارسرِ `set PARAM=VALUE` → (NAME, value).
-
-    پشتیبانی از:
-      - set PARAM=VALUE
-      - set PARAM:VALUE
-      - set PARAM="quoted value"
-      - set PARAM='quoted value'
-
-    Args:
-        text: پیام کاربر.
-
-    Returns:
-        (NAME, value) یا (None, None).
-
-    Examples:
-        >>> parse_set_param("set BALE_POLL_SECONDS=120")
-        ("BALE_POLL_SECONDS", "120")
-        >>> parse_set_param("SET_PARAM: AI_PRIORITY=auto")
-        ("AI_PRIORITY", "auto")
-    """
+    """پارسرِ `set PARAM=VALUE` → (NAME, value)."""
     if not text:
         return None, None
 
@@ -419,8 +509,6 @@ def parse_set_param(
         return None, None
 
     name = m.group(1).upper()
-
-    # value از یکی از سه گروه (double-quoted, single-quoted, unquoted)
     value = (
         m.group(2)
         or m.group(3)
@@ -438,5 +526,7 @@ __all__ = [
     "platform_in",
     "parse_command",
     "parse_set_param",
+    "reload_commands",
+    "get_commands_source",
     "_PLATFORM_MAP",
 ]

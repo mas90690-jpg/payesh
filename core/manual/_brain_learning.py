@@ -28,9 +28,7 @@ import sys
 import time
 from collections.abc import Callable
 from datetime import datetime
-from typing import Any
 
-from core.adapters.formula_manager import get_formula_manager
 from core.kernel.logger import log_error, log_info, log_success, log_warning
 
 from core.manual._brain_core import (

@@ -104,7 +104,6 @@ class BaseHandler(ABC):
     @abstractmethod
     def handler_name(self) -> str:
         """نام قابلیت (برای لاگ و شناسایی)."""
-        pass
 
     @abstractmethod
     async def handle(self, event) -> Any:
@@ -116,7 +115,6 @@ class BaseHandler(ABC):
         Returns:
             Any: نتیجه پردازش (اختیاری).
         """
-        pass
 
     @abstractmethod
     def can_handle(self, event_name: str) -> bool:
@@ -128,7 +126,6 @@ class BaseHandler(ABC):
         Returns:
             bool: True اگر می‌تواند پردازش کند.
         """
-        pass
 
     # ═══════════════════════════════════════════
     # priority / enabled

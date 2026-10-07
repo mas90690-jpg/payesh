@@ -1,6 +1,13 @@
 """Brain — کلاس اصلی + singleton.
 
-نسخهٔ ۳ (این نسخه):
+نسخهٔ ۴ (این نسخه):
+  - 🎯 NEW: سه ابزار audit به `_TOOL_METHODS` اضافه شد:
+      * `audit_code`   → `_audit_code`
+      * `audit_file`   → `_audit_file`
+      * `fix_fstrings` → `_fix_fstrings`
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۳.
+
+نسخهٔ ۳ (قبلی):
   - 🎯 NEW: `append_knowledge` ابزار — افزودن به bot_knowledge.md
     (در `_TOOL_METHODS` ثبت شد).
   - ✅ حفظ همهٔ FIXهای نسخهٔ ۲.
@@ -33,7 +40,6 @@ from typing import Any
 from config import AI, AI_PRIORITY
 from core.brain.constants import (
     DEFAULT_MODEL,
-    LOG_PREVIEW_LEN,
     MAX_CONTEXT_TOKENS,
 )
 from core.brain.learning import (
@@ -58,7 +64,6 @@ from core.brain.mixin_system import SystemMixin
 from core.brain.utils import PersianBrainHandler
 from core.kernel.event_bus import EventBus
 from core.kernel.logger import (
-    log_error,
     log_info,
     log_success,
     log_warning,
@@ -111,6 +116,10 @@ _TOOL_METHODS: dict[str, str] = {
     "platform_status": "_platform_status",
     "change_poll_interval": "_change_poll_interval",
     "get_access_summary": "_get_access_summary",
+    # ─── 🎯 NEW: ابزارهای audit ───
+    "audit_code": "_audit_code",
+    "audit_file": "_audit_file",
+    "fix_fstrings": "_fix_fstrings",
 }
 
 
@@ -200,6 +209,22 @@ class Brain(
         # ─── semantic + learning ───
         self.semantic_search = ProjectSemanticSearch()
         self.learning_engine = LearningEngine(self)
+                # 🎯 بارگذاری درس‌های قبلی (Reflexion) از MemoryStore
+        self._lessons: list[str] = []
+        try:
+            from core.adapters.memory_store import MemoryStore
+            store = MemoryStore()
+            lessons = store.query(
+                category="reflexion",
+                query="خطاهای قبلی",
+                limit=5,
+            )
+            self._lessons = [l.get("value", "") for l in lessons]
+            log_info(
+                f"📚 [BRAIN:lessons] {len(self._lessons)} درس بارگذاری شد"
+            )
+        except Exception as e:
+            log_warning(f"⚠️ [BRAIN:lessons] {e}")
         self.planner = TaskPlanner(self)
         self.healer = SelfHealer(self)
         self.test_gen = TestGenerator(self)

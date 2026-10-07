@@ -31,7 +31,7 @@ from typing import Any
 
 # 🎯 P0: از config
 from config import ADMIN_IDS, PLATFORMS_ORDER  # noqa: F401
-from core.kernel.logger import log_info, log_success, log_warning
+from core.kernel.logger import log_info, log_warning
 
 # 🎯 P0: از data.paths
 from data import paths as data_paths

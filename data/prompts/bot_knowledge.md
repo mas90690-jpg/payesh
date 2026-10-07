@@ -105,7 +105,8 @@ CSV/JSON/XLSX — ۳ حالت: یک فایل همه‌پلتفرم، فایل ج
 
 **fallback**: اگر provider اول خطا داد، provider دوم امتحان می‌شود.
 
-## ابزارهای Brain (۴۲ عدد)
+## ابزارهای Brain (۴۵ عدد)
+
 
 ### فایل
 `read_file`, `write_file`, `edit_file`, `list_directory`, `delete_file`, `move_file`, `append_knowledge`
@@ -115,6 +116,7 @@ CSV/JSON/XLSX — ۳ حالت: یک فایل همه‌پلتفرم، فایل ج
 
 ### تحلیل کد
 `analyze_code`, `code_review`, `generate_tests`, `fix_bug`, `plan_task`
+`audit_code`, `audit_file`, `fix_fstrings`
 
 ### اجرا
 `execute_command`, `execute_python`, `run_tests`, `run_tests_coverage`, `analyze_security`

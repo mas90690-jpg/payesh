@@ -4,24 +4,9 @@
   1) SystemMonitor      → CPU/RAM/Disk/Network/Process + هشدار
   2) PerformanceMonitor → اندازه‌گیری زمان اجرای عملیات
 
-نسخهٔ ۵ (این نسخه):
-  - 🐛 FIX: `_METRICS_MAX`, `_ALERTS_MAX`, `_STATUS_EVERY_N_CYCLES`,
-    `_ALERT_COOLDOWN_SECONDS`, `_SLOW_OP_SECONDS`, `_LOG_PREVIEW_LEN`
-    حالا env-based.
-  - 🐛 FIX: `SystemMonitor.__init__` — `_alert_cooldowns` با lock.
-  - 🐛 FIX: `start_monitoring` حالا `_stop_event` دارد
-    (بیداری سریع در stop).
-  - 🐛 FIX: `check_alerts` حالا threshold را با `_safe_float`
-    می‌خواند (None-safe).
-  - 🐛 FIX: `_add_metric` حالا value را type-check می‌کند.
-  - 🐛 FIX: `show_slowest_operations` حالا با `.get()` امن.
-  - 🎯 `Alert.level` حالا validate می‌شود.
-  - 🎯 `SystemMonitor.get_stats()`, `__repr__`.
-  - 🎯 `PerformanceMonitor.reset_stats()`, `get_slowest()`,
-    `__repr__`.
-  - 🎯 `Metric.__repr__`, `Alert.__repr__`.
-  - 🎯 `__all__` export.
-  - ✅ حفظ همهٔ FIXهای نسخهٔ ۴.
+نسخهٔ ۶ (این نسخه):
+  - 🐛 FIX: حذف `HealthStatus` از `__all__` (کلاس تعریف‌نشده بود).
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۵.
 """
 from __future__ import annotations
 
@@ -920,5 +905,4 @@ __all__ = [
     "PerformanceMonitor",
     "Metric",
     "Alert",
-    "HealthStatus",  # ← برای سازگاری با importهای قدیمی
 ]

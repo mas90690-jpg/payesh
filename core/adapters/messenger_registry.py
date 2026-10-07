@@ -38,7 +38,6 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Protocol, runtime_checkable
 
 from core.kernel.logger import (
-    log_error,
     log_info,
     log_success,
     log_warning,

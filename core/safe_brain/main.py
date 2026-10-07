@@ -1,22 +1,24 @@
 """SafeBrain — گارد امن + کش + حافظه.
 
-نسخهٔ ۶ (این نسخه):
-  - 🐛 FIX: `api_key` حالا از `config.AI["deepseek_api_key"]` می‌آید
-    (نه `os.environ` مستقیم).
+نسخهٔ ۷ (این نسخه):
+  - 🎯 پیام‌های خطا حالا از `data/configs/errors.json` می‌آیند
+    (تمرکز داده‌ها) — با fallback امن.
+  - 🎯 `_err()` helper جدید برای خواندن پیام‌ها.
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۶ (سازگاری کامل عقب‌رو).
+
+نسخهٔ ۶ (قبلی):
+  - 🐛 FIX: `api_key` حالا از `config.AI["deepseek_api_key"]` می‌آید.
   - 🐛 FIX: `_env_float` / `_env_int` حالا `min_val`/`max_val` دارند.
-  - 🐛 FIX: `project_memory` و `global_memory` `max_entries` حالا
-    env-based (`SAFE_BRAIN_PROJECT_MEMORY`, `SAFE_BRAIN_GLOBAL_MEMORY`).
-  - 🐛 FIX: `_try_ai` حالا از API عمومی AIAssistant برای
-    تشخیص provider استفاده می‌کند (نه `_provider_order` private).
+  - 🐛 FIX: `project_memory` و `global_memory` `max_entries` حالا env-based.
+  - 🐛 FIX: `_try_ai` حالا از API عمومی AIAssistant استفاده می‌کند.
   - 🐛 FIX: `_try_ai` حالا `AI_CONFIG` را dict-check می‌کند.
-  - 🐛 FIX: `_log_request` حالا مسیر را از `data.paths` می‌آورد
-    (نه `STORAGE_DIR` مستقیم).
+  - 🐛 FIX: `_log_request` حالا مسیر را از `data.paths` می‌آورد.
   - 🎯 `close()` متد جدید — graceful shutdown با flush.
   - 🎯 `reset_stats()` و `reset_safe_brain()` برای تست.
   - 🎯 `get_stats()` کامل‌تر (uptime، brain_failed_ago_s).
   - 🎯 `__repr__` برای SafeBrain.
   - 🎯 `__all__` export.
-  - ✅ حفظ همهٔ FIXهای نسخهٔ ۵ (rate-limit DeepSeek، chat_with_status).
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۵.
 """
 from __future__ import annotations
 
@@ -62,7 +64,7 @@ from core.safe_brain.storage import SafeCache, SafeMemory
 
 
 # ═══════════════════════════════════════════
-# helpers
+# helpers (env)
 # ═══════════════════════════════════════════
 def _env_int(
     name: str, default: int,
@@ -96,6 +98,41 @@ def _env_float(
     if max_val is not None and v > max_val:
         return max_val
     return v
+
+
+# ═══════════════════════════════════════════
+# 🆕 پیام‌های خطا از data/configs/errors.json
+# ═══════════════════════════════════════════
+try:
+    from data.loader import load_json as _load_json_errors
+    _ERRORS_DATA = _load_json_errors("errors", default={}) or {}
+except Exception:
+    _ERRORS_DATA = {}
+
+_ERRS: dict[str, str] = (
+    _ERRORS_DATA.get("errors", {})
+    if isinstance(_ERRORS_DATA, dict)
+    else {}
+)
+
+
+def _err(key: str, default: str = "", **kw) -> str:
+    """🎯 خواندن پیام خطا از فایل — با fallback امن.
+
+    Args:
+        key: کلید پیام در errors.json.
+        default: اگه کلید نبود یا فایل نبود.
+        **kw: پارامترهای format (مثل kw=...).
+
+    Returns:
+        متن پیام آماده.
+    """
+    template = _ERRS.get(key) or default or f"[{key}]"
+    try:
+        return template.format(**kw) if kw else template
+    except (KeyError, IndexError, ValueError):
+        # اگه placeholder ناشناخته بود → متن خام
+        return template
 
 
 # ═══════════════════════════════════════════
@@ -149,7 +186,8 @@ _DELEGATE = _DelegateType()
 class SafeBrain:
     """مغز امن ربات — لایهٔ نازک روی Brain.
 
-    نسخهٔ ۶:
+    نسخهٔ ۷:
+      - پیام‌های خطا از `data/configs/errors.json`.
       - rate-limit DeepSeek در `_try_ai`.
       - `chat_with_status()` برای دقت پاسخ.
       - پاسخ fallback کش نمی‌شود.
@@ -409,7 +447,11 @@ class SafeBrain:
             log_warning(
                 f"⛔ [SAFEBRAIN:process] مسدود | {reason}"
             )
-            return f"⛔ درخواست مسدود شد: {reason}"
+            return _err(
+                "blocked_security",
+                f"⛔ درخواست مسدود شد: {reason}",
+                reason=reason,
+            )
 
         # ─── ۲) کش ───
         cached = self.cache.get(text)
@@ -527,7 +569,11 @@ class SafeBrain:
         log_warning(
             f"⛔ [SAFEBRAIN:process] اکشن غیرمجاز: {action}"
         )
-        return f"⛔ اکشن '{action}' غیرمجاز است."
+        return _err(
+            "not_allowed_action",
+            f"⛔ اکشن '{action}' غیرمجاز است.",
+            action=action,
+        )
 
     async def _try_ai(
         self, text: str, t_all: float
@@ -737,39 +783,52 @@ class SafeBrain:
     @staticmethod
     def _add_keyword(value: str) -> str:
         if not value:
-            return "کلیدواژه را داخل « » بنویس."
+            return _err(
+                "empty_keyword",
+                "کلیدواژه را داخل « » بنویس.",
+            )
         kw = str(value).strip()
         current = _read_custom_kw_dict()
         if kw in current:
             log_info(
                 f"ℹ️ [SAFEBRAIN:add_kw] «{kw}» از قبل هست"
             )
-            return f"«{kw}» از قبل هست."
+            return _err(
+                "keyword_exists",
+                f"«{kw}» از قبل هست.",
+                kw=kw,
+            )
         current[kw] = "T1"
         if _write_custom_kw_dict(current):
             log_success(
                 f"✅ [SAFEBRAIN:add_kw] «{kw}» اضافه شد "
                 f"| total={len(current)}"
             )
-            return (
+            return _err(
+                "keyword_added",
                 f"✅ «{kw}» اضافه شد "
-                f"(چند ثانیهٔ دیگر خودکار فعال می‌شود)."
+                f"(چند ثانیهٔ دیگر خودکار فعال می‌شود).",
+                kw=kw,
             )
-        return "❌ ذخیره ناموفق."
+        return _err("save_failed", "❌ ذخیره ناموفق.")
 
     @staticmethod
     def _remove_keyword(value: str) -> str:
         if not value:
-            return "کدام کلیدواژه؟ داخل « » بنویس."
+            return _err(
+                "remove_keyword_hint",
+                "کدام کلیدواژه؟ داخل « » بنویس.",
+            )
         kw = str(value).strip()
         current = _read_custom_kw_dict()
         if kw not in current:
             log_info(
                 f"ℹ️ [SAFEBRAIN:rm_kw] «{kw}» نبود"
             )
-            return (
-                f"«{kw}» در لیست کلیدواژه‌های سفارشی "
-                f"نیست."
+            return _err(
+                "keyword_not_found",
+                f"«{kw}» در لیست کلیدواژه‌های سفارشی نیست.",
+                kw=kw,
             )
         current.pop(kw, None)
         if _write_custom_kw_dict(current):
@@ -777,8 +836,12 @@ class SafeBrain:
                 f"🗑️ [SAFEBRAIN:rm_kw] «{kw}» حذف شد "
                 f"| remaining={len(current)}"
             )
-            return f"🗑️ «{kw}» حذف شد."
-        return "❌ ذخیره ناموفق."
+            return _err(
+                "keyword_removed",
+                f"🗑️ «{kw}» حذف شد.",
+                kw=kw,
+            )
+        return _err("save_failed", "❌ ذخیره ناموفق.")
 
     @staticmethod
     def _log_request(text: str) -> str:
@@ -811,13 +874,20 @@ class SafeBrain:
                 f"📝 [SAFEBRAIN:request] ثبت شد | "
                 f"len={len(text)}"
             )
-            return "📝 درخواست قابلیت جدید ثبت شد."
+            return _err(
+                "request_saved",
+                "📝 درخواست قابلیت جدید ثبت شد.",
+            )
         except Exception as e:
             log_error(
                 f"❌ [SAFEBRAIN:request] "
                 f"{type(e).__name__}: {e}"
             )
-            return f"❌ خطا در ثبت: {e}"
+            return _err(
+                "request_save_failed",
+                f"❌ خطا در ثبت: {e}",
+                err=e,
+            )
 
     def _fallback_response(self, text: str = "") -> str:
         """پاسخ fallback — با hint هوشمند."""
@@ -848,16 +918,17 @@ class SafeBrain:
             ):
                 hint = "\n💡 «لاگ» → آخرین خطاها"
 
-        return (
+        base = _err(
+            "fallback_ai_offline",
             "🤖 WinDoctor:\n"
             "هوش مصنوعی در دسترس نیست. از دستورات "
             "مستقیم استفاده کنید:\n"
             "• «وضعیت» → آمار\n"
             "• «راهنما» → دستورات\n"
             "• «کلیدواژه‌ها» → لیست\n"
-            "• «سلامت» → بررسی سیستم"
-            + hint
+            "• «سلامت» → بررسی سیستم",
         )
+        return base + hint
 
     # ═══════════════════════════════════════════
     # flush / close

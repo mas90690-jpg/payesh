@@ -501,12 +501,10 @@ class EitaaCollector(BaseCollector):
         ]
 
         messages = []
-        used_selector = None
         for sel in msg_selectors:
             try:
                 messages = await page.query_selector_all(sel)
                 if messages:
-                    used_selector = sel
                     log_info(
                         f"✅ پیام‌ها با انتخابگر {sel} پیدا شدند "
                         f"({len(messages)} پیام)"

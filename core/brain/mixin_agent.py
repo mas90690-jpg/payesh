@@ -1,19 +1,22 @@
 """Agent loop — init_client, agent, tool execution, admin commands.
 
-نسخهٔ ۴ (این نسخه):
+نسخهٔ ۵ (این نسخه):
+  - 🎯 NEW: `_build_system_prompt` حالا از `config.get_ai_system_prompt`
+    استفاده می‌کند (شخصیت متخصص پایش کد).
+  - 🎯 FIX: `_build_system_prompt` حالا mode های audit/fix را می‌شناسد.
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۴.
+
+نسخهٔ ۴ (قبلی):
   - 🐛 FIX مهم: `_init_client` حالا در حالت `auto` اول از
     `config.AI["deepseek_api_key"]` می‌خواند (نه env مستقیم).
-    این تضمین می‌کند که حتی اگر `api_key` به constructor پاس
-    داده نشود، client با کلید config ساخته می‌شود.
   - 🐛 FIX: `_init_client` حالا `config.AI["model"]` را هم
     می‌خواند (قبلاً فقط از env).
   - 🐛 FIX: `_delegate_keyword` حالا از `data.paths.DB_FILE`
-    استفاده می‌کند (قبلاً hardcode `storage/database/messages.db`).
-  - 🐛 FIX: `_THINK_TIMEOUT_S` جدا از `_API_TIMEOUT_S` (کوتاه‌تر
-    برای think که معمولاً سریع‌تر است).
-  - 🐛 FIX: `_QUICK_COMMANDS` کامل‌تر (restart، logs، سلامت).
-  - 🎯 لاگ‌های دقیق‌تر در `_init_client` (source کلید).
-  - 🎯 `get_client_stats()` متد جدید برای debug.
+    استفاده می‌کند.
+  - 🐛 FIX: `_THINK_TIMEOUT_S` جدا از `_API_TIMEOUT_S`.
+  - 🐛 FIX: `_QUICK_COMMANDS` کامل‌تر.
+  - 🎯 لاگ‌های دقیق‌تر در `_init_client`.
+  - 🎯 `get_client_stats()` متد جدید.
   - ✅ حفظ همهٔ FIXهای نسخهٔ ۳.
 """
 from __future__ import annotations
@@ -589,17 +592,51 @@ class AgentMixin:
         return self.model
 
     def _build_system_prompt(self, mode: str) -> str:
-        """ساخت system prompt بر اساس mode."""
-        prompts = {
-            "code": (
-                "You are a SENIOR SOFTWARE ENGINEER. Write "
-                "PRODUCTION-READY code."
-            ),
-            "chat": "You are a FRIENDLY AI ASSISTANT.",
-            "analyze": "You are a CODE ANALYST EXPERT.",
-            "precise": "You are a world-class software engineer.",
-        }
-        return prompts.get(mode, prompts["precise"])
+        """🎯 ساخت system prompt بر اساس mode — از config.
+
+        این متد از `config.get_ai_system_prompt(mode)` استفاده می‌کند
+        که شخصیت متخصص پایش کد را برمی‌گرداند.
+
+        Args:
+            mode: حالت پردازش (audit, fix, code, chat, analyze, precise, ...).
+
+        Returns:
+            system prompt کامل.
+        """
+        try:
+            from config import get_ai_system_prompt
+            prompt = get_ai_system_prompt(mode)
+            if prompt:
+                # 🎯 تزریق درس‌های قبلی (Reflexion)
+                lessons = getattr(self, "_lessons", [])
+                if lessons:
+                    prompt += "\n\n# درس‌های قبلی (از اشتباهات گذشته):\n"
+                    for lesson in lessons[:3]:
+                        prompt += f"- {lesson[:200]}\n"
+                return prompt
+        except ImportError as e:
+            log_warning(
+                f"⚠️ [BRAIN:prompt] config import | "
+                f"{type(e).__name__}: {e} — fallback"
+            )
+        except Exception as e:
+            log_warning(
+                f"⚠️ [BRAIN:prompt] get_ai_system_prompt | "
+                f"{type(e).__name__}: {e} — fallback"
+            )
+
+        # ─── fallback امن ───
+        fallback = (
+            "You are a world-class software engineer. "
+            "Always respond in Persian (فارسی). "
+            "Be concise, precise, and helpful."
+        )
+        lessons = getattr(self, "_lessons", [])
+        if lessons:
+            fallback += "\n\n# درس‌های قبلی:\n"
+            for lesson in lessons[:3]:
+                fallback += f"- {lesson[:200]}\n"
+        return fallback
 
     # ═══════════════════════════════════════════
     # Agent loop
@@ -893,6 +930,18 @@ class AgentMixin:
                 f"❌ [BRAIN:agent] {type(e).__name__}: {e} | "
                 f"step={step}"
             )
+            # 🎯 ذخیره در Reflexion (MemoryStore)
+            try:
+                from core.adapters.memory_store import MemoryStore
+                store = MemoryStore()
+                store.add(
+                    category="reflexion",
+                    key=f"error:{type(e).__name__}",
+                    value=f"تسک: {task[:200]} | خطا: {e}",
+                    importance=0.8,
+                )
+            except Exception:
+                pass
             return f"❌ خطای غیرمنتظره: {e}"
         finally:
             self.busy = False
@@ -974,7 +1023,7 @@ class AgentMixin:
             return ""
 
         self.stats["commands_processed"] += 1
-        t0 = time.monotonic()
+        time.monotonic()
         log_info(
             f"👤 [BRAIN:cmd] "
             f"#{self.stats['commands_processed']} | "

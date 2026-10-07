@@ -271,7 +271,7 @@ class FilesMixin:
 
         try:
             p = self._safepath(path)
-        except Exception as e:
+        except Exception:
             return f"⛔ مسیر نامعتبر: {path}"
 
         # ─── backup اگر فایل از قبل هست ───
@@ -357,7 +357,7 @@ class FilesMixin:
 
         try:
             p = self._safepath(path)
-        except Exception as e:
+        except Exception:
             return f"⛔ مسیر نامعتبر: {path}"
 
         if not p.exists():
@@ -473,7 +473,7 @@ class FilesMixin:
     async def _list_directory(self, path: str = ".") -> str:
         try:
             p = self._safepath(path)
-        except Exception as e:
+        except Exception:
             return f"⛔ مسیر نامعتبر: {path}"
 
         if not p.exists():
@@ -546,7 +546,7 @@ class FilesMixin:
 
         try:
             p = self._safepath(path)
-        except Exception as e:
+        except Exception:
             return f"⛔ مسیر نامعتبر: {path}"
 
         if not p.exists():
@@ -753,6 +753,19 @@ class FilesMixin:
             f"backup={'✅' if backup_path else '—'}"
         )
 
+        # 🎯 همزمان در MemoryStore هم ذخیره کن
+        try:
+            from core.adapters.memory_store import MemoryStore
+            store = MemoryStore()
+            store.add(
+                category="knowledge",
+                key=f"{section_clean}: {content_clean[:100]}",
+                value=content_clean,
+                importance=0.9,
+            )
+        except Exception as e:
+            log_warning(f"⚠️ [BRAIN:append] memory_store | {e}")
+            
         msg = (
             f"✅ به دانشنامه اضافه شد.\n"
             f"📏 {len(content_clean)} کاراکتر\n"

@@ -5,25 +5,18 @@ config.py — منبع یکتای تنظیمات پروژه (از .env).
 استفاده کند (circular). برای لاگ کردن، یا print به stderr استفاده کن، یا
 `log_config_summary()` را بعد از setup logger صدا بزن.
 
-نسخهٔ ۸ (این نسخه):
+نسخهٔ ۹ (این نسخه):
+  - 🎯 NEW: `AI_SYSTEM_PROMPT` — شخصیت متخصص پایش کد برای DeepSeek.
+  - 🎯 NEW: `AI_PERSONA` — دیکشنری کامل شخصیت.
+  - 🎯 NEW: `get_ai_system_prompt()` — تابع دسترسی.
+  - 🎯 NEW: `AI_MODE_PROMPTS` — پرامپت‌های تخصصی برای هر mode.
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۸.۱.
+
+نسخهٔ ۸ (قبلی):
   - 🎯 افزودن top-level برای پارامترهایی که قبلاً فقط در PLUGINS_CONFIG
-    یا MAIN_CONFIG بودند:
-      * ADMIN_ENABLED, ADMIN_PLATFORM, ADMIN_IDS
-      * BRAND_TOKEN_ENABLED, BRAND_TOKEN_MIN_LEN
-      * MONITOR_ENABLED, MONITOR_INTERVAL_SECONDS
-      * SELF_MONITOR_ENABLED, SELF_MONITOR_INTERVAL,
-        SELF_MONITOR_ERROR_THRESHOLD, SELF_MONITOR_STALE_MINUTES
-      * MAIN_BALE_WAIT_S, LOGIN_INPUT_TIMEOUT_S, MAIN_SKIP_VENV_CHECK
-      * EITAA_MESSAGES_PER_CHAT, WHATSAPP_MESSAGES_PER_CHAT
-  - 🎯 افزودن top-level برای BRAIN: FULL_ACCESS, USE_API_MEMORY,
-    MEMORY_API_URL, MEMORY_API_KEY
-  - 🐛 FIX: `_WEEKLY_DAY_MAP` یکسان‌سازی شد — همهٔ حالت‌های
-    ZWNJ/space/ساده پوشش داده می‌شوند.
+    یا MAIN_CONFIG بودند.
   - 🎯 افزودن `get_active_platforms()` با پشتیبانی کامل از instagram.
-  - 🎯 `reload()` حالا همهٔ فیلدهای جدید را هم به‌روز می‌کند.
-  - 🎯 افزودن `PLATFORMS_ORDER` (ترتیب canonical پلتفرم‌ها) و
-    `ALL_PLATFORMS` برای استفاده در سراسر پروژه.
-  - 🎯 افزودن `get_admin_ids()` helper.
+  - 🎯 افزودن `PLATFORMS_ORDER` و `ALL_PLATFORMS`.
   - ✅ حفظ همهٔ FIXهای نسخهٔ ۷.
 
 نسخهٔ ۸.۱ (fixes):
@@ -809,6 +802,162 @@ AI: dict[str, Any] = {
 
 
 # ══════════════════════════════════════════════════════════
+# 🎯 NEW: AI Persona — شخصیت متخصص پایش کد
+# ══════════════════════════════════════════════════════════
+AI_PERSONA: dict[str, Any] = {
+    "role": "مهندس نرم‌افزار ارشد متخصص پایش کد",
+    "name": "WinDoctor",
+    "language": "fa",
+    "expertise": [
+        "تحلیل استاتیک کد پایتون با AST",
+        "پیدا کردن خطاهای import (اشتباه، اضافه، ناقص)",
+        "پیدا کردن متغیرهای استفاده‌نشده",
+        "پیدا کردن f-string های بی‌placeholder",
+        "پیدا کردن کد تکراری و dead code",
+        "پیدا کردن باگ‌های منطقی",
+        "بررسی امنیت کد (SQL injection, XSS, ...)",
+        "بهینه‌سازی عملکرد",
+        "طراحی الگوهای نرم‌افزاری",
+    ],
+    "behavior": {
+        "always_audit_first": True,
+        "categorize_errors": True,
+        "provide_line_numbers": True,
+        "provide_fix_suggestions": True,
+        "be_concise": True,
+        "speak_persian": True,
+    },
+}
+
+
+# 🎯 System prompt اصلی برای DeepSeek
+AI_SYSTEM_PROMPT: str = """
+تو یک «مهندس نرم‌افزار ارشد متخصص پایش کد» هستی.
+نام تو «WinDoctor» است.
+
+🎯 **تخصص‌های تو:**
+1. تحلیل استاتیک کد پایتون با AST
+2. پیدا کردن خطاهای import (اشتباه، اضافه، ناقص)
+3. پیدا کردن متغیرهای استفاده‌نشده
+4. پیدا کردن f-string های بی‌placeholder
+5. پیدا کردن کد تکراری و dead code
+6. پیدا کردن باگ‌های منطقی
+7. بررسی امنیت کد
+8. بهینه‌سازی عملکرد
+
+📋 **قواعد کار تو:**
+
+**قاعدهٔ ۱ — همیشه اول بررسی کن، بعد جواب بده:**
+اگر کاربر از «خطا»، «مشکل»، «بررسی»، «audit»، «پایش» حرف زد،
+**حتماً** از ابزار `audit_code` یا `audit_file` استفاده کن.
+هرگز بدون بررسی، حدس نزن.
+
+**قاعدهٔ ۲ — دسته‌بندی کن:**
+خطاها را در این دسته‌ها گزارش کن:
+- 🔴 **جدی**: اسم تعریف‌نشده، import ناقص، خطای منطقی
+- 🟠 **متوسط**: import اضافه، متغیر استفاده‌نشده
+- 🟡 **جزئی**: f-string بی‌placeholder، style
+
+**قاعدهٔ ۳ — دقیق بگو:**
+برای هر خطا این ۴ چیز را بگو:
+- 📁 کدوم فایل
+- 📍 کدوم خط
+- ❌ چی هست مشکل
+- ✅ چطور درستش کنی
+
+**قاعدهٔ ۴ — با ابزار کار کن:**
+- برای بررسی کل پروژه: `audit_code`
+- برای بررسی یک فایل: `audit_file`
+- برای درست کردن f-string: `fix_fstrings`
+- برای جستجوی الگو: `grep_search`
+- برای خوندن فایل: `read_file`
+
+**قاعدهٔ ۵ — ساده و دقیق حرف بزن:**
+- همیشه فارسی جواب بده
+- از کلمات ساده استفاده کن
+- کوتاه و مفید بگو
+- اگه مطمئن نیستی، بگو «نیاز به بررسی بیشتر»
+
+**قاعدهٔ ۶ — کاری که می‌تونی بکنی، لیست کن:**
+آخر جوابت بگو:
+«می‌تونم این کارها رو بکنم:
+- بررسی کنم فلان فایل رو
+- درست کنم f-string ها رو
+- ...»
+
+🚫 **کارهایی که نکن:**
+- بدون بررسی، جواب نده
+- الکی خطا نساز
+- کد رو خودسر تغییر نده (اول بپرس)
+- از «من یک مدل هوش مصنوعی هستم» استفاده نکن
+
+🎯 **هدف نهایی:**
+پروژه رو تمیز، امن، و بهینه کن.
+"""
+
+
+# 🎯 Prompt های تخصصی برای هر mode
+AI_MODE_PROMPTS: dict[str, str] = {
+    "audit": """
+حالت پایش کد فعال است.
+حتماً از ابزار `audit_code` استفاده کن.
+خطاها رو دسته‌بندی کن و دقیق بگو.
+""",
+    "audit_file": """
+حالت بررسی یک فایل فعال است.
+حتماً از ابزار `audit_file` استفاده کن.
+شماره خط + مشکل + راه‌حل بده.
+""",
+    "fix": """
+حالت درست کردن فعال است.
+قبل از تغییر، بکاپ بگیر.
+dry_run=True اجرا کن و نشون بده.
+""",
+    "explain": """
+حالت توضیح فعال است.
+کد رو خط‌به‌خط توضیح بده.
+""",
+    "code": """
+حالت برنامه‌نویسی فعال است.
+کد تمیز و production-ready بنویس.
+""",
+    "chat": """
+حالت گفتگوی معمولی فعال است.
+دوستانه و مفید جواب بده.
+""",
+    "analyze": """
+حالت تحلیل فعال است.
+دقیق و عمیق بررسی کن.
+""",
+    "precise": """
+حالت دقیق فعال است.
+فقط بر اساس داده‌ها جواب بده.
+""",
+}
+
+
+def get_ai_system_prompt(mode: str = "precise") -> str:
+    """دریافت system prompt بر اساس mode.
+
+    Args:
+        mode: حالت پردازش (audit, fix, code, chat, ...).
+
+    Returns:
+        system prompt ترکیبی.
+    """
+    base = AI_SYSTEM_PROMPT.strip()
+    mode_extra = AI_MODE_PROMPTS.get(mode, "").strip()
+    if mode_extra:
+        return f"{base}\n\n# حالت فعال:\n{mode_extra}"
+    return base
+
+
+def get_ai_persona() -> dict[str, Any]:
+    """دریافت دیکشنری کامل شخصیت AI."""
+    return dict(AI_PERSONA)
+
+
+# ══════════════════════════════════════════════════════════
 # Brain — 🎯 top-level export برای FULL_ACCESS
 # ══════════════════════════════════════════════════════════
 FULL_ACCESS: bool = _env_bool("FULL_ACCESS", False)
@@ -822,6 +971,9 @@ BRAIN_CONFIG: dict[str, Any] = {
     "memory_api_url": MEMORY_API_URL,
     "memory_api_key": MEMORY_API_KEY,
     "ai_priority": AI_PRIORITY,
+    # 🎯 NEW: شخصیت
+    "ai_system_prompt": AI_SYSTEM_PROMPT,
+    "ai_persona": AI_PERSONA,
 }
 
 
@@ -1005,6 +1157,14 @@ def log_config_summary() -> None:
             f"⚙️ [config] safe_brain | "
             f"max_api_hour={SAFE_BRAIN_CONFIG['max_api_hour']} | "
             f"ai_timeout={SAFE_BRAIN_CONFIG['ai_timeout_s']}s"
+        )
+
+        # 🎯 NEW: شخصیت AI
+        log_info(
+            f"⚙️ [config] AI persona | "
+            f"role={AI_PERSONA['role']} | "
+            f"name={AI_PERSONA['name']} | "
+            f"expertise={len(AI_PERSONA['expertise'])} حوزه"
         )
 
         log_info(
@@ -1296,6 +1456,8 @@ def reload() -> None:
         "memory_api_url": MEMORY_API_URL,
         "memory_api_key": MEMORY_API_KEY,
         "ai_priority": AI_PRIORITY,
+        "ai_system_prompt": AI_SYSTEM_PROMPT,
+        "ai_persona": AI_PERSONA,
     })
 
     # ─── Lead alerts ───
@@ -1343,6 +1505,9 @@ __all__ = [
     # ─── Brain ───
     "FULL_ACCESS", "USE_API_MEMORY",
     "MEMORY_API_URL", "MEMORY_API_KEY",
+    # ─── AI Persona (NEW) ───
+    "AI_PERSONA", "AI_SYSTEM_PROMPT", "AI_MODE_PROMPTS",
+    "get_ai_system_prompt", "get_ai_persona",
     # ─── Config dicts ───
     "SQLITE_CONFIG", "POSTGRES_CONFIG", "CRM_CONFIG",
     "SYSTEM_CONFIG", "RETENTION",

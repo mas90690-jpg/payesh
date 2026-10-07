@@ -23,20 +23,16 @@ from __future__ import annotations
 
 import json
 import re
-import time
 from datetime import datetime, timedelta
-from typing import Any
 
-from core.kernel.logger import log_error, log_info, log_success, log_warning
+from core.kernel.logger import log_info, log_success, log_warning
 
 from core.manual._brain_core import (
     CUSTOM_KW_FILE,
     LOG_FILE,
-    LOG_PREVIEW_LEN,
     LOG_TAIL_BYTES,
     MAX_KW_LEN,
     MIN_KW_LEN,
-    SLOW_ACTION_MS,
     VALID_TIERS,
     tail_lines,
 )

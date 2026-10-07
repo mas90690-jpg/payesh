@@ -1,6 +1,6 @@
 {
-  "version": "4.1.0",
-  "description": "کنترل دسترسی هوش — v4.1.0: افزودن append_knowledge (فقط اضافه به دانشنامه).",
+  "version": "4.3.0",
+  "description": "کنترل دسترسی هوش — v4.3.0: هوش می‌تواند همه چیز را ببیند (فقط خواندن) اما فقط در محدودهٔ write مجاز است بنویسد.",
 
   "read": {
     "allow": [
@@ -16,6 +16,14 @@
       "storage/reports/**",
       "storage/brain/**",
       "storage/safe_brain/**",
+      "data/configs/access_control.json",
+      "storage/sessions/**",
+      "storage/database/*.db",
+      "storage/database/*.db-wal",
+      "storage/database/*.db-shm",
+      "storage/database/*.db-journal",
+      "storage/backups/**",
+      "storage/media/**",
       "*.py",
       "*.md",
       "*.txt",
@@ -36,15 +44,7 @@
     ],
     "deny": [
       ".env",
-      ".env.*",
-      "data/configs/access_control.json",
-      "storage/sessions/**",
-      "storage/database/*.db",
-      "storage/database/*.db-wal",
-      "storage/database/*.db-shm",
-      "storage/database/*.db-journal",
-      "storage/backups/**",
-      "storage/media/**"
+      ".env.*"
     ]
   },
 
@@ -147,25 +147,6 @@
     ],
     "status_check": true,
     "allow_restart_collector": true
-  },
-
-  "commands": {
-    "allow": [
-      "git status", "git diff", "git log", "git branch",
-      "git show", "git rev-parse",
-      "python -m pytest", "pytest",
-      "pip list", "pip show",
-      "dir", "ls", "type", "cat", "head", "tail",
-      "systeminfo", "tasklist", "netstat", "ping"
-    ],
-    "deny": [
-      "python -c", "python -m http",
-      "rm -rf", "rmdir /s", "del /f /s",
-      "format", "shutdown", "reboot", "mkfs",
-      "dd if=", "chmod 777", "sudo", "su ",
-      "curl ", "wget ", "nc ",
-      ":(){ :|:& };:"
-    ]
   },
 
   "execute": {

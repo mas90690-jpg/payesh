@@ -1,13 +1,16 @@
 """گزارش‌ساز خودکار — روزانه، هفتگی، ماهانه، مدیریتی، تخصصی،
 جستجوی سرنخ.
 
-نسخهٔ ۹ (این نسخه):
+نسخهٔ ۱۰ (این نسخه):
+  - 🎯 تیترهای گزارش حالا از `data/configs/report_headers.json`
+    می‌آیند (تمرکز داده‌ها).
+  - 🎯 `_hdr()` helper جدید با fallback امن.
+  - 🎯 `REPORT_HEADERS` + `reload_report_headers()` + `get_headers_source()`.
+  - 🎯 `get_stats()` حالا `headers_count` و `headers_source` دارد.
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۹ (SEC FIX SQL).
+
+نسخهٔ ۹ (قبلی):
   - 🔒 SEC FIX: حذف f-string از SQL query ها.
-    * `where` فقط از placeholder های ثابت + `?` ساخته می‌شود
-    * مقادیر از طریق `params` به SQLite می‌روند (parameter binding)
-    * SQL نهایی با `+` ساخته می‌شود (نه f-string)
-    * متدهای fix شده: `generate_weekly_report`,
-      `generate_executive_report`, `_get_leads_by_date`
   - ✅ حفظ همهٔ FIXهای نسخهٔ ۸.
 """
 from __future__ import annotations
@@ -98,6 +101,127 @@ for _d in (REPORTS_DIR, os.path.dirname(DB_PATH),
 
 
 # ═══════════════════════════════════════════
+# 🆕 تیترهای گزارش (از data/configs/report_headers.json)
+# ═══════════════════════════════════════════
+
+# ─── Fallback: اگه فایل نبود یا خراب بود ───
+_FALLBACK_REPORT_HEADERS: dict[str, str] = {
+    "daily_title": "📊 گزارش روزانه سرنخ‌های فروش — {date}",
+    "weekly_title": "📊 گزارش هفتگی سرنخ‌های فروش",
+    "monthly_title": "📊 گزارش ماهانه سرنخ‌های فروش",
+    "executive_title": "📊 گزارش مدیریتی (مدیرعامل)",
+    "detail_title": "📄 گزارش تخصصی - جزئیات سرنخ‌ها",
+    "period_range": "بازه: {from_date} تا {to_date}",
+    "platform_filter": "پلتفرم: {label}",
+    "generated_at": "تاریخ تولید: {date}",
+    "count_line": "تعداد سرنخ‌ها: {count}",
+    "total_leads": "📈 کل سرنخ‌ها: {count}",
+    "by_platform": "🧭 به تفکیک پلتفرم: {summary}",
+    "no_leads": "📭 هنوز سرنخی نیست.",
+    "top_groups": "🏆 پرسرنخ‌ترین گروه‌ها:",
+    "hot_keywords": "🔑 کلیدواژه‌های داغ:",
+    "hot_brands": "🏢 برندهای داغ:",
+    "recommendation": (
+        "📌 توصیه: برای مشاهده جزئیات کامل، "
+        "گزارش تخصصی را درخواست کنید."
+    ),
+    "separator_70": "=" * 70,
+    "separator_60": "=" * 60,
+    "section_sep": "═" * 70,
+    "line_sep": "─" * 70,
+    "report_period": "بازه: {from_date} تا {to_date}",
+    "no_brand": "   (برندی ثبت نشده)",
+    "no_result": "📭 نتیجه‌ای یافت نشد.",
+    "all_platforms": "همه پلتفرم‌ها",
+}
+
+_REPORT_HEADERS_LOADED_FROM_FILE: bool = False
+
+
+def _load_report_headers() -> dict[str, str]:
+    """🎯 خواندن تیترهای گزارش از data — با fallback امن."""
+    global _REPORT_HEADERS_LOADED_FROM_FILE
+
+    try:
+        from data.loader import load_json
+        data = load_json("report_headers", default={})
+
+        if not isinstance(data, dict):
+            _REPORT_HEADERS_LOADED_FROM_FILE = False
+            return dict(_FALLBACK_REPORT_HEADERS)
+
+        headers = data.get("headers")
+        if not isinstance(headers, dict) or not headers:
+            _REPORT_HEADERS_LOADED_FROM_FILE = False
+            return dict(_FALLBACK_REPORT_HEADERS)
+
+        # ─── merge با fallback (کلیدهای غایب از fallback) ───
+        merged = dict(_FALLBACK_REPORT_HEADERS)
+        for k, v in headers.items():
+            if isinstance(v, str):
+                merged[str(k)] = v
+
+        _REPORT_HEADERS_LOADED_FROM_FILE = True
+        log_info(
+            f"✅ [REPORT:headers] {len(merged)} تیتر از "
+            f"report_headers.json بارگذاری شد"
+        )
+        return merged
+
+    except Exception as e:
+        log_warning(
+            f"⚠️ [REPORT:headers] بارگذاری ناموفق | "
+            f"{type(e).__name__}: {e} — fallback"
+        )
+        _REPORT_HEADERS_LOADED_FROM_FILE = False
+        return dict(_FALLBACK_REPORT_HEADERS)
+
+
+# ─── لود اولیه ───
+REPORT_HEADERS: dict[str, str] = _load_report_headers()
+
+
+def _hdr(key: str, default: str = "", **kw) -> str:
+    """🎯 خواندن تیتر از فایل — با fallback امن و format.
+
+    Args:
+        key: کلید تیتر.
+        default: مقدار پیش‌فرض.
+        **kw: پارامترهای format.
+
+    Returns:
+        متن آماده.
+    """
+    template = REPORT_HEADERS.get(key) or default or f"[{key}]"
+    if not kw:
+        return template
+    try:
+        return template.format(**kw)
+    except (KeyError, IndexError, ValueError):
+        return template
+
+
+def reload_report_headers() -> dict[str, str]:
+    """🎯 hot-reload تیترها."""
+    global REPORT_HEADERS
+    try:
+        from data.loader import clear_cache
+        clear_cache()
+    except Exception:
+        pass
+    REPORT_HEADERS = _load_report_headers()
+    return REPORT_HEADERS
+
+
+def get_headers_source() -> str:
+    """🎯 منبع تیترها: file یا fallback."""
+    return (
+        "file" if _REPORT_HEADERS_LOADED_FROM_FILE
+        else "fallback"
+    )
+
+
+# ═══════════════════════════════════════════
 # ثابت‌ها (env-based)
 # ═══════════════════════════════════════════
 _SLOW_REPORT_MS = _env_int(
@@ -120,7 +244,7 @@ _CACHE_MAX_RESULTS = _env_int(
     "REPORT_CACHE_MAX", 100,
     min_val=10, max_val=10_000,
 )
-_CACHE_VERSION = 3  # ← افزایش یافت
+_CACHE_VERSION = 3
 
 # ─── کلیدهای فایل‌های گزارش ───
 _PATH_KEYS = ("txt", "html", "csv", "json")
@@ -233,7 +357,6 @@ def _load_cache() -> dict[str, Any]:
                 with open(_CACHE_FILE, encoding="utf-8") as f:
                     data = json.load(f) or {}
 
-                # 🎯 dict-check
                 if not isinstance(data, dict):
                     log_warning(
                         f"⚠️ [REPORT:cache] cache dict نیست "
@@ -284,7 +407,6 @@ def _save_cache(cache: dict[str, Any]) -> None:
 
             os.replace(tmp, _CACHE_FILE)
 
-            # dir fsync
             if parent:
                 try:
                     dir_fd = os.open(
@@ -301,7 +423,6 @@ def _save_cache(cache: dict[str, Any]) -> None:
                 f"⚠️ [REPORT:cache] save | "
                 f"{type(e).__name__}: {e}"
             )
-            # cleanup tmp
             try:
                 tmp = _CACHE_FILE + ".tmp"
                 if os.path.exists(tmp):
@@ -374,6 +495,8 @@ class DailyReporter:
             f"cache_entries={cache_entries} | "
             f"sql_timeout={_SQL_TIMEOUT_S}s | "
             f"cache_version={_CACHE_VERSION} | "
+            f"headers={len(REPORT_HEADERS)} "
+            f"({get_headers_source()}) | "
             f"platforms={PLATFORM_ORDER}"
         )
 
@@ -559,7 +682,7 @@ class DailyReporter:
         ).strftime("%Y-%m-%d")
         label = (
             platform_label(platform)
-            if platform else "همه پلتفرم‌ها"
+            if platform else _hdr("all_platforms")
         )
 
         log_info(
@@ -582,7 +705,6 @@ class DailyReporter:
                 self.db_path, timeout=_SQL_TIMEOUT_S
             ) as conn:
                 conn.row_factory = aiosqlite.Row
-                # 🔒 SEC FIX: concatenation به‌جای f-string
                 _sql = (
                     "SELECT id, platform, chat_name, user_id, "
                     "text, keywords, media_type, "
@@ -618,24 +740,36 @@ class DailyReporter:
 
         try:
             with open(filename, "w", encoding="utf-8") as f:
-                f.write("=" * 70 + "\n")
-                f.write("📊 گزارش هفتگی سرنخ‌های فروش\n")
-                f.write(f"بازه: {start_date} تا {end_date}\n")
-                if platform:
-                    f.write(f"پلتفرم: {label}\n")
-                f.write("=" * 70 + "\n")
-                f.write(f"📈 کل سرنخ‌ها: {len(messages)}\n")
+                f.write(_hdr("separator_70") + "\n")
+                f.write(_hdr("weekly_title") + "\n")
                 f.write(
-                    f"🧭 به تفکیک پلتفرم: "
-                    f"{platform_summary_line(messages)}\n"
+                    _hdr(
+                        "period_range",
+                        from_date=start_date,
+                        to_date=end_date,
+                    ) + "\n"
+                )
+                if platform:
+                    f.write(
+                        _hdr("platform_filter", label=label) + "\n"
+                    )
+                f.write(_hdr("separator_70") + "\n")
+                f.write(
+                    _hdr("total_leads", count=len(messages)) + "\n"
+                )
+                f.write(
+                    _hdr(
+                        "by_platform",
+                        summary=platform_summary_line(messages),
+                    ) + "\n"
                 )
                 for plat, rows in group_by_platform(messages):
-                    f.write("\n" + "═" * 70 + "\n")
+                    f.write("\n" + _hdr("section_sep") + "\n")
                     f.write(
                         f"{platform_label(plat)} — "
                         f"{len(rows)} سرنخ\n"
                     )
-                    f.write("═" * 70 + "\n")
+                    f.write(_hdr("section_sep") + "\n")
                     for i, msg in enumerate(rows, 1):
                         chat = _safe_get(msg, "chat_name", "?")
                         kw = _safe_get(msg, "keywords", "")
@@ -683,14 +817,13 @@ class DailyReporter:
 
         label = (
             platform_label(platform)
-            if platform else "همه پلتفرم‌ها"
+            if platform else _hdr("all_platforms")
         )
         log_info(
             f"▶️ [REPORT:exec] {date_from} → {date_to} | "
             f"platform={label}"
         )
 
-        # 🔒 SEC FIX: where فقط از placeholder ثابت + ? ساخته می‌شود
         where = (
             "keywords != '' AND "
             "date(timestamp) BETWEEN ? AND ?"
@@ -705,7 +838,6 @@ class DailyReporter:
             try:
                 cur = conn.cursor()
 
-                # 🔒 SEC FIX: concatenation به‌جای f-string
                 _sql_count = (
                     "SELECT COUNT(*) FROM messages "
                     "WHERE " + where
@@ -773,14 +905,22 @@ class DailyReporter:
             with open(
                 report_file, "w", encoding="utf-8"
             ) as f:
-                f.write("📊 گزارش مدیریتی (مدیرعامل)\n")
-                f.write(f"بازه: {date_from} تا {date_to}\n")
+                f.write(_hdr("executive_title") + "\n")
+                f.write(
+                    _hdr(
+                        "period_range",
+                        from_date=date_from,
+                        to_date=date_to,
+                    ) + "\n"
+                )
                 if platform:
                     f.write(
-                        f"پلتفرم: "
-                        f"{platform_label(platform)}\n"
+                        _hdr(
+                            "platform_filter",
+                            label=platform_label(platform),
+                        ) + "\n"
                     )
-                f.write("=" * 60 + "\n")
+                f.write(_hdr("separator_60") + "\n")
                 f.write(
                     f"🔹 تعداد کل فرصت‌ها (سرنخ): "
                     f"{total_leads}\n\n"
@@ -829,13 +969,10 @@ class DailyReporter:
                             f"   • {brand}: {cnt} بار\n"
                         )
                 else:
-                    f.write("   (برندی ثبت نشده)\n")
+                    f.write(_hdr("no_brand") + "\n")
                 f.write("\n")
 
-                f.write(
-                    "📌 توصیه: برای مشاهده جزئیات کامل، "
-                    "گزارش تخصصی را درخواست کنید.\n"
-                )
+                f.write(_hdr("recommendation") + "\n")
         except Exception as e:
             log_error(
                 f"❌ [REPORT:exec] write | "
@@ -876,7 +1013,6 @@ class DailyReporter:
         except (TypeError, ValueError):
             limit = 200
 
-        # 🔒 SEC FIX: query base ثابت + conditions از placeholders
         query = (
             "SELECT id, platform, chat_name, chat_link, "
             "chat_username, chat_type, text, timestamp, "
@@ -905,7 +1041,6 @@ class DailyReporter:
             conditions.append("date(timestamp) <= ?")
             params.append(date_to)
 
-        # 🔒 SEC FIX: concatenation به‌جای f-string
         if conditions:
             query += " AND " + " AND ".join(conditions)
         query += " ORDER BY timestamp DESC LIMIT ?"
@@ -970,14 +1105,24 @@ class DailyReporter:
 
             # ─── TXT ───
             with open(txt_file, "w", encoding="utf-8") as f:
-                f.write("📄 گزارش تخصصی - جزئیات سرنخ‌ها\n")
+                f.write(_hdr("detail_title") + "\n")
                 f.write(
-                    f"تاریخ تولید: "
-                    f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    _hdr(
+                        "generated_at",
+                        date=datetime.now().strftime(
+                            '%Y-%m-%d %H:%M:%S'
+                        ),
+                    ) + "\n"
                 )
-                f.write(f"تعداد سرنخ‌ها: {len(rows)}\n")
+                f.write(
+                    _hdr("count_line", count=len(rows)) + "\n"
+                )
                 if platform:
-                    f.write(f"فیلتر پلتفرم: {platform}\n")
+                    f.write(
+                        _hdr(
+                            "platform_filter", label=platform
+                        ) + "\n"
+                    )
                 if chat_name:
                     f.write(f"فیلتر گروه: {chat_name}\n")
                 if keyword:
@@ -1140,7 +1285,6 @@ class DailyReporter:
         date: str,
         platform: str | None = None,
     ) -> dict[str, Any]:
-        # 🔒 SEC FIX: where فقط از placeholder ثابت + ? ساخته می‌شود
         where = "date(timestamp) = ? AND keywords != ''"
         params: list[Any] = [date]
         if platform:
@@ -1153,7 +1297,6 @@ class DailyReporter:
             ) as conn:
                 conn.row_factory = aiosqlite.Row
 
-                # 🔒 SEC FIX: concatenation به‌جای f-string
                 _sql_messages = (
                     "SELECT id, platform, chat_name, user_id, "
                     "text, keywords, media_type, "
@@ -1249,29 +1392,40 @@ class DailyReporter:
         )
         try:
             with open(filename, "w", encoding="utf-8") as f:
-                f.write("=" * 70 + "\n")
+                f.write(_hdr("separator_70") + "\n")
                 f.write(
-                    f"📊 گزارش روزانه سرنخ‌های فروش — {date}\n"
+                    _hdr("daily_title", date=date) + "\n"
                 )
                 if platform:
                     f.write(
-                        f"پلتفرم: {platform_label(platform)}\n"
+                        _hdr(
+                            "platform_filter",
+                            label=platform_label(platform),
+                        ) + "\n"
                     )
-                f.write("=" * 70 + "\n")
-                f.write(f"📈 کل سرنخ‌ها: {data['total']}\n")
+                f.write(_hdr("separator_70") + "\n")
                 f.write(
-                    f"🧭 به تفکیک پلتفرم: "
-                    f"{platform_summary_line(data['messages'])}\n"
+                    _hdr(
+                        "total_leads", count=data['total']
+                    ) + "\n"
+                )
+                f.write(
+                    _hdr(
+                        "by_platform",
+                        summary=platform_summary_line(
+                            data['messages']
+                        ),
+                    ) + "\n"
                 )
                 for plat, rows in group_by_platform(
                     data["messages"]
                 ):
-                    f.write("\n" + "═" * 70 + "\n")
+                    f.write("\n" + _hdr("section_sep") + "\n")
                     f.write(
                         f"{platform_label(plat)} — "
                         f"{len(rows)} سرنخ\n"
                     )
-                    f.write("═" * 70 + "\n")
+                    f.write(_hdr("section_sep") + "\n")
                     top_groups = self._count_top(
                         rows, "chat_name"
                     )
@@ -1294,7 +1448,7 @@ class DailyReporter:
                             )
                             + "\n"
                         )
-                    f.write("-" * 70 + "\n")
+                    f.write(_hdr("line_sep") + "\n")
                     for i, msg in enumerate(
                         dedup_rows(rows), 1
                     ):
@@ -1599,7 +1753,7 @@ class DailyReporter:
         date_to = datetime.now().strftime("%Y-%m-%d")
         label = (
             platform_label(platform)
-            if platform else "همه پلتفرم‌ها"
+            if platform else _hdr("all_platforms")
         )
 
         log_info(
@@ -1694,12 +1848,15 @@ class DailyReporter:
                 self.scheduler.running
                 if self.scheduler is not None else False
             ),
+            "headers_count": len(REPORT_HEADERS),
+            "headers_source": get_headers_source(),
         }
 
     def __repr__(self) -> str:
         return (
             f"<DailyReporter db={os.path.basename(self.db_path)} "
-            f"platforms={len(PLATFORM_ORDER)}>"
+            f"platforms={len(PLATFORM_ORDER)} "
+            f"headers={get_headers_source()}>"
         )
 
 
@@ -1836,6 +1993,9 @@ __all__ = [
     "generate_daily_report",
     "generate_weekly_report",
     "search_lead",
+    "REPORT_HEADERS",
+    "reload_report_headers",
+    "get_headers_source",
 ]
 
 

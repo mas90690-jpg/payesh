@@ -1,27 +1,16 @@
 """
-ChatOps admin handler — نسخهٔ ۱۰ (هماهنگ با config.AI + fallback صحیح).
+ChatOps admin handler — نسخهٔ ۱۳ (داده‌محور).
 
-این فایل فقط coordinator است:
-  - گیت‌های امنیتی (خصوصی + ADMIN_IDS)
-  - مسیرهای handle / process_text
-  - ارسال پاسخ
+همهٔ لیست‌ها و پیام‌ها از data/ می‌آید:
+  - data/configs/domain.json     → in_domain / anti_domain / reply
+  - data/configs/messages.json   → empty_reply / fallback prefixes
 
-منطق به این ماژول‌ها واگذار شده:
-  - core/command_parser.py      → parse دستور
-  - handlers/keyword_admin.py   → CRUD کلیدواژه
-  - handlers/admin_memory.py    → حافظهٔ گفتگو
-  - handlers/admin_actions.py   → اجرای دستورها
-
-نسخهٔ ۱۰ (این نسخه):
-  - 🐛 FIX: `api_key` از `config.AI["deepseek_api_key"]` می‌آید
-    (نه `os.environ` مستقیم) — سازگار با hot-reload.
-  - 🐛 FIX: `_is_safebrain_fallback` حالا هم prefix قدیمی
-    («⚠️ هوش در دسترس نیست») و هم prefix SafeBrain را می‌شناسد.
-  - 🐛 FIX: `_SAFEBRAIN_PREFIXES_ANY` به‌عنوان tuple واحد
-    (به‌جای جستجوی دوگانه).
-  - 🐛 FIX: `_SAFEBRAIN_MIN_REAL_LEN` حالا env-based.
-  - 🎯 همهٔ ثابت‌ها حالا از env می‌آیند (throttle، timeout، length).
-  - ✅ حفظ همهٔ FIXهای نسخهٔ ۹.
+نسخهٔ ۱۳ (این نسخه):
+  - 🎯 `DomainGuard.config_path` حالا از `data_paths.DOMAIN` می‌آید
+    (به‌جای hardcode کردن مسیر).
+  - 🐛 FIX: `_is_safebrain_fallback` حالا fallback prefixes رو
+    یک‌بار cache می‌کنه (به‌جای خواندن هر بار از فایل).
+  - ✅ حفظ همهٔ رفتار نسخهٔ ۱۲.
 """
 from __future__ import annotations
 
@@ -40,11 +29,12 @@ from core.contracts.base_handler import BaseHandler
 from core.kernel.logger import log_error, log_info, log_success, log_warning
 from core.safe_brain import SafeBrain, get_safe_brain
 from core.services.ai_assistant import get_ai_assistant
+from data.loader import load_json
+from handlers._ai_utils import fa_platform, is_valid_ai_answer
 from handlers.admin_actions import AdminActions
 from handlers.admin_memory import AdminMemory
 from handlers.keyword_admin import KeywordAdmin
 
-# 🎯 P0: استفاده از config برای top-level params
 from config import (
     ADMIN_ENABLED,
     ADMIN_IDS,
@@ -55,7 +45,6 @@ from config import (
     SQLITE_CONFIG,
 )
 
-# 🎯 P0: مسیرها از data.paths
 from data import paths as data_paths
 
 
@@ -76,14 +65,9 @@ except ImportError as e:
 
 
 # ═══════════════════════════════════════════
-# helpers (env-based)
+# helpers
 # ═══════════════════════════════════════════
-def _env_int(
-    name: str, default: int,
-    min_val: int | None = None,
-    max_val: int | None = None,
-) -> int:
-    """خواندن int از env — با sanitize."""
+def _env_int(name, default, min_val=None, max_val=None) -> int:
     try:
         v = int(os.getenv(name, str(default)))
     except (ValueError, TypeError):
@@ -95,71 +79,234 @@ def _env_int(
     return v
 
 
-# ═══════════════════════════════════════════
-# ثابت‌ها (env-based)
-# ═══════════════════════════════════════════
-_LOG_PREVIEW_LEN: int = _env_int(
-    "ADMIN_LOG_PREVIEW", 100, min_val=20, max_val=500
-)
-_SLOW_HANDLE_MS: int = _env_int(
-    "ADMIN_SLOW_HANDLE_MS", 5000, min_val=100, max_val=60_000
-)
-_SLOW_LAYER_MS: int = _env_int(
-    "ADMIN_SLOW_LAYER_MS", 3000, min_val=100, max_val=60_000
-)
-_SLOW_REPLY_MS: int = _env_int(
-    "ADMIN_SLOW_REPLY_MS", 3000, min_val=100, max_val=60_000
-)
-
-_REPLY_CHUNK: int = _env_int(
-    "ADMIN_REPLY_CHUNK", 3900, min_val=500, max_val=10_000
-)
-
-_SAFEBRAIN_PREFIXES_FALLBACK: tuple[str, ...] = (
-    "🤖 SafeBrain",
-    "🤖 WinDoctor",
-)
-
-_AI_FALLBACK_PREFIXES: tuple[str, ...] = (
-    "⚠️ هوش در دسترس نیست",
-    "🤖 SafeBrain: هوش در دسترس نیست",
-)
-
-_SAFEBRAIN_MIN_REAL_LEN: int = _env_int(
-    "ADMIN_SAFEBRAIN_MIN_REAL_LEN", 40,
-    min_val=5, max_val=500,
-)
-
-_EMPTY_REPLY_FALLBACK = (
-    "🤔 متوجه نشدم یا پاسخی پیدا نشد.\n"
-    "می‌توانی:\n"
-    "• «راهنما» بزنی\n"
-    "• «وضعیت» یا «گزارش» بپرسی\n"
-    "• واضح‌تر بپرسی"
-)
-
-_VALID_PLATFORMS: frozenset = frozenset(PLATFORMS_ORDER)
-
-
-def _get_safebrain_prefixes() -> tuple[str, ...]:
-    """🎯 FIX: prefixهای پویا از SafeBrain."""
+def _env_float(name, default, min_val=None, max_val=None) -> float:
     try:
-        from core.safe_brain.main import SafeBrain as _SB
-        prefixes = getattr(_SB, "_fallback_prefixes", None)
-        if prefixes:
-            return tuple(prefixes)
+        v = float(os.getenv(name, str(default)))
+    except (ValueError, TypeError):
+        return default
+    if min_val is not None and v < min_val:
+        return min_val
+    if max_val is not None and v > max_val:
+        return max_val
+    return v
+
+
+# ═══════════════════════════════════════════
+# ثابت‌ها (فقط env-based)
+# ═══════════════════════════════════════════
+_LOG_PREVIEW_LEN = _env_int("ADMIN_LOG_PREVIEW", 100, 20, 500)
+_SLOW_HANDLE_MS = _env_int("ADMIN_SLOW_HANDLE_MS", 5000, 100, 60_000)
+_SLOW_LAYER_MS = _env_int("ADMIN_SLOW_LAYER_MS", 3000, 100, 60_000)
+_SLOW_REPLY_MS = _env_int("ADMIN_SLOW_REPLY_MS", 3000, 100, 60_000)
+_REPLY_CHUNK = _env_int("ADMIN_REPLY_CHUNK", 3900, 500, 10_000)
+_DOMAIN_RELOAD_SECONDS = _env_float(
+    "ADMIN_DOMAIN_RELOAD_S", 120.0, 10.0, 3600.0
+)
+
+_VALID_PLATFORMS = frozenset(PLATFORMS_ORDER)
+
+
+# ═══════════════════════════════════════════
+# Fallback prefixes cache (خوانده‌شده یک‌بار)
+# ═══════════════════════════════════════════
+_fallback_cache: dict | None = None
+
+
+def _get_fallback_config() -> dict:
+    """🎯 خواندن fallback prefixes از domain.json — با cache.
+
+    Returns:
+        dict با کلیدهای ai_fallback_prefixes، safebrain_prefixes،
+        safebrain_min_real_len.
+    """
+    global _fallback_cache
+    if _fallback_cache is not None:
+        return _fallback_cache
+
+    try:
+        domain = load_json("domain") or {}
     except Exception:
-        pass
-    return _SAFEBRAIN_PREFIXES_FALLBACK
+        domain = {}
+
+    _fallback_cache = {
+        "ai_fallback_prefixes": tuple(
+            domain.get("ai_fallback_prefixes", [])
+        ),
+        "safebrain_prefixes": tuple(
+            domain.get("safebrain_prefixes", [])
+        ),
+        "safebrain_min_real_len": int(
+            domain.get("safebrain_min_real_len", 40)
+        ),
+    }
+    return _fallback_cache
 
 
-def _get_all_fallback_prefixes() -> tuple[str, ...]:
-    """🎯 FIX: ترکیب همهٔ prefixهای ممکن."""
-    return _get_safebrain_prefixes() + _AI_FALLBACK_PREFIXES
+# ═══════════════════════════════════════════
+# DomainGuard — داده‌محور
+# ═══════════════════════════════════════════
+class DomainGuard:
+    """گارد حوزه — همه چیز از data/configs/domain.json.
+
+    hot-reload هر ۱۲۰ ثانیه.
+    اگر فایل نبود → گارد خاموش (همه قبول می‌شوند).
+    """
+
+    def __init__(self, config_path: str | None = None):
+        # 🎯 FIX: از data_paths.DOMAIN
+        self.config_path = (
+            config_path or str(data_paths.DOMAIN)
+        )
+        self._data: dict = {}
+        self._mtime: float = 0.0
+        self._last_check: float = 0.0
+        self._load(initial=True)
+
+    def _load(self, initial: bool = False) -> None:
+        """بارگذاری از فایل — بدون defaults در کد."""
+        if not os.path.exists(self.config_path):
+            if initial:
+                log_warning(
+                    f"⚠️ [DOMAIN:init] فایل نیست → گارد خاموش | "
+                    f"path={self.config_path}"
+                )
+            self._data = {}
+            return
+
+        try:
+            self._mtime = os.path.getmtime(self.config_path)
+            self._data = load_json("domain", force=True)
+
+            if initial:
+                log_success(
+                    f"✅ [DOMAIN:init] بارگذاری | "
+                    f"in={len(self.in_domain)} | "
+                    f"anti={len(self.anti_domain)}"
+                )
+            else:
+                log_info(
+                    f"🔄 [DOMAIN:reload] in={len(self.in_domain)} | "
+                    f"anti={len(self.anti_domain)}"
+                )
+        except Exception as e:
+            log_warning(
+                f"⚠️ [DOMAIN:load] {type(e).__name__}: {e}"
+            )
+            self._data = {}
+
+    def _maybe_reload(self) -> None:
+        now = time.monotonic()
+        if now - self._last_check < _DOMAIN_RELOAD_SECONDS:
+            return
+        self._last_check = now
+        try:
+            current_mtime = (
+                os.path.getmtime(self.config_path)
+                if os.path.exists(self.config_path)
+                else 0.0
+            )
+        except OSError:
+            return
+        if current_mtime != self._mtime:
+            self._load(initial=False)
+
+    @property
+    def in_domain(self) -> tuple[str, ...]:
+        return tuple(
+            str(x).strip().lower()
+            for x in self._data.get("in_domain", [])
+            if str(x).strip()
+        )
+
+    @property
+    def anti_domain(self) -> tuple[str, ...]:
+        return tuple(
+            str(x).strip().lower()
+            for x in self._data.get("anti_domain", [])
+            if str(x).strip()
+        )
+
+    def is_in_domain(self, text: str) -> bool:
+        """آیا سؤال در حوزهٔ ربات است؟
+
+        قواعد:
+          ۱) گارد خاموش → True
+          ۲) anti_domain اول چک می‌شود
+          ۳) in_domain
+          ۴) ناشناخته → False
+        """
+        if not text:
+            return False
+
+        self._maybe_reload()
+
+        in_d = self.in_domain
+        anti_d = self.anti_domain
+
+        # ─── گارد خاموش ───
+        if not in_d and not anti_d:
+            return True
+
+        text_lower = text.strip().lower()
+
+        # ─── anti_domain اول ───
+        for kw in anti_d:
+            if kw and kw in text_lower:
+                log_info(
+                    f"🚫 [DOMAIN:anti] «{kw}» پیدا شد | "
+                    f"text={text[:60]!r}"
+                )
+                return False
+
+        # ─── in_domain ───
+        for kw in in_d:
+            if kw and kw in text_lower:
+                return True
+
+        return False
+
+    def get_reply(self, query: str) -> str:
+        """پیام آماده برای سؤال خارج از حوزه — از messages.json."""
+        # ─── اول: از domain.json ───
+        tpl = self._data.get("out_of_domain_reply", "")
+
+        # ─── fallback: از messages.json ───
+        if not tpl:
+            msgs = load_json("messages")
+            tpl = msgs.get(
+                "out_of_domain_reply",
+                "🤖 «{query}» خارج از حوزهٔ من است.",
+            )
+
+        try:
+            return tpl.format(query=query[:80])
+        except (KeyError, IndexError):
+            return tpl
+
+    def get_empty_reply(self) -> str:
+        """پیام خالی — از messages.json."""
+        msgs = load_json("messages")
+        return msgs.get(
+            "empty_reply",
+            "🤔 متوجه نشدم. «راهنما» بزن.",
+        )
+
+    def get_stats(self) -> dict:
+        return {
+            "config_path": self.config_path,
+            "in_domain_count": len(self.in_domain),
+            "anti_domain_count": len(self.anti_domain),
+            "enabled": bool(self.in_domain or self.anti_domain),
+            "mtime": self._mtime,
+            "reload_seconds": _DOMAIN_RELOAD_SECONDS,
+        }
 
 
+# ═══════════════════════════════════════════
+# AdminHandler
+# ═══════════════════════════════════════════
 class AdminHandler(BaseHandler):
-    """ChatOps: تنها مسیر دستور دادن. سختگیر: فقط خصوصی، فقط ADMIN_IDS."""
+    """ChatOps — داده‌محور. سختگیر: فقط خصوصی، فقط ADMIN_IDS."""
 
     def __init__(self, db, scorer=None, **kwargs):
         super().__init__()
@@ -167,26 +314,23 @@ class AdminHandler(BaseHandler):
         self.kw = get_keyword_finder()
         self.ai = get_ai_assistant()
 
-        # 🎯 FIX: db_path از db یا config
+        # ─── db_path ───
         default_db_path = SQLITE_CONFIG.get(
-            "database_path",
-            str(data_paths.DB_FILE),
+            "database_path", str(data_paths.DB_FILE),
         )
         self.db_path = getattr(db, "db_path", default_db_path)
 
-        # ═══════════════════════════════════════════
-        # 🎯 FIX مهم: api_key از config.AI (منبع یکتا)
-        # ═══════════════════════════════════════════
-        api_key: str = (
+        # ─── api_key ───
+        api_key = (
             (AI or {}).get("deepseek_api_key")
             or os.environ.get("DEEPSEEK_API_KEY", "")
             or ""
         )
-        self._api_key_source: str = (
+        self._api_key_source = (
             "config" if (AI or {}).get("deepseek_api_key")
             else ("env" if os.environ.get("DEEPSEEK_API_KEY") else "none")
         )
-        self.safe_brain: SafeBrain = get_safe_brain(api_key=api_key)
+        self.safe_brain = get_safe_brain(api_key=api_key)
 
         log_info(
             f"🔑 [ADMIN:init:safebrain] api_key "
@@ -206,10 +350,18 @@ class AdminHandler(BaseHandler):
                     f"{type(e).__name__}: {e}"
                 )
 
-        # ─── Brain — per-instance (نه global) ───
+        # ─── Brain lazy ───
         self._brain: Any | None = None
 
-        # 🎯 FIX: از config top-level (نه PLUGINS_CONFIG)
+        # ─── گارد حوزه ───
+        self._domain = DomainGuard()
+        log_success(
+            f"✅ [ADMIN:init:domain] آماده | "
+            f"in={len(self._domain.in_domain)} | "
+            f"anti={len(self._domain.anti_domain)}"
+        )
+
+        # ─── config top-level ───
         self.enabled = bool(ADMIN_ENABLED)
         self.admin_ids = {
             str(x).strip()
@@ -218,7 +370,6 @@ class AdminHandler(BaseHandler):
         }
         self.platform = ADMIN_PLATFORM or "bale"
 
-        # چک: پلتفرم معتبر؟
         if self.platform not in _VALID_PLATFORMS:
             log_warning(
                 f"⚠️ [ADMIN:init] پلتفرم نامعتبر «{self.platform}» "
@@ -226,22 +377,12 @@ class AdminHandler(BaseHandler):
             )
             self.platform = "bale"
 
-        # چک: پلتفرم فعال است؟
-        self._platform_enabled = self._check_platform_enabled(
-            self.platform
-        )
-        if not self._platform_enabled and self.enabled:
-            log_warning(
-                f"⚠️ [ADMIN:init] پلتفرم مدیر «{self.platform}» غیرفعال است "
-                f"ولی ADMIN_ENABLED=true → پاسخ‌ها ارسال نمی‌شوند. "
-                f"{self.platform.upper()}_ENABLED=true کن یا "
-                f"ADMIN_PLATFORM را عوض کن."
-            )
+        self._platform_enabled = self._check_platform_enabled(self.platform)
 
         # ─── دانش ───
         self._knowledge = self._load_knowledge()
 
-        # 🎯 P0: مسیرها از data.paths
+        # ─── مسیرها ───
         custom_kw_path = str(data_paths.KEYWORDS_CUSTOM)
         memory_path = str(data_paths.AI_MEMORY)
 
@@ -263,14 +404,14 @@ class AdminHandler(BaseHandler):
             get_custom_kw_path=lambda: custom_kw_path,
         )
 
-        # لاگ نهایی
         if self.enabled:
             log_success(
                 f"✅ [ADMIN:init] فعال | "
                 f"platform={self.platform} | "
                 f"admins={len(self.admin_ids)} | "
                 f"platform_enabled={self._platform_enabled} | "
-                f"api_key={self._api_key_source}"
+                f"api_key={self._api_key_source} | "
+                f"domain_guard=✅"
             )
         else:
             log_info(
@@ -281,7 +422,6 @@ class AdminHandler(BaseHandler):
 
     @staticmethod
     def _check_platform_enabled(platform: str) -> bool:
-        """بررسی فعال بودن پلتفرم — از config."""
         try:
             from config import PLUGINS_CONFIG
             return bool(
@@ -291,9 +431,6 @@ class AdminHandler(BaseHandler):
         except Exception:
             return False
 
-    # ═══════════════════════════════════════
-    # knowledge
-    # ═══════════════════════════════════════
     def _load_knowledge(self) -> str:
         path = str(data_paths.BOT_KNOWLEDGE)
         try:
@@ -327,7 +464,11 @@ class AdminHandler(BaseHandler):
     # ═══════════════════════════════════════
     @staticmethod
     def _is_safebrain_fallback(reply: str | None) -> bool:
-        """🎯 FIX: تشخیص پاسخ «هوش در دسترس نیست»."""
+        """تشخیص پاسخ «هوش در دسترس نیست» — با cache.
+
+        🐛 FIX: از `_get_fallback_config()` استفاده می‌کند
+        (به‌جای خواندن فایل در هر بار).
+        """
         if not reply:
             return True
 
@@ -335,24 +476,35 @@ class AdminHandler(BaseHandler):
         if not s:
             return True
 
-        # ─── حالت ۲: AIAssistant fallback ───
-        for prefix in _AI_FALLBACK_PREFIXES:
-            if s.startswith(prefix):
+        cfg = _get_fallback_config()
+        ai_fallbacks = cfg["ai_fallback_prefixes"]
+        sb_prefixes = cfg["safebrain_prefixes"]
+        min_len = cfg["safebrain_min_real_len"]
+
+        # ─── AIAssistant fallback ───
+        for prefix in ai_fallbacks:
+            if prefix and s.startswith(prefix):
                 return True
 
-        # ─── حالت ۳: SafeBrain prefix ───
-        sb_prefixes = _get_safebrain_prefixes()
-        if s.startswith(sb_prefixes):
-            return len(s) < _SAFEBRAIN_MIN_REAL_LEN
+        # ─── SafeBrain prefix ───
+        if sb_prefixes and s.startswith(sb_prefixes):
+            return len(s) < min_len
 
-        # ─── حالت ۴: پاسخ واقعی ───
         return False
 
     # ═══════════════════════════════════════
-    # Brain — lazy + per-instance
+    # گارد حوزه
+    # ═══════════════════════════════════════
+    def _is_in_domain(self, text: str) -> bool:
+        return self._domain.is_in_domain(text)
+
+    def _out_of_domain_reply(self, query: str) -> str:
+        return self._domain.get_reply(query)
+
+    # ═══════════════════════════════════════
+    # Brain — lazy
     # ═══════════════════════════════════════
     def _get_brain(self):
-        """Lazy ساخت Brain (per-instance، نه global)."""
         if not _brain_available:
             return None
         if self._brain is not None:
@@ -369,7 +521,7 @@ class AdminHandler(BaseHandler):
         return self._brain
 
     # ═══════════════════════════════════════
-    # AI fallback (for manual_brain)
+    # AI fallback
     # ═══════════════════════════════════════
     async def _ai_fallback(self, question: str) -> str | None:
         log_info(
@@ -386,7 +538,7 @@ class AdminHandler(BaseHandler):
                 ans = await brain.process_admin_command(question)
                 layer_ms = (time.monotonic() - t_layer) * 1000
 
-                if ans and self._is_valid_ai_answer(ans):
+                if ans and is_valid_ai_answer(ans):
                     log_info(
                         f"✅ [ADMIN:fallback:brain] پاسخ | "
                         f"{layer_ms:.0f}ms | len={len(ans)}"
@@ -410,12 +562,17 @@ class AdminHandler(BaseHandler):
                 + "\n\n# دانشِ ربات:\n" + self._knowledge
                 + "\n\n# وضعیتِ زندهٔ همین الان (از دیتابیس):\n"
                 + self._actions.live_context()
+                + "\n\n# قاعدهٔ حوزه:\n"
+                + "تو فقط ربات پایش سرنخ هستی. اگر سؤال خارج از "
+                + "این حوزه بود (هوا، دلار، بورس، اخبار، ورزش، …) "
+                + "صریح بگو «خارج از حوزهٔ من است» و لیست کارهایی که "
+                + "می‌توانی بکنی را بده."
             )
             t_layer = time.monotonic()
             ans = await self.ai.chat(question, system=system)
             layer_ms = (time.monotonic() - t_layer) * 1000
 
-            if ans and self._is_valid_ai_answer(ans):
+            if ans and is_valid_ai_answer(ans):
                 log_info(
                     f"✅ [ADMIN:fallback:ai] پاسخ | "
                     f"{layer_ms:.0f}ms | len={len(ans)}"
@@ -437,37 +594,13 @@ class AdminHandler(BaseHandler):
         )
         return None
 
-    @staticmethod
-    def _is_valid_ai_answer(ans: str | None) -> bool:
-        """پاسخ AI معتبر است یا پیام خطا؟"""
-        if not ans:
-            return False
-        s = str(ans).strip()
-        if not s:
-            return False
-        _bad_prefixes = ("⚠️", "❌", "🚫", "⛔")
-        if s.startswith(_bad_prefixes):
-            return False
-        _bad_markers = (
-            "در دسترس نیست",
-            "خطای API",
-            "Error code:",
-            "rate limit",
-            "timed out",
-        )
-        for m in _bad_markers:
-            if m in s:
-                return False
-        return True
-
     # ═══════════════════════════════════════
-    # entry point (messenger)
+    # entry point
     # ═══════════════════════════════════════
     async def handle(self, event):
         t0 = time.monotonic()
         raw = event.data if isinstance(event.data, dict) else {}
 
-        # ─── فیلتر پلتفرم ───
         if raw.get("platform") != self.platform:
             return
 
@@ -476,31 +609,51 @@ class AdminHandler(BaseHandler):
         ct = (raw.get("chat_type") or "").lower()
         is_admin = sender in self.admin_ids
 
-        if is_admin:
-            log_info(
-                f"🛡️ [ADMIN:handle] پیام | chat_type={ct!r} "
-                f"chat_id={chat_id} sender={sender}"
-            )
-
         # ─── فقط خصوصی ───
         is_private = (
             ct in ("private", "user")
             or (not ct and chat_id == sender)
         )
         if not is_private:
-            if is_admin:
-                log_info(
-                    f"⏭️ [ADMIN:handle] غیرخصوصی — رد | "
-                    f"chat_type={ct!r} chat_id={chat_id}"
-                )
             return
 
         text = (raw.get("text") or raw.get("caption") or "").strip()
         if not text:
             return
 
-        # ─── لایهٔ ManualBrain ───
-        if self.admin_ids and is_admin and self.manual_brain:
+        # ═══════════════════════════════════════════
+        # ۱) pairing — اول از همه
+        # ═══════════════════════════════════════════
+        if not self.admin_ids:
+            log_warning(
+                f"🔑 [ADMIN:pairing] platform={self.platform} "
+                f"user_id={sender}"
+            )
+            await self._reply(
+                raw,
+                f"👋 آیدیِ تو: {sender}\n"
+                f"آن را در .env بگذار:\nADMIN_IDS={sender}\n"
+                f"بعد ربات را ری‌استارت کن تا مدیر شوی.",
+            )
+            return
+
+        # ═══════════════════════════════════════════
+        # ۲) گارد حوزه
+        # ═══════════════════════════════════════════
+        if not self._is_in_domain(text):
+            log_info(
+                f"🚫 [ADMIN:handle] خارج از حوزه | "
+                f"text={text[:_LOG_PREVIEW_LEN]!r}"
+            )
+            if is_admin:
+                reply = self._out_of_domain_reply(text)
+                await self._reply(raw, reply)
+            return
+
+        # ═══════════════════════════════════════════
+        # ۳) ManualBrain
+        # ═══════════════════════════════════════════
+        if is_admin and self.manual_brain:
             try:
                 t_layer = time.monotonic()
                 manual_reply = await self.manual_brain.process(
@@ -511,51 +664,29 @@ class AdminHandler(BaseHandler):
                 if manual_reply:
                     log_success(
                         f"✅ [ADMIN:layer:manual] پاسخ | "
-                        f"{layer_ms:.0f}ms | len={len(manual_reply)}"
+                        f"{layer_ms:.0f}ms"
                     )
                     await self._reply(raw, manual_reply)
-                    total_ms = (time.monotonic() - t0) * 1000
-                    log_info(
-                        f"🏁 [ADMIN:handle] کامل | total={total_ms:.0f}ms"
-                    )
                     return
-
-                log_info(
-                    f"ℹ️ [ADMIN:layer:manual] نداد | "
-                    f"{layer_ms:.0f}ms — واگذاری به لایهٔ بعد"
-                )
             except Exception as e:
                 log_warning(
                     f"⚠️ [ADMIN:layer:manual] {type(e).__name__}: {e}"
                 )
 
-        # ─── pairing ───
-        if not self.admin_ids:
-            log_warning(
-                f"🔑 [ADMIN:pairing] platform={self.platform} "
-                f"user_id={sender} | .env → ADMIN_IDS={sender}"
-            )
-            await self._reply(
-                raw,
-                f"👋 آیدیِ تو: {sender}\n"
-                f"آن را در .env بگذار:\nADMIN_IDS={sender}\n"
-                f"بعد ربات را ری‌استارت کن تا مدیر شوی.",
-            )
-            return
-
+        # ═══════════════════════════════════════════
+        # ۴) کاربر غیرمجاز
+        # ═══════════════════════════════════════════
         if not is_admin:
-            log_info(
-                f"⏭️ [ADMIN:handle] کاربر غیرمجاز | sender={sender}"
-            )
             return
 
-        # ─── مسیر اصلی ───
+        # ═══════════════════════════════════════════
+        # ۵) مسیر اصلی
+        # ═══════════════════════════════════════════
         log_info(
             f"🛡️ [ADMIN:handle] دستور | {text[:_LOG_PREVIEW_LEN]!r}"
         )
 
         action, value = parse_command(text)
-        log_info(f"🎯 [ADMIN:parse] action={action} value={value!r}")
 
         try:
             if action is None:
@@ -569,170 +700,85 @@ class AdminHandler(BaseHandler):
             reply = f"❌ خطا در اجرای دستور: {e}"
 
         if not reply:
-            log_info("ℹ️ [ADMIN:handle] reply خالی — پیام پیش‌فرض")
-            reply = _EMPTY_REPLY_FALLBACK
+            reply = self._domain.get_empty_reply()
 
         await self._reply(raw, reply)
 
         total_ms = (time.monotonic() - t0) * 1000
         if total_ms > _SLOW_HANDLE_MS:
             log_warning(
-                f"🐌 [ADMIN:handle] کند | {total_ms:.0f}ms | "
-                f"action={action}"
-            )
-        else:
-            log_info(
-                f"🏁 [ADMIN:handle] کامل | total={total_ms:.0f}ms | "
-                f"reply_len={len(reply or '')}"
+                f"🐌 [ADMIN:handle] کند | {total_ms:.0f}ms"
             )
 
-    # ═══════════════════════════════════════
-    # routing
-    # ═══════════════════════════════════════
-    async def _handle_command(
-        self, action: str, value, raw_text: str
-    ) -> str:
+    async def _handle_command(self, action, value, raw_text):
         t0 = time.monotonic()
-
-        reply: str | None = None
+        reply = None
         try:
-            t_sb = time.monotonic()
             reply = await self.safe_brain.process(raw_text)
-            sb_ms = (time.monotonic() - t_sb) * 1000
-            log_info(
-                f"🧠 [ADMIN:safe_brain] {sb_ms:.0f}ms | "
-                f"reply={'✅' if reply else '❌ خالی'}"
-            )
         except Exception as e:
-            log_warning(
-                f"⚠️ [ADMIN:safe_brain] {type(e).__name__}: {e}"
-            )
-            reply = None
+            log_warning(f"⚠️ [ADMIN:safe_brain] {type(e).__name__}: {e}")
 
         if self._is_safebrain_fallback(reply):
-            t_exec = time.monotonic()
             reply = await self._actions.execute(action, value, raw_text)
-            exec_ms = (time.monotonic() - t_exec) * 1000
-            log_info(
-                f"⚙️ [ADMIN:execute] {exec_ms:.0f}ms | "
-                f"action={action} | len={len(reply or '')}"
-            )
 
-        elapsed_ms = (time.monotonic() - t0) * 1000
-        if elapsed_ms > _SLOW_LAYER_MS:
-            log_warning(
-                f"🐌 [ADMIN:handle_command] کند | {elapsed_ms:.0f}ms"
-            )
-
-        return reply or _EMPTY_REPLY_FALLBACK
+        return reply or self._domain.get_empty_reply()
 
     async def _handle_free_text(self, text: str) -> str:
-        t0 = time.monotonic()
-
         # ─── لایهٔ ۱: SafeBrain ───
         try:
             reply = await self.safe_brain.process(text)
             if reply and not self._is_safebrain_fallback(reply):
-                log_info(
-                    f"✅ [ADMIN:free] safe_brain پاسخ | "
-                    f"{time.monotonic() - t0:.2f}s"
-                )
                 return reply
         except Exception as e:
-            log_warning(
-                f"⚠️ [ADMIN:free] safe_brain | "
-                f"{type(e).__name__}: {e}"
-            )
+            log_warning(f"⚠️ [ADMIN:free] safe_brain | {type(e).__name__}: {e}")
 
         # ─── لایهٔ ۲: Brain ───
         brain = self._get_brain()
         if brain:
             try:
-                t_b = time.monotonic()
                 ans = await brain.process_admin_command(text)
-                b_ms = (time.monotonic() - t_b) * 1000
-                if ans and self._is_valid_ai_answer(ans):
-                    log_info(
-                        f"✅ [ADMIN:free] brain پاسخ | {b_ms:.0f}ms"
-                    )
+                if ans and is_valid_ai_answer(ans):
                     return ans
-                log_info(
-                    f"ℹ️ [ADMIN:free] brain نامعتبر | {b_ms:.0f}ms"
-                )
             except Exception as e:
-                log_warning(
-                    f"⚠️ [ADMIN:free] brain | {type(e).__name__}: {e}"
-                )
+                log_warning(f"⚠️ [ADMIN:free] brain | {type(e).__name__}: {e}")
 
         # ─── لایهٔ ۳: AIAssistant ───
-        log_info("🔄 [ADMIN:free] → _ask (AIAssistant)")
         try:
             ans = await self._actions.ask(text)
-            if ans and self._is_valid_ai_answer(ans):
+            if ans and is_valid_ai_answer(ans):
                 return ans
         except Exception as e:
-            log_warning(
-                f"⚠️ [ADMIN:free] ask | {type(e).__name__}: {e}"
-            )
+            log_warning(f"⚠️ [ADMIN:free] ask | {type(e).__name__}: {e}")
 
-        log_warning(
-            f"❌ [ADMIN:free] هیچ لایه‌ای پاسخ نداد | "
-            f"{time.monotonic() - t0:.2f}s"
-        )
-        return _EMPTY_REPLY_FALLBACK
+        return self._domain.get_empty_reply()
 
-    # ═══════════════════════════════════════
-    # web path
-    # ═══════════════════════════════════════
     async def process_text(self, text: str) -> str:
-        """مسیر وب (بدون messenger) — برای /chat در OBS server."""
+        """مسیر وب — برای /chat در OBS server."""
         text = (text or "").strip()
         if not text:
             return ""
 
-        log_info(
-            f"🌐 [ADMIN:web] درخواست | "
-            f"{text[:_LOG_PREVIEW_LEN]!r}"
-        )
-        t0 = time.monotonic()
+        if not self._is_in_domain(text):
+            return self._out_of_domain_reply(text)
 
-        # ─── لایهٔ ManualBrain ───
         if self.manual_brain:
             try:
-                t_layer = time.monotonic()
                 manual_reply = await self.manual_brain.process(
-                    text,
-                    sender="local_web",
-                    ai_fallback=self._ai_fallback,
+                    text, sender="local_web", ai_fallback=self._ai_fallback,
                 )
-                layer_ms = (time.monotonic() - t_layer) * 1000
                 if manual_reply:
-                    log_success(
-                        f"✅ [ADMIN:web:manual] پاسخ | {layer_ms:.0f}ms"
-                    )
                     return manual_reply
             except Exception as e:
-                log_warning(
-                    f"⚠️ [ADMIN:web:manual] {type(e).__name__}: {e}"
-                )
+                log_warning(f"⚠️ [ADMIN:web:manual] {type(e).__name__}: {e}")
 
-        # ─── parse یک‌بار ───
         action, value = parse_command(text)
-        log_info(f"🎯 [ADMIN:web:parse] action={action}")
 
         try:
             if action is None:
                 reply = await self._handle_free_text(text)
             else:
-                reply = await self._handle_command(
-                    action, value, text
-                )
-            total_ms = (time.monotonic() - t0) * 1000
-            log_info(
-                f"🏁 [ADMIN:web] کامل | {total_ms:.0f}ms | "
-                f"len={len(reply or '')}"
-            )
-            return reply or _EMPTY_REPLY_FALLBACK
+                reply = await self._handle_command(action, value, text)
+            return reply or self._domain.get_empty_reply()
         except Exception as e:
             log_error(f"❌ [ADMIN:web] {type(e).__name__}: {e}")
             return f"❌ خطا: {e}"
@@ -741,16 +787,12 @@ class AdminHandler(BaseHandler):
     # reply
     # ═══════════════════════════════════════
     async def _reply(self, raw: dict, text: str):
-        t0 = time.monotonic()
         sender = messenger_registry.get_sender(self.platform)
         if not sender:
-            log_warning(
-                f"⚠️ [ADMIN:reply] sender نیست برای {self.platform}"
-            )
+            log_warning(f"⚠️ [ADMIN:reply] sender نیست برای {self.platform}")
             return
 
         chat_id = raw.get("chat_id") or raw.get("user_id")
-
         ct = raw.get("chat_type")
         uid = raw.get("user_id")
 
@@ -760,49 +802,27 @@ class AdminHandler(BaseHandler):
             ct = "private"
 
         if not text:
-            log_warning(
-                f"⚠️ [ADMIN:reply] متن خالی | chat_id={chat_id}"
-            )
             return
 
         chunks = self._chunk_text(text, _REPLY_CHUNK)
 
         for i, chunk in enumerate(chunks):
             try:
-                t_c = time.monotonic()
                 await sender(chat_id, ct, chunk)
-                c_ms = (time.monotonic() - t_c) * 1000
-
-                if c_ms > _SLOW_REPLY_MS:
-                    log_warning(
-                        f"🐌 [ADMIN:reply] chunk {i+1}/{len(chunks)} کند | "
-                        f"{c_ms:.0f}ms | chat_id={chat_id}"
-                    )
             except Exception as e:
-                elapsed_ms = (time.monotonic() - t0) * 1000
                 log_error(
                     f"❌ [ADMIN:reply] chunk {i+1}/{len(chunks)} | "
-                    f"{type(e).__name__}: {e} | "
-                    f"{elapsed_ms:.0f}ms | chat_id={chat_id}"
+                    f"{type(e).__name__}: {e}"
                 )
-                continue
-
-        elapsed_ms = (time.monotonic() - t0) * 1000
-        log_info(
-            f"✅ [ADMIN:reply] ارسال شد | {elapsed_ms:.0f}ms | "
-            f"chat_id={chat_id} ({ct}) | "
-            f"chunks={len(chunks)} | len={len(text)}"
-        )
 
     @staticmethod
     def _chunk_text(text: str, size: int) -> list[str]:
-        """متن بلند را به chunkهای ≤size می‌شکند (روی newline)."""
         if not text:
             return [""]
         if len(text) <= size:
             return [text]
 
-        chunks: list[str] = []
+        chunks = []
         remaining = text
         while remaining:
             if len(remaining) <= size:
@@ -819,84 +839,13 @@ class AdminHandler(BaseHandler):
         return chunks
 
     # ═══════════════════════════════════════
-    # Backward-compat wrappers
+    # wrappers (backward-compat)
     # ═══════════════════════════════════════
-    def _rule_parse(self, text):
-        return parse_command(text)
-
-    def _extract_value(self, text):
-        return extract_value(text)
-
-    def _platform_in(self, low):
-        return platform_in(low)
-
-    def _add_keyword(self, value):
-        return self._keyword_admin.add(
-            value, str(data_paths.KEYWORDS_CUSTOM)
-        )
-
-    def _remove_keyword(self, value):
-        return self._keyword_admin.remove(
-            value, str(data_paths.KEYWORDS_CUSTOM)
-        )
-
-    def _remember(self, q, a):
-        self._memory.remember(q, a)
-
-    def _recent_memory(self, n=6):
-        return self._memory.recent(n)
-
-    async def _execute(self, action, value, raw_text):
-        return await self._actions.execute(action, value, raw_text)
-
-    def _status(self):
-        return self._actions.status()
-
-    def _live_context(self):
-        return self._actions.live_context()
-
-    async def _health(self):
-        return await self._actions.health()
-
-    async def _lead_details(self, which):
-        return await self._actions.lead_details(which)
-
-    async def _platform_status(self, platform):
-        return await self._actions.platform_status(platform)
-
-    def _logs(self, n=12):
-        return self._actions.logs(n)
-
-    async def _explain_logs(self):
-        return await self._actions.explain_logs()
-
-    def _help(self):
-        return self._actions.help_text()
-
     def _get_param(self, name):
         return self._actions.get_param(name)
 
     def _set_param(self, raw_text):
         return self._actions.set_param(raw_text)
 
-    async def _crm_action(self, raw_text):
-        return await self._actions.crm_action(raw_text)
-
-    async def _report_action(self, raw_text):
-        return await self._actions.report_action(raw_text)
-
-    def _log_request(self, text):
-        return self._actions.log_request(text)
-
-    def _update_env(self, key, value):
-        return self._actions._update_env(key, value)
-
-    @staticmethod
-    def _read_custom_kw_dict():
-        path = str(data_paths.KEYWORDS_CUSTOM)
-        return KeywordAdmin(path).read(path)
-
-    @staticmethod
-    def _write_custom_kw_dict(kw_tier):
-        path = str(data_paths.KEYWORDS_CUSTOM)
-        return KeywordAdmin(path).write(kw_tier, path)
+    def get_domain_stats(self) -> dict:
+        return self._domain.get_stats()

@@ -43,7 +43,7 @@ import time
 from typing import Any
 
 from config import KEYWORDS_CONFIG
-from core.kernel.logger import log_error, log_info, log_success, log_warning
+from core.kernel.logger import log_info, log_success, log_warning
 
 # 🎯 P0: مسیرها از data.paths
 from data import paths as data_paths

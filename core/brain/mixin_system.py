@@ -1,4 +1,12 @@
-"""ابزارهای سیستم — git, command, processes, tests, python."""
+"""ابزارهای سیستم — git, command, processes, tests, python, audit.
+
+نسخهٔ ۲ (این نسخه):
+  - 🎯 NEW: سه متد audit:
+      * `_audit_code`   → بررسی کد با pyflakes + flake8
+      * `_audit_file`   → بررسی یک فایل خاص
+      * `_fix_fstrings` → درست کردن f-string های بی‌placeholder
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۱.
+"""
 from __future__ import annotations
 import ast
 import asyncio
@@ -10,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 from datetime import datetime
+from typing import Any
 
 from core.adapters.access_manager import get_access_manager
 from core.brain.constants import (
@@ -552,4 +561,231 @@ class SystemMixin:
         except SyntaxError as e:
             return f"❌ خطای نحوی: {e}"
         except Exception as e:
+            return f"❌ خطا: {e}"
+
+    # ═══════════════════════════════════════════════════════
+    # 🎯 NEW: سه متد audit — پایشگر دقیق کد
+    # ═══════════════════════════════════════════════════════
+
+    async def _audit_code(
+        self,
+        paths: str = "",
+        include_flake8: bool = True,
+        include_vulture: bool = False,
+        include_bandit: bool = False,
+    ) -> str:
+        """بررسی کد پروژه با pyflakes + flake8 (+ vulture + bandit).
+
+        Args:
+            paths: مسیرها با فاصله.
+            include_flake8: بررسی با flake8.
+            include_vulture: بررسی کد بلااستفاده (کند).
+            include_bandit: بررسی امنیت (کند).
+
+        Returns:
+            گزارش خوانا.
+        """
+        try:
+            from core.brain.tools_audit import (
+                audit_code,
+                format_audit_report,
+            )
+        except ImportError as e:
+            log_error(
+                f"❌ [BRAIN:audit_code] import | "
+                f"{type(e).__name__}: {e}"
+            )
+            return (
+                f"❌ ابزار audit_code در دسترس نیست: {e}\n"
+                f"💡 راه‌حل: مطمئن شو `core/brain/tools_audit.py` "
+                f"وجود دارد."
+            )
+
+        try:
+            t0 = asyncio.get_event_loop().time()
+            # اجرا در thread جدا (چون subprocess blocking است)
+            result = await asyncio.to_thread(
+                audit_code,
+                paths=paths,
+                include_flake8=include_flake8,
+                include_vulture=include_vulture,
+                include_bandit=include_bandit,
+            )
+            elapsed = asyncio.get_event_loop().time() - t0
+
+            # ─── گزارش خوانا ───
+            report = format_audit_report(result)
+
+            # ─── اضافه کردن raw output ───
+            raw = result.get("raw_output", "")
+            if raw:
+                report += f"\n\n📄 **خروجی خام:**\n{raw}"
+
+            log_success(
+                f"✅ [BRAIN:audit_code] کامل | "
+                f"total={result.get('summary', {}).get('total_issues', 0)} "
+                f"| {elapsed:.1f}s"
+            )
+            return report
+
+        except Exception as e:
+            log_error(
+                f"❌ [BRAIN:audit_code] "
+                f"{type(e).__name__}: {e}"
+            )
+            return f"❌ خطا در بررسی کد: {e}"
+
+    async def _audit_file(
+        self,
+        file_path: str,
+        include_flake8: bool = True,
+    ) -> str:
+        """بررسی یک فایل پایتون خاص.
+
+        Args:
+            file_path: مسیر فایل.
+            include_flake8: بررسی با flake8.
+
+        Returns:
+            گزارش خوانا.
+        """
+        if not file_path:
+            return "⚠️ مسیر فایل خالی است."
+
+        try:
+            from core.brain.tools_audit import (
+                audit_file,
+                format_audit_report,
+            )
+        except ImportError as e:
+            log_error(
+                f"❌ [BRAIN:audit_file] import | "
+                f"{type(e).__name__}: {e}"
+            )
+            return f"❌ ابزار audit_file در دسترس نیست: {e}"
+
+        try:
+            result = await asyncio.to_thread(
+                audit_file,
+                file_path=file_path,
+                include_flake8=include_flake8,
+            )
+
+            if not result.get("ok"):
+                return (
+                    f"❌ {result.get('error', '?')}"
+                )
+
+            report = format_audit_report(result)
+            raw = result.get("raw_output", "")
+            if raw:
+                report += f"\n\n📄 **خروجی خام:**\n{raw}"
+
+            log_success(
+                f"✅ [BRAIN:audit_file] {file_path} | "
+                f"total={result.get('summary', {}).get('total_issues', 0)}"
+            )
+            return report
+
+        except Exception as e:
+            log_error(
+                f"❌ [BRAIN:audit_file] "
+                f"{type(e).__name__}: {e}"
+            )
+            return f"❌ خطا: {e}"
+
+    async def _fix_fstrings(
+        self,
+        paths: str = "",
+        dry_run: bool = True,
+    ) -> str:
+        """درست کردن f-string های بی‌placeholder.
+
+        ⚠️ با dry_run=False فایل‌ها را تغییر می‌دهد.
+
+        Args:
+            paths: مسیرها با فاصله.
+            dry_run: اگه True، فقط نشان بده.
+
+        Returns:
+            گزارش خوانا.
+        """
+        try:
+            from core.brain.tools_audit import fix_fstrings
+        except ImportError as e:
+            log_error(
+                f"❌ [BRAIN:fix_fstrings] import | "
+                f"{type(e).__name__}: {e}"
+            )
+            return f"❌ ابزار fix_fstrings در دسترس نیست: {e}"
+
+        # ─── حالت غیر dry_run نیاز به تأیید دارد ───
+        if not dry_run and self.read_only:
+            return "⛔ حالت فقط‌خواندنی — نمی‌توان تغییر داد."
+
+        try:
+            result = await asyncio.to_thread(
+                fix_fstrings,
+                paths=paths,
+                dry_run=dry_run,
+            )
+
+            fixes = result.get("fixes", [])
+            errors = result.get("errors", [])
+            files_fixed = result.get("files_fixed", 0)
+
+            if not fixes and not errors:
+                return "ℹ️ هیچ f-string بی‌placeholder یافت نشد."
+
+            # ─── گزارش ───
+            lines = [
+                "📋 **گزارش درست کردن f-string**",
+                "━━━━━━━━━━━━━━━",
+                f"🔹 حالت: "
+                f"{'🔍 فقط نمایش (dry-run)' if dry_run else '✅ اعمال شد'}",
+                f"🔹 فایل‌های بررسی‌شده: "
+                f"{result.get('files_checked', 0)}",
+                f"🔹 فایل‌های تغییر یافته: {files_fixed}",
+                "",
+            ]
+
+            if fixes:
+                lines.append("📝 **فایل‌ها:**")
+                for fix in fixes[:20]:
+                    lines.append(
+                        f"   • {fix.get('file', '?')} "
+                        f"({fix.get('count', 0)} مورد)"
+                    )
+                if len(fixes) > 20:
+                    lines.append(
+                        f"   ... و {len(fixes) - 20} فایل دیگر"
+                    )
+
+            if errors:
+                lines.append("")
+                lines.append("❌ **خطاها:**")
+                for err in errors[:10]:
+                    lines.append(
+                        f"   • {err.get('file', '?')}: "
+                        f"{err.get('error', '?')}"
+                    )
+
+            if dry_run and fixes:
+                lines.append("")
+                lines.append(
+                    "💡 برای اعمال تغییرات: "
+                    "`fix_fstrings(dry_run=False)`"
+                )
+
+            log_success(
+                f"✅ [BRAIN:fix_fstrings] "
+                f"files={files_fixed} | dry_run={dry_run}"
+            )
+            return "\n".join(lines)
+
+        except Exception as e:
+            log_error(
+                f"❌ [BRAIN:fix_fstrings] "
+                f"{type(e).__name__}: {e}"
+            )
             return f"❌ خطا: {e}"

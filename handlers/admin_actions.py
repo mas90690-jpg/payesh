@@ -1,22 +1,18 @@
 """
 اجرای دستورهای مدیر — DB، گزارش، CRM، لاگ، پارامترها، ریاستارت.
 
-نسخهٔ ۸ (این نسخه):
-  - 🎯 استفاده از config برای پارامترهای top-level (ADMIN_*, MONITOR_*,
-    SELF_MONITOR_*, MAIN_*, BRAND_TOKEN_*).
-  - 🐛 FIX: _SENSITIVE_PARAMS دیگر شامل ADMIN_ENABLED و ADMIN_IDS نیست
-    (چون از config می‌آیند نه env → get_param روی آن‌ها کار نمی‌کرد).
-  - 🐛 FIX: get_param حالا پارامترهای config-only را از config می‌خواند
-    (نه از os.getenv — که برای ADMIN_ENABLED همیشه خالی بود).
-  - 🐛 FIX: SAFE_PARAMS حالا شامل EITAA_MESSAGES_PER_CHAT (نه EITAA_MSGS_PER_CHAT).
-  - 🐛 FIX: SAFE_PARAMS حالا شامل MONITOR_* و SELF_MONITOR_* است.
-  - 🐛 FIX: _PLATFORMS حالا از config.PLATFORMS_ORDER می‌آید (شامل instagram).
-  - 🐛 FIX: _do_restart حالا sys.stdout.flush() + sys.stderr.flush()
-    را قبل از os._exit(0) صدا می‌زند (os._exit حتی atexit را هم اجرا نمی‌کند).
-  - 🐛 FIX: _update_env حالا os.fsync روی فایل و دایرکتوری می‌زند.
-  - 🎯 _SAFEBRAIN_PREFIXES → تابع پویا _get_safebrain_prefixes().
-  - 🎯 pid_file و requests_path از data.paths.
-  - 🎯 LOG_FILE از data.paths.
+نسخهٔ ۹ (این نسخه — داده‌محور):
+  - 🎯 همهٔ لیست‌ها و پیام‌ها از data/ می‌آید:
+      * data/configs/params.json    → safe / sensitive / config_only
+      * data/configs/messages.json  → پیام‌های خطا
+      * data/templates/help.md      → متن راهنما
+      * data/configs/platforms.json → ترجمهٔ پلتفرم
+  - 🐛 FIX: `_get_safebrain_prefixes` حذف شد (بی‌استفاده بود).
+  - 🐛 FIX: `ask()` حالا اول `live_context()` می‌دهد بعد `help_text()`.
+  - 🐛 FIX: `live_context()` و `status()` و `platform_status()`
+    اسم پلتفرم را فارسی نشان می‌دهند (از `_ai_utils.fa_platform`).
+  - 🎯 `help_text()` حالا از `data/templates/help.md` می‌خواند.
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۸.
 """
 from __future__ import annotations
 
@@ -31,21 +27,8 @@ from collections.abc import Callable
 from datetime import datetime
 
 # 🎯 P0: استفاده از config برای top-level params
-from config import (
-    ADMIN_ENABLED,
-    ADMIN_IDS,
-    BRAND_TOKEN_ENABLED,
-    BRAND_TOKEN_MIN_LEN,
-    LOGIN_INPUT_TIMEOUT_S,
-    MAIN_BALE_WAIT_S,
-    MONITOR_ENABLED,
-    MONITOR_INTERVAL_SECONDS,
-    PLATFORMS_ORDER,
-    SELF_MONITOR_ENABLED,
-    SELF_MONITOR_ERROR_THRESHOLD,
-    SELF_MONITOR_INTERVAL,
-    SELF_MONITOR_STALE_MINUTES,
-)
+from config import PLATFORMS_ORDER
+
 from core.adapters.command_parser import (
     extract_value,
     parse_set_param,
@@ -53,113 +36,19 @@ from core.adapters.command_parser import (
 )
 from core.kernel.logger import log_error, log_info, log_success, log_warning
 
-# 🎯 P0: مسیرها از data.paths
+# 🎯 داده‌محور
 from data import paths as data_paths
+from data.loader import load_json, load_md
+
+# 🎯 ترجمهٔ پلتفرم
+from handlers._ai_utils import fa_platform
 
 
 # ═══════════════════════════════════════════
-# ثابت‌ها
+# ثابت‌ها (فقط env-based — بدون دیتا)
 # ═══════════════════════════════════════════
-SAFE_PARAMS = {
-    # ─── کلیدواژه‌ها ───
-    "KEYWORDS_ONLY",
-    "BRAND_TOKEN_ENABLED",
-    "BRAND_TOKEN_MIN_LEN",
 
-    # ─── poll intervals ───
-    "EITAA_POLL_SECONDS", "BALE_POLL_SECONDS", "RUBIKA_POLL_SECONDS",
-    "TELEGRAM_POLL_SECONDS", "WHATSAPP_POLL_SECONDS", "LINKEDIN_POLL_SECONDS",
-    "INSTAGRAM_POLL_SECONDS",
-
-    # ─── فعال/غیرفعال ───
-    "WEB_ENABLED", "EITAA_ENABLED", "BALE_ENABLED", "RUBIKA_ENABLED",
-    "TELEGRAM_ENABLED", "WHATSAPP_ENABLED", "LINKEDIN_ENABLED",
-    "INSTAGRAM_ENABLED",
-
-    # ─── عمومی ───
-    "OBS_PORT", "LOG_LEVEL",
-    "LINKEDIN_MONITOR_FEED",
-
-    # ─── بله ───
-    "BALE_MAX_CHATS",
-    "BALE_MESSAGES_PER_CHAT",
-    "BALE_BACKFILL_SCROLLS",
-    "BALE_DELAY_MIN", "BALE_DELAY_MAX",
-    "BALE_BETWEEN_MIN", "BALE_BETWEEN_MAX",
-    "BALE_TYPING_MIN", "BALE_TYPING_MAX",
-    "BALE_ADMIN_CHAT",
-    "BALE_UA_SUFFIX",
-
-    # ─── ایتا ───
-    "EITAA_MAX_CHATS",
-    "EITAA_MESSAGES_PER_CHAT",     # ← نام جدید (نه EITAA_MSGS_PER_CHAT)
-    "EITAA_BACKFILL_SCROLLS",
-    "EITAA_CHAT_DELAY",
-
-    # ─── واتساپ ───
-    "WHATSAPP_MAX_CHATS",
-    "WHATSAPP_MESSAGES_PER_CHAT",  # ← نام جدید
-    "WHATSAPP_BACKFILL_SCROLLS",
-    "WHATSAPP_CHAT_DELAY",
-
-    # ─── SafeBrain ───
-    "SAFE_BRAIN_MAX_API_HOUR",
-    "SAFE_BRAIN_AI_TIMEOUT_S",
-
-    # ─── Backup ───
-    "BACKUP_POKE_SECONDS",
-
-    # ─── AI ───
-    "AI_AVAILABLE_CACHE_S",
-
-    # ─── Cleanup ───
-    "CLEANUP_MIN_INTERVAL_HOURS",
-    "CLEANUP_MAX_INTERVAL_HOURS",
-
-    # ─── Report ───
-    "REPORT_SQL_TIMEOUT_S",
-    "REPORT_MISFIRE_GRACE_S",
-
-    # ─── Monitor ───
-    "MONITOR_ENABLED",
-    "MONITOR_INTERVAL_SECONDS",
-    "MONITOR_CPU_ALERT", "MONITOR_RAM_ALERT", "MONITOR_DISK_ALERT",
-
-    # ─── Self-Monitor ───
-    "SELF_MONITOR_ENABLED",
-    "SELF_MONITOR_INTERVAL",
-    "SELF_MONITOR_ERROR_THRESHOLD",
-    "SELF_MONITOR_STALE_MINUTES",
-
-    # ─── Keep ───
-    "KEEP_MEDIA_DAYS", "KEEP_REPORTS_DAYS", "KEEP_MESSAGES_DAYS",
-    "CLEANUP_INTERVAL_HOURS",
-
-    # ─── اصلی ───
-    "MAIN_BALE_WAIT_S",
-    "LOGIN_INPUT_TIMEOUT_S",
-}
-
-# 🎯 FIX: پارامترهای حساس — فقط env-based
-# (ADMIN_* حذف شد چون از config می‌آید نه env)
-_SENSITIVE_PARAMS = {
-    "DEEPSEEK_API_KEY", "DB_PASSWORD", "LINKEDIN_PASSWORD",
-    "BALE_PASSWORD", "EITAA_PASSWORD", "RUBIKA_PASSWORD",
-    "MEMORY_API_KEY", "NOTIFY_TELEGRAM_TOKEN",
-    "MAIN_SKIP_VENV_CHECK",
-}
-
-# 🎯 FIX: پارامترهای config-only که get_param باید از config بخواند
-_CONFIG_ONLY_PARAMS = {
-    "ADMIN_ENABLED", "ADMIN_IDS", "ADMIN_PLATFORM",
-    "FULL_ACCESS", "AI_ENABLED", "AI_PRIORITY",
-    "PLATFORMS_ACTIVE",
-}
-
-# 🎯 FIX #8: پارامترهای قابل خواندن = امن + حساس + config-only
-_READABLE_PARAMS = SAFE_PARAMS | _SENSITIVE_PARAMS | _CONFIG_ONLY_PARAMS
-
-# 🎯 FIX: پلتفرم‌ها از config (شامل instagram)
+# پلتفرم‌ها از config
 _PLATFORMS = PLATFORMS_ORDER
 
 # سقف خواندن لاگ (seek از انتها)
@@ -178,32 +67,73 @@ _SLOW_AI_MS = 30000
 # مدت اعتبار mask
 _MASK_PREVIEW_LEN = 4
 
+# پیش‌فرض‌های fallback (اگر data/ نبود)
+_DEFAULT_HELP = "راهنما در دسترس نیست."
+_DEFAULT_KEY_NOT_SET = "(تنظیم‌نشده)"
+_DEFAULT_EMPTY_STATS = "(فعلاً آماری در دسترس نیست)"
+
+
+# ═══════════════════════════════════════════
+# helpers — داده‌محور
+# ═══════════════════════════════════════════
+def _get_params_data() -> dict:
+    """🎯 بارگذاری params از access_control.json — با fallback امن.
+
+    جایگزین params.json (که تکراری با access_control.json بود):
+      - safe        ← access_control.settings.write
+      - sensitive   ← access_control.settings.deny
+      - config_only ← زیرمجموعه‌ای از deny (پارامترهای top-level config)
+    """
+    data = load_json("access_control")
+    settings = data.get("settings", {})
+
+    safe = set(settings.get("write", []) or [])
+    sensitive = set(settings.get("deny", []) or [])
+
+    # config_only = پارامترهای top-level config
+    # (از deny استخراج می‌شوند — این‌ها نباید از env خونده بشن)
+    _CONFIG_ONLY_KEYS = {
+        "ADMIN_ENABLED", "ADMIN_IDS", "ADMIN_PLATFORM",
+        "FULL_ACCESS", "USE_API_MEMORY",
+        "AI_ENABLED", "AI_PRIORITY",
+        "PLATFORMS_ACTIVE",
+    }
+    config_only = sensitive & _CONFIG_ONLY_KEYS
+
+    return {
+        "safe": safe,
+        "sensitive": sensitive,
+        "config_only": config_only,
+    }
+    
+def _get_errors() -> dict:
+    """بارگذاری errors.json — منبع یکتا."""
+    return load_json("errors")
+
+
+def _get_error_msg(key: str, default: str = "") -> str:
+    """گرفتن پیام خطا از errors.json."""
+    data = _get_errors()
+    errors = data.get("errors", {})
+    return errors.get(key, default)
+
 
 def _mask_secret(value: str) -> str:
     """مقدار حساس را mask می‌کند — فقط چند کاراکتر اول."""
-    if not value or value == "(تنظیم‌نشده)":
+    not_set = _get_error_msg("key_not_set", _DEFAULT_KEY_NOT_SET)
+    if not value or value == not_set:
         return value
     s = str(value)
     if len(s) <= _MASK_PREVIEW_LEN:
         return "•" * len(s)
-    return s[:_MASK_PREVIEW_LEN] + "•" * min(len(s) - _MASK_PREVIEW_LEN, 12)
+    return s[:_MASK_PREVIEW_LEN] + "•" * min(
+        len(s) - _MASK_PREVIEW_LEN, 12
+    )
 
 
-def _get_safebrain_prefixes() -> tuple[str, ...]:
-    """🎯 P0 FIX: prefixهای پویا از SafeBrain.
-
-    (قبلاً hardcode بود → اگر SafeBrain پیام جدیدی می‌داد،
-     شناسایی نمی‌شد.)
-    """
-    try:
-        from core.safe_brain.main import SafeBrain
-        # اطمینان از اینکه SafeBrain هنوز هم prefix «🤖» را دارد
-        # این‌جا از یک ثابت پایدار استفاده می‌کنیم
-        return ("🤖 SafeBrain", "🤖 WinDoctor", "🤖 Brain")
-    except Exception:
-        return ("🤖 SafeBrain", "🤖 WinDoctor")
-
-
+# ═══════════════════════════════════════════
+# AdminActions
+# ═══════════════════════════════════════════
 class AdminActions:
     """همهٔ اجراهای دستور — بدون گره به EventBus یا Handler."""
 
@@ -243,6 +173,15 @@ class AdminActions:
         )
 
         self._restart_task: asyncio.Task | None = None
+
+        # 🎯 لاگ init — خلاصه
+        params = _get_params_data()
+        log_info(
+            f"⚙️ [ADMIN:init:actions] پارامترها | "
+            f"safe={len(params['safe'])} | "
+            f"sensitive={len(params['sensitive'])} | "
+            f"config_only={len(params['config_only'])}"
+        )
 
     # ═══════════════════════════════════════
     # اجرا
@@ -295,7 +234,10 @@ class AdminActions:
         if action == "has_keyword":
             v = value or extract_value(raw_text)
             if not v:
-                return "کدام کلیدواژه؟ داخل « » بنویس."
+                return _get_error_msg(
+                    "empty_keyword",
+                    "کدام کلیدواژه؟ داخل « » بنویس.",
+                )
             found = bool(self.kw.has_match(v) or v in self.kw.keywords)
             log_info(f"🔍 [ADMIN:has_kw] v={v!r} | found={found}")
             return (
@@ -353,7 +295,7 @@ class AdminActions:
             log_warning("⚠️ [ADMIN:crm] خروجی خالی")
             return "⚠️ خروجی CRM ساخته نشد (شاید سرنخی نیست)."
 
-        label = platform or "همه پلتفرم‌ها"
+        label = fa_platform(platform) if platform else "همه پلتفرم‌ها"
         path = res.get("xlsx") or res.get("csv") or res.get("json") or "?"
         log_success(
             f"✅ [ADMIN:crm] {res.get('count', 0)} سرنخ — {label} | "
@@ -392,7 +334,7 @@ class AdminActions:
             return f"❌ خطا در ساخت گزارش: {e}"
 
         elapsed_ms = (time.monotonic() - t0) * 1000
-        label = platform or "همه پلتفرم‌ها"
+        label = fa_platform(platform) if platform else "همه پلتفرم‌ها"
         if elapsed_ms > _SLOW_REPORT_MS:
             log_warning(f"🐌 [ADMIN:report] کند | {elapsed_ms:.0f}ms")
 
@@ -409,6 +351,10 @@ class AdminActions:
     # Ask / memory
     # ═══════════════════════════════════════
     async def ask(self, question: str) -> str:
+        """سؤال آزاد — با fallback چندلایه.
+
+        اگر AI نبود → اول live_context() بعد help_text().
+        """
         try:
             from core.services.ai_assistant import PERSONA
         except Exception as e:
@@ -416,7 +362,7 @@ class AdminActions:
                 f"⚠️ [ADMIN:ask] import PERSONA | "
                 f"{type(e).__name__}: {e}"
             )
-            return self.help_text()
+            return self._fallback_reply()
 
         system = (
             PERSONA
@@ -430,13 +376,11 @@ class AdminActions:
             ans = await self.ai.chat(question, system=system)
         except Exception as e:
             log_error(f"❌ [ADMIN:ask] {type(e).__name__}: {e}")
-            return (
-                "هوش الان در دسترس نیست. خلاصهٔ قابلیت‌ها:\n"
-                + self.help_text()
-            )
+            return self._fallback_reply()
 
         elapsed_ms = (time.monotonic() - t0) * 1000
 
+        # ─── چک اعتبار ───
         if (
             not ans
             or "در دسترس نیست" in ans
@@ -445,10 +389,7 @@ class AdminActions:
             log_warning(
                 f"⚠️ [ADMIN:ask] پاسخ نامعتبر | {elapsed_ms:.0f}ms"
             )
-            return (
-                "هوش الان در دسترس نیست. خلاصهٔ قابلیت‌ها:\n"
-                + self.help_text()
-            )
+            return self._fallback_reply()
 
         if elapsed_ms > _SLOW_AI_MS:
             log_warning(f"🐌 [ADMIN:ask] کند | {elapsed_ms:.0f}ms")
@@ -459,10 +400,21 @@ class AdminActions:
         self.memory.remember(question, ans)
         return ans
 
+    def _fallback_reply(self) -> str:
+        """پاسخ fallback: اول آمار زنده، بعد راهنما."""
+        return (
+            "🤔 هوش الان در دسترس نیست — ولی آمار زنده:\n\n"
+            + self.live_context()
+            + "\n\n"
+            + self.help_text()
+        )
+
     # ═══════════════════════════════════════
     # آمار / وضعیت
     # ═══════════════════════════════════════
     def live_context(self) -> str:
+        """آمار زنده — با اسم پلتفرم فارسی."""
+        empty = _get_error_msg("empty_stats", _DEFAULT_EMPTY_STATS)
         conn = None
         try:
             conn = sqlite3.connect(self.db_path)
@@ -484,23 +436,25 @@ class AdminActions:
                 "ORDER BY timestamp DESC LIMIT 1"
             ).fetchone()
 
+            # 🎯 اسم پلتفرم فارسی
+            byp_fa = "، ".join(
+                f"{fa_platform(p)}={n}" for p, n in byp
+            )
             parts = [
                 f"کل سرنخ‌ها: {total}",
                 f"امروز: {today}",
-                (
-                    "به‌تفکیک: " + "، ".join(f"{p}={n}" for p, n in byp)
-                    if byp else "به‌تفکیک: -"
-                ),
+                f"به‌تفکیک: {byp_fa}" if byp else "به‌تفکیک: -",
             ]
             if last:
                 parts.append(
-                    f"آخرین سرنخ: {last[0]} / گروه {last[1]} / "
+                    f"آخرین سرنخ: {fa_platform(last[0])} / "
+                    f"گروه {last[1]} / "
                     f"کلیدواژه {last[2]} / {last[3]}"
                 )
             return "\n".join(parts)
         except Exception as e:
             log_warning(f"⚠️ [ADMIN:live_ctx] {type(e).__name__}: {e}")
-            return "(فعلاً آماری در دسترس نیست)"
+            return empty
         finally:
             if conn is not None:
                 try:
@@ -509,6 +463,7 @@ class AdminActions:
                     pass
 
     def status(self) -> str:
+        """آمار کلی — با اسم پلتفرم فارسی."""
         conn = None
         try:
             conn = sqlite3.connect(self.db_path)
@@ -528,7 +483,10 @@ class AdminActions:
                 "WHERE keywords!='' GROUP BY platform"
             ).fetchall()
 
-            by = "، ".join(f"{p}: {n}" for p, n in rows) or "—"
+            # 🎯 اسم پلتفرم فارسی
+            by = "، ".join(
+                f"{fa_platform(p)}: {n}" for p, n in rows
+            ) or "—"
             return (
                 f"📊 وضعیت:\n"
                 f"کل پیام: {total} | سرنخ: {leads} | داغ: {hot}\n"
@@ -545,6 +503,7 @@ class AdminActions:
                     pass
 
     async def health(self) -> str:
+        """سلامت کامل — با اسم پلتفرم فارسی."""
         lines = ["🩺 سلامتِ کامل:"]
         for p in _PLATFORMS:
             try:
@@ -555,13 +514,14 @@ class AdminActions:
                     f"{type(e).__name__}: {e}"
                 )
                 last = None
+            p_fa = fa_platform(p)
             if not last:
-                lines.append(f"• {p}: — (فعالیتی ثبت نشده)")
+                lines.append(f"• {p_fa}: — (فعالیتی ثبت نشده)")
             else:
                 mins = (datetime.now() - last).total_seconds() / 60
                 mark = "✅" if mins < 30 else "⚠️"
                 lines.append(
-                    f"• {p}: {mark} آخرین فعالیت {int(mins)} دقیقه پیش"
+                    f"• {p_fa}: {mark} آخرین فعالیت {int(mins)} دقیقه پیش"
                 )
         try:
             import psutil
@@ -621,7 +581,7 @@ class AdminActions:
         brand_line = f"🏢 برند: {brand_info}\n" if brand_info else ""
         detail = (
             f"🔎 {label} سرنخ:\n"
-            f"📱 پلتفرم: {row['platform']}\n"
+            f"📱 پلتفرم: {fa_platform(row['platform'])}\n"
             f"👥 گروه: {row['chat_name']}\n"
             f"🔑 کلیدواژه: {row['keywords']}\n"
             f"{brand_line}"
@@ -672,6 +632,8 @@ class AdminActions:
         if not p or p not in _PLATFORMS:
             return self.status()
 
+        p_fa = fa_platform(p)
+
         try:
             last = await self.db.get_last_poll(p)
         except Exception as e:
@@ -683,17 +645,17 @@ class AdminActions:
 
         if not last:
             return (
-                f"ℹ️ {p}: هنوز فعالیتی ثبت نشده "
+                f"ℹ️ {p_fa}: هنوز فعالیتی ثبت نشده "
                 f"(شاید تازه شروع شده یا وصل نیست)."
             )
 
         mins = (datetime.now() - last).total_seconds() / 60
         if mins < 30:
             return (
-                f"✅ {p}: فعال — آخرین فعالیت {int(mins)} دقیقه پیش."
+                f"✅ {p_fa}: فعال — آخرین فعالیت {int(mins)} دقیقه پیش."
             )
         return (
-            f"⚠️ {p}: آخرین فعالیت {int(mins)} دقیقه پیش "
+            f"⚠️ {p_fa}: آخرین فعالیت {int(mins)} دقیقه پیش "
             f"(شاید وصل نیست)."
         )
 
@@ -759,14 +721,11 @@ class AdminActions:
         return ans
 
     # ═══════════════════════════════════════
-    # پارامترها — 🎯 بازنویسی کامل
+    # پارامترها — 🎯 داده‌محور
     # ═══════════════════════════════════════
     def _read_config_only(self, key: str) -> str:
-        """🎯 P0 FIX: خواندن پارامترهای config-only از config.
-
-        برای پارامترهایی که در os.getenv نیستند (مثل ADMIN_ENABLED
-        که از PLUGINS_CONFIG می‌آید).
-        """
+        """خواندن پارامترهای config-only از config."""
+        not_set = _get_error_msg("key_not_set", _DEFAULT_KEY_NOT_SET)
         try:
             import config as _c
             mapping = {
@@ -786,29 +745,39 @@ class AdminActions:
                 f"⚠️ [ADMIN:get_param:config] {key} | "
                 f"{type(e).__name__}: {e}"
             )
-        return "(تنظیم‌نشده)"
+        return not_set
 
     def get_param(self, name) -> str:
-        """🎯 P0 FIX: خواندن پارامتر — از env یا config.
+        """خواندن پارامتر — از env یا config.
 
-        - اگر در _CONFIG_ONLY_PARAMS بود → از config
-        - اگر در _SENSITIVE_PARAMS بود → از env با mask
-        - اگر در SAFE_PARAMS بود → از env مستقیم
+        - config_only → از config
+        - sensitive → از env با mask
+        - safe → از env مستقیم
         """
+        params = _get_params_data()
+        safe = params["safe"]
+        sensitive = params["sensitive"]
+        config_only = params["config_only"]
+        readable = safe | sensitive | config_only
+
+        not_allowed = _get_error_msg(
+            "param_not_allowed", "این پارامتر مجاز نیست."
+        )
+
         if not name or not isinstance(name, str):
             return (
-                f"این پارامتر مجاز نیست. "
-                f"مجازها: {', '.join(sorted(_READABLE_PARAMS))}"
+                f"{not_allowed} "
+                f"مجازها: {', '.join(sorted(readable))}"
             )
         key = name.upper()
-        if key not in _READABLE_PARAMS:
+        if key not in readable:
             return (
-                f"این پارامتر مجاز نیست. "
-                f"مجازها: {', '.join(sorted(_READABLE_PARAMS))}"
+                f"{not_allowed} "
+                f"مجازها: {', '.join(sorted(readable))}"
             )
 
-        # 🎯 config-only
-        if key in _CONFIG_ONLY_PARAMS:
+        # ─── config-only ───
+        if key in config_only:
             raw = self._read_config_only(key)
             is_sensitive = key in ("ADMIN_IDS",)
             display = _mask_secret(raw) if is_sensitive else raw
@@ -818,12 +787,13 @@ class AdminActions:
             )
             return f"{key} = {display}"
 
-        # env-based
-        raw = os.getenv(key, "(تنظیم‌نشده)")
+        # ─── env-based ───
+        not_set = _get_error_msg("key_not_set", _DEFAULT_KEY_NOT_SET)
+        raw = os.getenv(key, not_set)
         if raw and len(str(raw)) > _PARAM_VALUE_MAX_LEN:
             raw = str(raw)[:_PARAM_VALUE_MAX_LEN] + "..."
 
-        is_sensitive = key in _SENSITIVE_PARAMS
+        is_sensitive = key in sensitive
         display = _mask_secret(raw) if is_sensitive else raw
 
         log_info(
@@ -833,15 +803,20 @@ class AdminActions:
         return f"{key} = {display}"
 
     def set_param(self, raw_text: str) -> str:
+        params = _get_params_data()
+        safe = params["safe"]
+
         name, val = parse_set_param(raw_text)
         if not name:
-            return "قالب: set PARAM=VALUE"
+            return _get_error_msg(
+                "set_param_format", "قالب: set PARAM=VALUE"
+            )
         name = name.upper()
-        if name not in SAFE_PARAMS:
+        if name not in safe:
             log_warning(f"⚠️ [ADMIN:set_param] غیرمجاز | {name}")
             return (
                 f"تغییرِ «{name}» مجاز نیست. "
-                f"مجازها: {', '.join(sorted(SAFE_PARAMS))}"
+                f"مجازها: {', '.join(sorted(safe))}"
             )
 
         ok, err = self._update_env(name, val)
@@ -856,12 +831,7 @@ class AdminActions:
         )
 
     def _update_env(self, key: str, value: str) -> tuple[bool, str]:
-        """🎯 P0 FIX: نوشتن atomic در .env + fsync.
-
-        - نوشتن در tmp
-        - os.replace (atomic)
-        - fsync روی فایل و دایرکتوری برای durability
-        """
+        """نوشتن atomic در .env + fsync."""
         env_path = os.path.join(self.root, ".env")
         tmp_path = env_path + ".tmp"
 
@@ -883,7 +853,6 @@ class AdminActions:
                     lines[-1] += "\n"
                 lines.append(new_line)
 
-            # نوشتن + fsync
             with open(tmp_path, "w", encoding="utf-8") as f:
                 f.writelines(lines)
                 try:
@@ -894,7 +863,6 @@ class AdminActions:
 
             os.replace(tmp_path, env_path)
 
-            # fsync دایرکتوری (POSIX)
             try:
                 dir_fd = os.open(
                     os.path.dirname(env_path) or ".",
@@ -905,7 +873,6 @@ class AdminActions:
                 finally:
                     os.close(dir_fd)
             except (AttributeError, OSError):
-                # Windows: O_DIRECTORY نیست — skip
                 pass
 
             return True, ""
@@ -922,7 +889,6 @@ class AdminActions:
     # ═══════════════════════════════════════
     def log_request(self, text: str) -> str:
         try:
-            # 🎯 P0: از data.paths
             path = self._get_requests_path()
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "a", encoding="utf-8") as f:
@@ -943,12 +909,7 @@ class AdminActions:
             return f"خطا در ثبتِ درخواست: {e}"
 
     async def _do_restart(self):
-        """🎯 P0 FIX: ری‌استارت با graceful shutdown + flush کامل.
-
-        تغییرات:
-          - sys.stdout.flush() + sys.stderr.flush() قبل از os._exit
-          - flush logger + file handlers
-        """
+        """ری‌استارت با graceful shutdown + flush کامل."""
         await asyncio.sleep(1)
 
         # ─── تلاش برای shutdown تمیز ───
@@ -994,19 +955,15 @@ class AdminActions:
             )
             return
 
-        # ─── 🎯 P0 FIX: flush همه چیز قبل از os._exit ───
         log_warning("🔄 [ADMIN:restart] خروج از پروسهٔ قدیمی (os._exit)")
 
         if spawned:
-            # flush logger
             try:
                 from core.kernel.logger import get_logger
                 get_logger().flush()
             except Exception:
                 pass
 
-            # 🎯 FIX جدید: flush stdout/stderr
-            # (os._exit حتی atexit را هم اجرا نمی‌کند)
             try:
                 sys.stdout.flush()
             except Exception:
@@ -1021,37 +978,11 @@ class AdminActions:
             log_error("❌ [ADMIN:restart] spawn نشد — پروسهٔ قدیمی می‌ماند")
 
     # ═══════════════════════════════════════
-    # راهنما
+    # راهنما — از data/templates/help.md
     # ═══════════════════════════════════════
     def help_text(self) -> str:
-        return (
-            "🛡️ دستورها (متن آزاد هم می‌فهمم):\n"
-            "━━━━━━━━━━━━━━━━━━━\n"
-            "📊 **اطلاعات:**\n"
-            "• وضعیت / آمار / خلاصه\n"
-            "• گزارش — `گزارش ایتا` برای یک پلتفرم خاص\n"
-            "• CRM (اکسل) — `crm ایتا` برای یک پلتفرم خاص\n"
-            "• لاگ / چند خطا\n"
-            "• توضیح لاگ‌ها (explain_logs)\n"
-            "• کلیدواژه‌ها / کلیدواژه‌های سفارشی\n"
-            "• گروه‌های هدف / بهترین گروه\n"
-            "• داغ‌ترین کلیدواژه\n"
-            "• آخرین سرنخ / اولین سرنخ\n"
-            "• `وضعیت ایتا` (platform_status)\n"
-            "• `سلامت` (health)\n\n"
-            "🔧 **مدیریت:**\n"
-            "• کلیدواژه «...» را اضافه کن / حذف کن\n"
-            "• کلیدواژه «...» را داری؟ (has_keyword)\n"
-            "• لینکدین کار می‌کند؟ (یا هر پلتفرم)\n"
-            "• `set PARAM=VALUE` — تنظیم پارامترهای مجاز\n"
-            "• `get PARAM` — خواندن پارامتر (env یا config)\n"
-            "• `restart` / `ری‌استارت`\n\n"
-            "🧠 **یادگیری (هوش خودکار):**\n"
-            "• یاد بگیر «سؤال» = «جواب»\n"
-            "• یاد بگیر «سؤال» = SQL: SELECT ...\n"
-            "• لیست candidate ها\n"
-            "• تأیید <نام قانون>\n\n"
-            "💡 **درخواست قابلیت جدید:**\n"
-            "• «می‌خوام بتونی ...» → ثبت می‌شود\n\n"
-            "🔒 دستورها فقط در چتِ خصوصی اجرا می‌شوند (نه در گروه)."
-        )
+        """راهنما از data/templates/help.md.
+
+        اگر فایل نبود → پیام پیش‌فرض.
+        """
+        return load_md("help", default=_DEFAULT_HELP)

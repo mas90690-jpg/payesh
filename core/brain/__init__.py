@@ -35,10 +35,7 @@ from core.brain.tools_meta import (
     TOOL_DEFINITIONS,
 )
 from core.brain.utils import (
-    _SAFE_PREAMBLE,
     PersianBrainHandler,
-    _invalidate_access_cache,
-    _load_access,
     human_bytes,
     safe_path,
 )
@@ -52,5 +49,13 @@ __all__ = [
     "ALLOWED_TOOLS", "ALLOWED_DIRECT_COMMANDS", "TOOL_DEFINITIONS",
     "BRAIN_DIR", "MEMORY_DIR", "CACHE_DIR", "BACKUP_DIR", "HOOKS_DIR",
     "MAX_FILE_SIZE_BYTES", "MAX_CONTENT_LENGTH", "MAX_AGENT_STEPS",
-    "MAX_CONTEXT_TOKENS", "CACHE_TTL_DAYS", "DEFAULT_MODEL",
+    "MAX_CONTEXT_TOKENS", "CACHE_TTL_DAYS", "DEFAULT_MODEL", "MemoryStore",
 ]
+
+from core.brain.memory import (
+    APIMemory,
+    BrainMemory,
+    ProjectSemanticSearch,
+    SmartCache,
+)
+from core.adapters.memory_store import MemoryStore

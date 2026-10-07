@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import time
 from datetime import datetime
 from pathlib import Path
 
@@ -28,7 +27,6 @@ from config import (
     ADMIN_ENABLED,
     ADMIN_IDS,
     ADMIN_PLATFORM,
-    AI,
     PLATFORMS_ORDER,
 )
 from core.adapters.access_manager import get_access_manager

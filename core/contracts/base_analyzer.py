@@ -79,7 +79,6 @@ class BaseAnalyzer(ABC):
         Returns:
             AnalyzedMessage: پیام با اطلاعات تحلیل‌شده.
         """
-        pass
 
     # ═══════════════════════════════════════════
     # helpers (قابل override)

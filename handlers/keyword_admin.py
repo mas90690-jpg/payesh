@@ -1,22 +1,12 @@
 """
-CRUD روی keywords_custom.json — atomic، فرمت-آگنوستیک.
+CRUD روی keywords_custom.json — داده‌محور.
 
-نسخهٔ ۲ (این نسخه):
-  - 🎯 استفاده از config برای مسیر پیش‌فرض (اگر path ندهند).
-  - 🎯 استفاده از data.paths برای مسیر keywords_custom.json.
-  - 🎯 ثابت `_VALID_TIERS` (به‌جای hardcode در چند جا).
-  - 🎯 `_FILE_VERSION` ثابت (به‌جای hardcode "2.0.0").
-  - 🐛 FIX: `write()` حالا `os.fsync` می‌زند (durability).
-  - 🐛 FIX: `write()` حالا اگر `os.path.dirname(p)` خالی باشد
-    (مثلاً path = "keywords.json")، خطا نمی‌دهد.
-  - 🎯 `add()` و `remove()` حالا tier را حفظ می‌کنند
-    (اگر kw از قبل با tier متفاوت بود).
-  - 🎯 `add()` حالا می‌تواند tier بگیرد (پیش‌فرض T1).
-  - 🎯 `rename()` متد جدید برای تغییر نام (اختیاری).
-  - 🎯 `change_tier()` متد جدید برای تغییر tier.
-  - 🎯 `list_all()` متد جدید برای لیست.
-  - 🎯 لاگ‌های کامل‌تر با prefixهای [KW:...].
-  - ✅ حفظ همهٔ رفتار نسخهٔ ۱ (atomic write، فرمت-آگنوستیک).
+نسخهٔ ۳ (این نسخه — داده‌محور):
+  - 🎯 همهٔ ثابت‌ها از data/ می‌آید:
+      * data/configs/tiers.json     → valid / default / version
+      * data/configs/messages.json  → پیام‌های خطا
+  - 🎯 `_valid_tiers`, `_default_tier`, `_file_version` حالا attribute هستند.
+  - ✅ حفظ همهٔ رفتار نسخهٔ ۲ (atomic write، فرمت-آگنوستیک).
 """
 from __future__ import annotations
 
@@ -27,16 +17,24 @@ from typing import Any
 
 from core.kernel.logger import log_error, log_info, log_success, log_warning
 
-# 🎯 P0: مسیر پیش‌فرض از data.paths
+# 🎯 داده‌محور
 from data import paths as data_paths
+from data.loader import load_json
 
 
 # ═══════════════════════════════════════════════════════════
-# ثابت‌ها
+# helpers — داده‌محور
 # ═══════════════════════════════════════════════════════════
-_VALID_TIERS: tuple[str, ...] = ("T1", "T2", "T3")
-_DEFAULT_TIER: str = "T1"
-_FILE_VERSION: str = "2.0.0"
+def _get_tiers_data() -> dict:
+    """بارگذاری tiers.json."""
+    return load_json("tiers")
+
+
+def _get_error_msg(key: str, default: str = "") -> str:
+    """گرفتن پیام خطا از errors.json — منبع یکتا."""
+    data = load_json("errors")
+    errors = data.get("errors", {})
+    return errors.get(key, default)
 
 
 def _default_path() -> str:
@@ -48,26 +46,26 @@ class KeywordAdmin:
     """مدیریت کلیدواژه‌های دستی — هم فرمت قدیمی (list) هم جدید (dict)."""
 
     def __init__(self, path: str | None = None):
-        # 🎯 FIX: اگر path ندهند، از data.paths
         self.path = path or _default_path()
+
+        # 🎯 داده‌محور — بارگذاری از tiers.json
+        tiers = _get_tiers_data()
+        self._valid_tiers: tuple[str, ...] = tuple(
+            tiers.get("valid", ["T1", "T2", "T3"])
+        )
+        self._default_tier: str = tiers.get("default", "T1")
+        self._file_version: str = tiers.get("version", "2.0.0")
+
+        log_info(
+            f"📚 [KW:init] آماده | valid_tiers={self._valid_tiers} | "
+            f"default={self._default_tier}"
+        )
 
     # ═══════════════════════════════════════════
     # read
     # ═══════════════════════════════════════════
     def read(self, path: str | None = None) -> dict[str, str]:
-        """خواندن فایل — برمی‌گرداند {name: tier}.
-
-        فرمت‌های پشتیبانی‌شده:
-          - لیست خالص: ["کود", "سم"]
-          - dict با keywords: {"keywords": {"کود": {"tier": "T1"}}}
-          - dict با keywords لیست: {"keywords": ["کود", "سم"]}
-
-        Args:
-            path: مسیر دلخواه (اختیاری). اگر ندهند از self.path.
-
-        Returns:
-            dict[str, str]: {نام: tier}. اگر فایل نبود یا خراب بود، {}.
-        """
+        """خواندن فایل — برمی‌گرداند {name: tier}."""
         p = path or self.path
         if not os.path.exists(p):
             return {}
@@ -91,7 +89,7 @@ class KeywordAdmin:
         # ─── فرمت لیست ───
         if isinstance(data, list):
             out = {
-                str(x).strip(): _DEFAULT_TIER
+                str(x).strip(): self._default_tier
                 for x in data
                 if isinstance(x, str) and x.strip()
             }
@@ -119,7 +117,7 @@ class KeywordAdmin:
                 return out
             if isinstance(kws, list):
                 out = {
-                    str(x).strip(): _DEFAULT_TIER
+                    str(x).strip(): self._default_tier
                     for x in kws
                     if isinstance(x, str) and x.strip()
                 }
@@ -135,22 +133,23 @@ class KeywordAdmin:
         )
         return {}
 
-    @staticmethod
-    def _normalize(kws: dict[str, Any]) -> dict[str, str]:
-        """نرمال‌سازی dict با tier."""
+    def _normalize(self, kws: dict[str, Any]) -> dict[str, str]:
+        """نرمال‌سازی dict با tier — با self._valid_tiers."""
         out: dict[str, str] = {}
         for k, meta in kws.items():
             name = str(k).strip()
             if not name:
                 continue
             if isinstance(meta, dict):
-                tier = str(meta.get("tier", _DEFAULT_TIER)).upper()
+                tier = str(
+                    meta.get("tier", self._default_tier)
+                ).upper()
             elif isinstance(meta, str):
                 tier = meta.upper()
             else:
-                tier = _DEFAULT_TIER
-            if tier not in _VALID_TIERS:
-                tier = _DEFAULT_TIER
+                tier = self._default_tier
+            if tier not in self._valid_tiers:
+                tier = self._default_tier
             out[name] = tier
         return out
 
@@ -162,27 +161,19 @@ class KeywordAdmin:
         kw_tier: dict[str, str],
         path: str | None = None,
     ) -> bool:
-        """نوشتن dict با tier — atomic (tmp + replace + fsync).
-
-        Args:
-            kw_tier: {نام: tier}.
-            path: مسیر دلخواه (اختیاری).
-
-        Returns:
-            True اگر موفق.
-        """
+        """نوشتن dict با tier — atomic (tmp + replace + fsync)."""
         p = path or self.path
 
         try:
             data = {
-                "version": _FILE_VERSION,
+                "version": self._file_version,
                 "updated_at": datetime.now().isoformat(),
                 "keywords": {
                     k.strip(): {
                         "tier": (
                             t.upper()
-                            if t and t.upper() in _VALID_TIERS
-                            else _DEFAULT_TIER
+                            if t and t.upper() in self._valid_tiers
+                            else self._default_tier
                         )
                     }
                     for k, t in kw_tier.items()
@@ -190,14 +181,12 @@ class KeywordAdmin:
                 },
             }
 
-            # 🎯 FIX: dirname ممکن است خالی باشد
             parent = os.path.dirname(p)
             if parent:
                 os.makedirs(parent, exist_ok=True)
 
             tmp = p + ".tmp"
 
-            # 🎯 FIX: fsync برای durability
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
                 try:
@@ -208,7 +197,6 @@ class KeywordAdmin:
 
             os.replace(tmp, p)
 
-            # 🎯 fsync دایرکتوری (POSIX)
             if parent:
                 try:
                     dir_fd = os.open(parent, os.O_DIRECTORY)
@@ -229,7 +217,6 @@ class KeywordAdmin:
             log_error(
                 f"❌ [KW:write] {type(e).__name__}: {e} | path={p}"
             )
-            # cleanup tmp
             try:
                 tmp = p + ".tmp"
                 if os.path.exists(tmp):
@@ -245,30 +232,23 @@ class KeywordAdmin:
         self,
         kw: str,
         path: str | None = None,
-        tier: str = _DEFAULT_TIER,
+        tier: str | None = None,
     ) -> str:
-        """افزودن کلیدواژه.
-
-        Args:
-            kw: نام کلیدواژه.
-            path: مسیر فایل (اختیاری).
-            tier: سطح (T1/T2/T3). پیش‌فرض T1.
-
-        Returns:
-            پیام نتیجه (فارسی).
-        """
+        """افزودن کلیدواژه."""
         if not kw or not str(kw).strip():
-            return (
-                "کلیدواژه را داخل « » بنویس، مثلاً: "
-                "کلیدواژه «کود مایع» را اضافه کن"
+            return _get_error_msg(
+                "add_keyword_hint",
+                "کلیدواژه را داخل « » بنویس.",
             )
 
         kw_clean = str(kw).strip()
 
-        # اعتبارسنجی tier
-        tier_clean = (tier or _DEFAULT_TIER).upper()
-        if tier_clean not in _VALID_TIERS:
-            tier_clean = _DEFAULT_TIER
+        # ─── tier پیش‌فرض ───
+        if tier is None:
+            tier = self._default_tier
+        tier_clean = str(tier).upper()
+        if tier_clean not in self._valid_tiers:
+            tier_clean = self._default_tier
 
         current = self.read(path)
         if kw_clean in current:
@@ -279,7 +259,6 @@ class KeywordAdmin:
                     f"(tier={existing_tier})"
                 )
                 return f"«{kw_clean}» از قبل هست (سطح {existing_tier})."
-            # tier متفاوت → به‌روزرسانی
             log_info(
                 f"ℹ️ [KW:add] «{kw_clean}» از قبل هست | "
                 f"tier: {existing_tier} → {tier_clean}"
@@ -301,8 +280,7 @@ class KeywordAdmin:
             )
             return (
                 f"✅ «{kw_clean}» با سطح {tier_clean} اضافه شد "
-                f"(تا چند ثانیهٔ دیگر خودکار فعال می‌شود، "
-                f"بدون ری‌استارت)."
+                f"(تا چند ثانیهٔ دیگر خودکار فعال می‌شود)."
             )
         return "❌ ذخیره ناموفق."
 
@@ -310,30 +288,21 @@ class KeywordAdmin:
     # remove
     # ═══════════════════════════════════════════
     def remove(self, kw: str, path: str | None = None) -> str:
-        """حذف کلیدواژه.
-
-        Args:
-            kw: نام کلیدواژه.
-            path: مسیر فایل (اختیاری).
-
-        Returns:
-            پیام نتیجه (فارسی).
-        """
+        """حذف کلیدواژه."""
         if not kw or not str(kw).strip():
-            return "کدام کلیدواژه را حذف کنم؟ داخل « » بنویس."
+            return _get_error_msg(
+                "remove_keyword_hint",
+                "کدام کلیدواژه را حذف کنم؟ داخل « » بنویس.",
+            )
 
         kw_clean = str(kw).strip()
         current = self.read(path)
 
         if kw_clean not in current:
             log_info(f"ℹ️ [KW:remove] «{kw_clean}» نبود")
-            return (
-                f"«{kw_clean}» در کلیدواژه‌های افزودنی نیست. "
-                f"(فقط کلیدواژه‌هایی که از همین‌جا اضافه شده‌اند "
-                f"قابلِ حذف‌اند، نه محصولاتِ اصلی.)"
-            )
+            return f"«{kw_clean}» در کلیدواژه‌های افزودنی نیست."
 
-        old_tier = current.pop(kw_clean, _DEFAULT_TIER)
+        old_tier = current.pop(kw_clean, self._default_tier)
 
         if self.write(current, path):
             log_success(
@@ -347,7 +316,7 @@ class KeywordAdmin:
         return "❌ ذخیره ناموفق."
 
     # ═══════════════════════════════════════════
-    # 🎯 NEW: rename
+    # rename
     # ═══════════════════════════════════════════
     def rename(
         self,
@@ -355,16 +324,7 @@ class KeywordAdmin:
         new: str,
         path: str | None = None,
     ) -> str:
-        """تغییر نام کلیدواژه (با حفظ tier).
-
-        Args:
-            old: نام فعلی.
-            new: نام جدید.
-            path: مسیر فایل (اختیاری).
-
-        Returns:
-            پیام نتیجه (فارسی).
-        """
+        """تغییر نام کلیدواژه (با حفظ tier)."""
         old_clean = str(old or "").strip()
         new_clean = str(new or "").strip()
 
@@ -382,7 +342,7 @@ class KeywordAdmin:
         if new_clean in current:
             return f"⚠️ «{new_clean}» از قبل در لیست هست."
 
-        tier = current.pop(old_clean, _DEFAULT_TIER)
+        tier = current.pop(old_clean, self._default_tier)
         current[new_clean] = tier
 
         if self.write(current, path):
@@ -397,7 +357,7 @@ class KeywordAdmin:
         return "❌ ذخیره ناموفق."
 
     # ═══════════════════════════════════════════
-    # 🎯 NEW: change_tier
+    # change_tier
     # ═══════════════════════════════════════════
     def change_tier(
         self,
@@ -405,26 +365,17 @@ class KeywordAdmin:
         new_tier: str,
         path: str | None = None,
     ) -> str:
-        """تغییر tier یک کلیدواژه.
-
-        Args:
-            kw: نام کلیدواژه.
-            new_tier: سطح جدید (T1/T2/T3).
-            path: مسیر فایل (اختیاری).
-
-        Returns:
-            پیام نتیجه (فارسی).
-        """
+        """تغییر tier یک کلیدواژه."""
         kw_clean = str(kw or "").strip()
         tier_clean = str(new_tier or "").upper()
 
         if not kw_clean:
             return "نام کلیدواژه لازم است."
 
-        if tier_clean not in _VALID_TIERS:
+        if tier_clean not in self._valid_tiers:
             return (
                 f"⛔ سطح نامعتبر. باید یکی از این‌ها باشد: "
-                f"{', '.join(_VALID_TIERS)}"
+                f"{', '.join(self._valid_tiers)}"
             )
 
         current = self.read(path)
@@ -450,30 +401,19 @@ class KeywordAdmin:
         return "❌ ذخیره ناموفق."
 
     # ═══════════════════════════════════════════
-    # 🎯 NEW: list_all
+    # list_all / get_tier / exists / count
     # ═══════════════════════════════════════════
     def list_all(
         self,
         path: str | None = None,
         with_tier: bool = False,
     ) -> list[tuple[str, str]] | list[str]:
-        """لیست همهٔ کلیدواژه‌ها.
-
-        Args:
-            path: مسیر فایل (اختیاری).
-            with_tier: اگر True، لیست (name, tier) برگردان.
-
-        Returns:
-            لیست نام‌ها (یا لیست (name, tier)).
-        """
+        """لیست همهٔ کلیدواژه‌ها."""
         data = self.read(path)
         if with_tier:
             return sorted(data.items())
         return sorted(data.keys())
 
-    # ═══════════════════════════════════════════
-    # 🎯 NEW: get_tier
-    # ═══════════════════════════════════════════
     def get_tier(
         self, kw: str, path: str | None = None
     ) -> str | None:
@@ -483,9 +423,6 @@ class KeywordAdmin:
             return None
         return self.read(path).get(kw_clean)
 
-    # ═══════════════════════════════════════════
-    # 🎯 NEW: exists
-    # ═══════════════════════════════════════════
     def exists(self, kw: str, path: str | None = None) -> bool:
         """آیا کلیدواژه وجود دارد؟"""
         kw_clean = str(kw or "").strip()
@@ -493,9 +430,6 @@ class KeywordAdmin:
             return False
         return kw_clean in self.read(path)
 
-    # ═══════════════════════════════════════════
-    # 🎯 NEW: count
-    # ═══════════════════════════════════════════
     def count(self, path: str | None = None) -> int:
         """تعداد کلیدواژه‌های سفارشی."""
         return len(self.read(path))

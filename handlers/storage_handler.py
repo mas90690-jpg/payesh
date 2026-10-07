@@ -9,22 +9,15 @@
   ۳) پیامِ بدون کلیدواژه (نه از finder، نه preset از کلکتور) → رد.
   ۴) پیامِ بدون tier مجاز → رد. پیش‌فرض فقط T1.
 
-نسخهٔ ۴ (این نسخه):
-  - 🎯 استفاده از config.ADMIN_IDS (top-level) — به‌جای PLUGINS_CONFIG.
-  - 🐛 FIX: _is_self_or_saved — بازنویسی منطق با ترتیب واضح:
-      * اول «فضای شخصی» جداگانه چک می‌شود
-      * بعد بقیهٔ markerها
-      * بدون ابهام در حالت‌های ترکیبی (مثلاً
-        chat_name = "Saved Messages فضای شخصی")
-  - 🎯 _is_admin_message: حالا سه لایه شفاف‌تر + لاگ واضح‌تر
-    (پیشوند یکسان [STORAGE:guard1:L*])
-  - 🎯 BALE_ADMIN_CHAT حالا از config می‌آید (اگر اضافه شد)
-  - 🎯 _TARGET_FILTERED_PLATFORMS حالا از config.PLATFORMS_ORDER
-    مشتق می‌شود (بدون hardcode).
-  - 🐛 FIX: حذف _GUARD3_FIRST_LOG و _GUARD3_LOG_EVERY از top
-    (به _GUARD3_* تغییر نام داد برای شفافیت)
-  - 🎯 _log_stats حالا درصد موفقیت را هم نشان می‌دهد.
-  - ✅ حفظ همهٔ رفتار نسخهٔ ۳.
+نسخهٔ ۵ (این نسخه — داده‌محور):
+  - 🎯 همهٔ مارکرها از data/configs/markers.json می‌آید:
+      * saved_markers           → لیست مارکرها
+      * self_chat_marker        → مارکر «فضای شخصی»
+      * target_filtered_platforms → پلتفرم‌های گروه‌محور
+  - 🎯 `_allowed_tiers` از data/configs/tiers.json + PLUGINS_CONFIG.
+  - 🐛 FIX: کلاس‌متغیرهای `_SAVED_MARKERS` و `_SELF_CHAT_MARKER` حذف شدند
+    (به instance-attribute تبدیل شدند).
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۴.
 """
 from __future__ import annotations
 
@@ -41,46 +34,42 @@ from config import (
 from core.contracts.base_handler import BaseHandler
 from core.kernel.logger import log_error, log_info, log_success, log_warning
 
+# 🎯 داده‌محور
+from data.loader import load_json
 
-# ─── ثابت‌ها ───
+
+# ─── ثابت‌ها (env-based، بدون دیتا) ───
 _LOG_PREVIEW_LEN = 100
 _SLOW_HANDLE_MS = 3000
 _STATS_INTERVAL = 100
 _GUARD3_FIRST_LOG = 5        # اولین N بار لاگ کامل
 _GUARD3_LOG_EVERY = 20       # بعد از آن، هر N بار یک لاگ
 
-# 🎯 پلتفرم‌هایی که گارد گروه هدف روی آن‌ها اعمال می‌شود
-# (web/linkedin/instagram از این فیلتر معافند — چون «گروه» ندارند)
-_TARGET_FILTERED_PLATFORMS_DEFAULT = (
-    "eitaa", "bale", "rubika", "telegram", "whatsapp",
-)
+
+# ═══════════════════════════════════════════
+# helpers — داده‌محور
+# ═══════════════════════════════════════════
+def _get_markers_data() -> dict:
+    """بارگذاری markers.json — با fallback امن."""
+    return load_json("markers")
 
 
-def _get_target_filtered_platforms() -> tuple[str, ...]:
-    """پلتفرم‌های گروه‌محور — از PLATFORMS_ORDER بدون web/linkedin/instagram."""
+def _get_tiers_data() -> dict:
+    """بارگذاری tiers.json — با fallback امن."""
+    return load_json("tiers")
+
+
+def _get_target_filtered_platforms_fallback() -> tuple[str, ...]:
+    """پلتفرم‌های گروه‌محور — از PLATFORMS_ORDER بدون web/linkedin/instagram.
+
+    فقط اگر markers.json نداشت target_filtered_platforms استفاده می‌شود.
+    """
     excluded = frozenset({"web", "linkedin", "instagram"})
     return tuple(p for p in PLATFORMS_ORDER if p not in excluded)
 
 
 class StorageHandler(BaseHandler):
     """پیام کلیدواژه‌دار را به‌عنوان سرنخ ذخیره می‌کند (بعد از چهار گارد)."""
-
-    # 🎯 FIX: به‌جای hardcode، از config مشتق می‌شود
-    _TARGET_FILTERED_PLATFORMS: tuple[str, ...] = (
-        _get_target_filtered_platforms()
-    )
-
-    # 🎯 مارکرهای Saved/Self — همه با هم
-    _SAVED_MARKERS: tuple[str, ...] = (
-        "پیام‌های ذخیره شده",
-        "پیامهای ذخیره شده",
-        "Saved Messages",
-        "فضای شخصی",
-        "ذخیره‌شده",
-    )
-
-    # 🎯 مارکر «فضای شخصی» جدا — در حالت save_self مجاز است
-    _SELF_CHAT_MARKER: str = "فضای شخصی"
 
     # ═══════════════════════════════════════════
     # __init__
@@ -108,6 +97,44 @@ class StorageHandler(BaseHandler):
             cfg.get("save_self_messages", False),
         )
 
+        # ═══════════════════════════════════════════
+        # 🎯 داده‌محور: markers.json
+        # ═══════════════════════════════════════════
+        markers = _get_markers_data()
+
+        self._saved_markers: tuple[str, ...] = tuple(
+            str(x).strip()
+            for x in markers.get("saved_markers", [])
+            if str(x).strip()
+        )
+        self._self_chat_marker: str = str(
+            markers.get("self_chat_marker", "")
+        ).strip()
+
+        # ─── پلتفرم‌های گروه‌محور ───
+        tfp = markers.get("target_filtered_platforms")
+        if isinstance(tfp, list) and tfp:
+            self._target_filtered_platforms: tuple[str, ...] = tuple(
+                str(p).strip() for p in tfp if str(p).strip()
+            )
+        else:
+            self._target_filtered_platforms = (
+                _get_target_filtered_platforms_fallback()
+            )
+
+        # ═══════════════════════════════════════════
+        # 🎯 داده‌محور: tiers.json + config
+        # ═══════════════════════════════════════════
+        tiers = _get_tiers_data()
+        self._valid_tiers: tuple[str, ...] = tuple(
+            str(t).upper()
+            for t in tiers.get("valid", ["T1", "T2", "T3"])
+            if str(t).strip()
+        )
+        self._default_tier: str = str(
+            tiers.get("default", "T1")
+        ).upper()
+
         raw_tiers = (
             kwargs.get("allowed_tiers")
             or cfg.get("allowed_tiers")
@@ -123,12 +150,12 @@ class StorageHandler(BaseHandler):
             "save_media", cfg.get("save_media", True)
         )
 
-        # 🎯 FIX: از config.ADMIN_IDS (top-level) نه PLUGINS_CONFIG
+        # ─── admin_ids ───
         self._admin_ids: set[str] = {
             str(x).strip() for x in ADMIN_IDS if x and str(x).strip()
         }
 
-        # 🎯 BALE_ADMIN_CHAT — از env (fallback نهایی)
+        # ─── BALE_ADMIN_CHAT ───
         self._bale_admin_chat: str = (
             os.getenv("BALE_ADMIN_CHAT", "").strip()
         )
@@ -146,19 +173,28 @@ class StorageHandler(BaseHandler):
             "errors": 0,
         }
 
+        # ─── لاگ init ───
         log_success(
             f"✅ [STORAGE:init] آماده | "
             f"keywords_only={self.keywords_only} | "
             f"require_t1={self.require_t1} | "
             f"allowed_tiers={self._allowed_tiers} | "
             f"save_self_messages={self.save_self_messages} | "
+            f"saved_markers={len(self._saved_markers)} | "
+            f"self_marker={self._self_chat_marker!r} | "
+            f"target_filtered={len(self._target_filtered_platforms)} | "
             f"admin_ids={len(self._admin_ids)} | "
             f"bale_admin_chat={'✅' if self._bale_admin_chat else '—'}"
         )
 
-    @staticmethod
-    def _parse_allowed_tiers(cfg: dict[str, Any]) -> tuple[str, ...]:
-        """اعتبارسنجی allowed_tiers — پیش‌فرض ('T1',)."""
+    def _parse_allowed_tiers(
+        self, cfg: dict[str, Any]
+    ) -> tuple[str, ...]:
+        """اعتبارسنجی allowed_tiers.
+
+        - اگر مقدار داشت → همان
+        - وگرنه → (default_tier,) از tiers.json
+        """
         raw = cfg.get("allowed_tiers")
         if raw and isinstance(raw, (list, tuple)):
             tiers = tuple(
@@ -166,7 +202,7 @@ class StorageHandler(BaseHandler):
             )
             if tiers:
                 return tiers
-        return ("T1",)
+        return (self._default_tier,)
 
     # ═══════════════════════════════════════════
     # هویت
@@ -182,7 +218,7 @@ class StorageHandler(BaseHandler):
     # گارد ۱: پیام خصوصیِ مدیر
     # ═══════════════════════════════════════════
     def _is_admin_message(self, raw: dict) -> bool:
-        """🎯 FIX: تشخیص پیام مدیر — سه لایه دفاعی شفاف.
+        """تشخیص پیام مدیر — سه لایه دفاعی شفاف.
 
         لایه ۱: user_id تو ADMIN_IDS (استاندارد)
         لایه ۲: chat_id تو ADMIN_IDS (برای بله که user_id نمی‌ده)
@@ -219,7 +255,7 @@ class StorageHandler(BaseHandler):
             )
             return True
 
-        # ─── لایه ۳: BALE_ADMIN_CHAT (برای بله) ───
+        # ─── لایه ۳: BALE_ADMIN_CHAT ───
         if (
             platform == "bale"
             and self._bale_admin_chat
@@ -237,52 +273,53 @@ class StorageHandler(BaseHandler):
     # گارد ۰: پیام خودی / Saved Messages
     # ═══════════════════════════════════════════
     def _is_self_or_saved(self, raw: dict) -> bool:
-        """🎯 FIX: تشخیص پیام خودی / Saved Messages — منطق شفاف.
+        """تشخیص پیام خودی / Saved Messages — داده‌محور.
 
-        فقط بر اساس chat_name تشخیص می‌دهیم (نه chat_id/user_id).
-        دلیل: در چت‌های خصوصی بله/ایتا/تلگرام، chat_id و user_id هر دو
-        برابر با شناسهٔ طرف مقابل هستند.
+        مارکرها از `markers.json`:
+          - saved_markers → لیست
+          - self_chat_marker → «فضای شخصی»
 
         حالت‌ها:
           - save_self_messages=True:
               «فضای شخصی» → قبول (return False)
               بقیه markerها → رد (return True)
           - save_self_messages=False:
-              همه markerها (شامل «فضای شخصی») → رد (return True)
+              همه markerها → رد (return True)
 
-        Returns:
-            True → پیام خودی/Saved → باید رد شود
-            False → پیام عادی → ادامه بده
+        ⚠️ اگر لیست مارکرها خالی باشد → گارد خاموش (هیچ‌چیز رد نمی‌شود).
         """
         chat_name = str(raw.get("chat_name") or "").strip()
         if not chat_name:
             return False
 
+        # ─── گارد خاموش اگر مارکرها نبودند ───
+        if not self._saved_markers:
+            return False
+
+        self_marker = self._self_chat_marker
+
         # ─── حالت save_self_messages=True ───
         if self.save_self_messages:
-            # اول: «فضای شخصی» مجاز — چک کن که آیا این هست یا نه
-            # (اگر chat_name فقط «فضای شخصی» باشد یا شامل آن، مجاز)
-            # بعد: بقیه markerها رد شوند
-
-            # اگر «فضای شخصی» در نام هست → مجاز
-            if self._SELF_CHAT_MARKER in chat_name:
-                # ولی چک کن که یکی از markerهای «دیگر» هم نباشه
-                # (مثلاً «Saved Messages فضای شخصی» → باید رد شود)
-                for marker in self._SAVED_MARKERS:
-                    if marker == self._SELF_CHAT_MARKER:
+            # ─── اگر «فضای شخصی» در نام هست → مجاز ───
+            if self_marker and self_marker in chat_name:
+                # چک کن مارکر «دیگر» هم نباشه
+                # (مثلاً «Saved Messages فضای شخصی» → رد)
+                for marker in self._saved_markers:
+                    if marker == self_marker:
                         continue
                     if marker in chat_name:
                         log_info(
                             f"⏭️ [STORAGE:guard0] marker=«{marker}» "
-                            f"(+فضای شخصی) | chat_name=«{chat_name}»"
+                            f"(+{self_marker}) | "
+                            f"chat_name=«{chat_name}»"
                         )
                         return True
                 # فقط «فضای شخصی» → مجاز
                 return False
 
-            # «فضای شخصی» نیست → بقیه markerها چک شوند
-            for marker in self._SAVED_MARKERS:
-                if marker == self._SELF_CHAT_MARKER:
+            # ─── «فضای شخصی» نیست → بقیه مارکرها ───
+            for marker in self._saved_markers:
+                if marker == self_marker:
                     continue
                 if marker in chat_name:
                     log_info(
@@ -292,8 +329,8 @@ class StorageHandler(BaseHandler):
                     return True
             return False
 
-        # ─── حالت save_self_messages=False: همه markerها رد ───
-        for marker in self._SAVED_MARKERS:
+        # ─── حالت save_self_messages=False: همه مارکرها رد ───
+        for marker in self._saved_markers:
             if marker in chat_name:
                 log_info(
                     f"⏭️ [STORAGE:guard0] marker=«{marker}» "
@@ -307,9 +344,20 @@ class StorageHandler(BaseHandler):
     # گارد ۲: گروه هدف
     # ═══════════════════════════════════════════
     def _is_target_group(self, raw: dict) -> bool:
-        """فیلتر گروه هدف — با fallback امن."""
+        """فیلتر گروه هدف — داده‌محور.
+
+        پلتفرم‌های گروه‌محور از `markers.json`:
+          target_filtered_platforms
+
+        اگر این لیست خالی بود → گارد خاموش.
+        """
         platform = raw.get("platform")
-        if platform not in self._TARGET_FILTERED_PLATFORMS:
+
+        # ─── گارد خاموش اگر لیست نبود ───
+        if not self._target_filtered_platforms:
+            return True
+
+        if platform not in self._target_filtered_platforms:
             return True
 
         try:
@@ -531,7 +579,7 @@ class StorageHandler(BaseHandler):
                 analyzed.metadata = {}
             analyzed.metadata.setdefault("tier", "T0")
 
-        # ─── preset از کلکتور (اگر داشت) ───
+        # ─── preset از کلکتور ───
         preset = raw.get("keywords")
         if preset:
             merged = set(analyzed.keywords or [])
@@ -646,7 +694,7 @@ class StorageHandler(BaseHandler):
             )
 
     def _log_stats(self):
-        """🎯 لاگ آمار — با درصد موفقیت."""
+        """لاگ آمار — با درصد موفقیت."""
         total = self.stats["total"]
         saved = self.stats["messages_with_keywords"]
         success_rate = (saved / total * 100) if total else 0.0
