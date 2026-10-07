@@ -5,25 +5,29 @@
 منابع کلیدواژه:
   - data/products.py       → ALL_PRODUCTS (لیست تخت محصولات فارسی)
   - data/products_en.py    → ALL_PRODUCTS_EN (لیست تخت محصولات انگلیسی)
-  - data/keywords_custom.json → کلیدهای داخل "keywords" (دستی، با tier)
+  - data/runtime/keywords_custom.json → کلیدهای داخل "keywords" (دستی، با tier)
 
 ⚠️ برندها کلیدواژه نیستن — فقط از طریق محصولات پیدا می‌شن.
 
 کارایی:
   - فایل‌ها فقط وقتی دوباره خوانده می‌شوند که mtime عوض شده باشه.
-  - بررسی mtime حداکثر هر KEYWORDS_RELOAD_SECONDS (پیش‌فرض ۵ث).
+  - بررسی mtime حداکثر هر KEYWORDS_RELOAD_SECONDS.
   - الگوی regex با مرزِ کلمه ساخته می‌شه تا «یاراترا» داخل «یاراترایی» match نشه.
 
-نسخهٔ ۹ (این نسخه):
-  - 🐛 FIX #13: فقط فایل‌های با پیشوند «keywords_» در data/ به‌عنوان
-    منبع کلیدواژه قبول می‌شوند (جلوگیری از config.json → کلیدواژه).
-  - 🐛 FIX #13: رشته‌های عددی/تاریخ/hex در _extract_strings_from_json
-    نادیده گرفته می‌شوند.
-  - ✅ نسخهٔ ۸ هم حفظ شده.
-
-نسخهٔ ۸:
-  - 🐛 FIX بحرانی: keywords_custom.json حالا از _json_files حذف می‌شود.
-  - 🐛 FIX: _extract_strings_from_json حالا dict تودرتو را هم می‌گردد.
+نسخهٔ ۱۰ (این نسخه):
+  - 🎯 `_BRAND_TOKEN_ENABLED` و `_BRAND_TOKEN_MIN_LEN` حالا از
+    `config.py` (top-level) می‌آیند — به‌جای PLUGINS_CONFIG.
+  - 🎯 `_RELOAD_CHECK_SECONDS` حالا از `config.KEYWORDS_CONFIG` می‌آید
+    (نه `os.getenv` مستقیم).
+  - 🎯 `_SLOW_LOAD_MS` و `_SLOW_PATTERN_MS` حالا از env قابل تنظیم.
+  - 🐛 FIX: `_NON_KEYWORD_JSON` حذف شد (بی‌استفاده بود — منطق
+    `_KEYWORD_JSON_PREFIX` و `_excluded_json` جایگزینش شده).
+  - 🎯 `data_dir` پیش‌فرض حالا از `data.paths.DATA_DIR` می‌آید
+    (نه رشتهٔ "data").
+  - 🎯 `get_stats()` حالا شامل اطلاعات env-based thresholds هم هست.
+  - 🎯 `_MIN_KEYWORD_LEN`, `_MAX_KEYWORD_LEN` حالا env-based.
+  - 🎯 لاگ init کوتاه‌تر + کامل‌تر.
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۹.
 """
 from __future__ import annotations
 
@@ -33,55 +37,79 @@ import os
 import re
 import time
 
+# 🎯 P0: استفاده از config برای top-level params
+from config import (
+    BRAND_TOKEN_ENABLED,
+    BRAND_TOKEN_MIN_LEN,
+    KEYWORDS_CONFIG,
+)
 from core.contracts.base_analyzer import BaseAnalyzer
 from core.kernel.logger import log_error, log_info, log_success, log_warning
 from core.kernel.models import AnalyzedMessage
 
-# هر چند ثانیه حداکثر بررسی شود که آیا فایل‌های data عوض شده‌اند
-_RELOAD_CHECK_SECONDS = float(os.getenv("KEYWORDS_RELOAD_SECONDS", "5"))
-
-# آستانهٔ هشدار برای کندی‌های غیرعادی (میلی‌ثانیه)
-_SLOW_LOAD_MS = 300
-_SLOW_PATTERN_MS = 200
-
-# ─── تنظیمات توکن برند (از config، یک‌بار در import) ───
-try:
-    from config import PLUGINS_CONFIG
-
-    _kf_cfg = PLUGINS_CONFIG.get("keywordsfinder", {})
-    _BRAND_TOKEN_ENABLED = bool(_kf_cfg.get("brand_token_enabled", False))
-    _BRAND_TOKEN_MIN_LEN = int(_kf_cfg.get("brand_token_min_len", 4))
-except Exception as e:
-    log_warning(
-        f"⚠️ [KF:init] PLUGINS_CONFIG نبود | "
-        f"brand_token=False | {type(e).__name__}: {e}"
-    )
-    _BRAND_TOKEN_ENABLED = False
-    _BRAND_TOKEN_MIN_LEN = 4
-
+# 🎯 P0: مسیرها از data.paths
 from data import paths as data_paths
+
+
+# ═══════════════════════════════════════════════════════════
+# helpers (env-based)
+# ═══════════════════════════════════════════════════════════
+def _env_int(
+    name: str, default: int,
+    min_val: int | None = None,
+    max_val: int | None = None,
+) -> int:
+    """خواندن int از env — با sanitize."""
+    try:
+        v = int(os.getenv(name, str(default)))
+    except (ValueError, TypeError):
+        return default
+    if min_val is not None and v < min_val:
+        return min_val
+    if max_val is not None and v > max_val:
+        return max_val
+    return v
+
+
+# ═══════════════════════════════════════════════════════════
+# ثابت‌ها
+# ═══════════════════════════════════════════════════════════
+
+# 🎯 FIX: از config.KEYWORDS_CONFIG (نه os.getenv مستقیم)
+_RELOAD_CHECK_SECONDS: float = float(
+    KEYWORDS_CONFIG.get("reload_seconds", 120.0)
+)
+
+# 🎯 FIX: env-based
+_SLOW_LOAD_MS = _env_int(
+    "KEYWORDS_SLOW_LOAD_MS", 300, min_val=50, max_val=60_000
+)
+_SLOW_PATTERN_MS = _env_int(
+    "KEYWORDS_SLOW_PATTERN_MS", 200, min_val=50, max_val=60_000
+)
 
 # کاراکتر کلمه (برای مرز)
 _WB = r"\w"
 
-# ─── نام فایل‌های JSON که نباید به‌عنوان منبع کلیدواژه خونده بشن ───
-# (چون جداگانه خونده می‌شن یا ساختار خاصی دارن)
-_NON_KEYWORD_JSON: set[str] = set()
-
 # 🎯 FIX #13: فقط فایل‌های با این پیشوند به‌عنوان منبع کلیدواژه قبول می‌شن
-# — جلوگیری از تبدیل config.json / settings.json به کلیدواژه
 _KEYWORD_JSON_PREFIX = "keywords_"
 
-# 🎯 FIX #13: رشته‌های زیر این طول نادیده گرفته می‌شن (اعداد، کلیدهای کوتاه)
-_MIN_KEYWORD_LEN = 2
-# 🎯 FIX #13: رشته‌های بالای این طول نادیده گرفته می‌شن (توضیحات، متن‌های بلند)
-_MAX_KEYWORD_LEN = 120
+# 🎯 FIX: env-based
+_MIN_KEYWORD_LEN = _env_int(
+    "KEYWORDS_MIN_LEN", 2, min_val=1, max_val=100
+)
+_MAX_KEYWORD_LEN = _env_int(
+    "KEYWORDS_MAX_LEN", 120, min_val=10, max_val=10_000
+)
 
 
+# ═══════════════════════════════════════════════════════════
+# helpers
+# ═══════════════════════════════════════════════════════════
 def _get_excluded_json_files() -> set[str]:
     """فایل‌های JSON که نباید به‌عنوان منبع کلیدواژهٔ عمومی خونده بشن.
 
-    🐛 FIX: keywords_custom.json قبلاً دوبار خونده می‌شد:
+    keywords_custom.json قبلاً دوبار خونده می‌شد:
       ۱. در _read_custom_keywords (درست)
       ۲. در _extract_strings_from_json (اشتباه — version/updated_at
          به‌عنوان کلیدواژه اضافه می‌شدن)
@@ -97,55 +125,66 @@ def _get_excluded_json_files() -> set[str]:
     return excluded
 
 
+def _default_data_dir() -> str:
+    """🎯 FIX: مسیر پیش‌فرض data — از data.paths."""
+    try:
+        return str(data_paths.DATA_DIR)
+    except Exception:
+        return "data"
+
+
+# ═══════════════════════════════════════════════════════════
+# KeywordFinder
+# ═══════════════════════════════════════════════════════════
 class KeywordFinder(BaseAnalyzer):
-    def __init__(self, data_dir: str = "data"):
-        self.data_dir = data_dir
+    """یابندهٔ کلیدواژه — منبع یکتای کلیدواژه‌ها."""
+
+    def __init__(self, data_dir: str | None = None):
+        # 🎯 FIX: data_dir از data.paths اگر ندهند
+        self.data_dir = data_dir or _default_data_dir()
         self.keywords: list[str] = []
         self.pattern: re.Pattern | None = None
         self._signature: tuple | None = None
         self._last_check: float = 0.0
-        # 🐛 FIX: cache برای فایل‌های exclude
+        # cache برای فایل‌های exclude
         self._excluded_json: set[str] = _get_excluded_json_files()
 
         log_info(
-            f"🔍 [KF:init] شروع | data_dir={data_dir} | "
-            f"brand_token={_BRAND_TOKEN_ENABLED} "
-            f"(min_len={_BRAND_TOKEN_MIN_LEN}) | "
-            f"reload_check={_RELOAD_CHECK_SECONDS}s | "
+            f"🔍 [KF:init] شروع | data_dir={self.data_dir} | "
+            f"brand_token={BRAND_TOKEN_ENABLED} "
+            f"(min_len={BRAND_TOKEN_MIN_LEN}) | "
+            f"reload_check={_RELOAD_CHECK_SECONDS:.1f}s | "
             f"excluded={sorted(self._excluded_json)}"
         )
         self._load(initial=True)
 
-    # ==================================================
+    # ═══════════════════════════════════════════
     # منابع و امضای تغییر
-    # ==================================================
+    # ═══════════════════════════════════════════
     def _json_files(self) -> list[str]:
-        """
-        فقط فایل‌های JSON که «منبع کلیدواژهٔ عمومی» هستند.
+        """فقط فایل‌های JSON که «منبع کلیدواژهٔ عمومی» هستند.
 
-        🐛 FIX: keywords_custom.json رو exclude می‌کنه (چون جداگانه
-        در _read_custom_keywords خونده میشه).
+        keywords_custom.json رو exclude می‌کنه (چون جداگانه خونده میشه).
+        فقط فایل‌های با پیشوند `keywords_` قبول می‌شن.
         """
         out: list[str] = []
         if not os.path.isdir(self.data_dir):
             log_warning(
-                f"⚠️ [KF:_json_files] پوشهٔ data وجود ندارد: {self.data_dir}"
+                f"⚠️ [KF:_json_files] پوشه وجود ندارد: {self.data_dir}"
             )
             return out
 
         for fn in sorted(os.listdir(self.data_dir)):
             if not fn.endswith(".json"):
                 continue
-            if fn in _NON_KEYWORD_JSON:
-                continue
-            # 🐛 FIX: فایل‌های exclude (keywords_custom) رو رد کن
+            # فایل‌های exclude (keywords_custom) رو رد کن
             if fn in self._excluded_json:
                 log_info(
                     f"⏭️ [KF:_json_files] {fn} رد شد "
                     f"(جداگانه خونده میشه)"
                 )
                 continue
-            # 🎯 FIX #13: فقط فایل‌های با پیشوند keywords_ قبول می‌شن
+            # فقط فایل‌های با پیشوند keywords_ قبول می‌شن
             if not fn.startswith(_KEYWORD_JSON_PREFIX):
                 log_info(
                     f"⏭️ [KF:_json_files] {fn} رد شد "
@@ -156,7 +195,7 @@ class KeywordFinder(BaseAnalyzer):
         return out
 
     def _source_files(self) -> list[str]:
-        """همهٔ فایل‌هایی که mtimeشان باید چک بشه (شامل keywords_custom.json)."""
+        """همهٔ فایل‌هایی که mtimeشان باید چک بشه."""
         files = [
             str(data_paths.PRODUCTS_PY),
             str(data_paths.PRODUCTS_EN_PY),
@@ -166,6 +205,7 @@ class KeywordFinder(BaseAnalyzer):
         return files
 
     def _signature_now(self) -> tuple:
+        """امضای mtime همهٔ فایل‌های منبع."""
         sig = []
         for p in self._source_files():
             try:
@@ -174,9 +214,9 @@ class KeywordFinder(BaseAnalyzer):
                 sig.append((p, None))
         return tuple(sig)
 
-    # ==================================================
-    # بارگذاری کلیدواژه‌ها
-    # ==================================================
+    # ═══════════════════════════════════════════
+    # جمع‌آوری کلیدواژه‌ها
+    # ═══════════════════════════════════════════
     def _collect_keywords(self) -> list[str]:
         """جمع‌آوری همهٔ کلیدواژه‌ها از همهٔ منابع — با لاگ تفصیلی."""
         t0 = time.monotonic()
@@ -196,20 +236,23 @@ class KeywordFinder(BaseAnalyzer):
         # ۲) محصولات انگلیسی
         n_en = 0
         try:
-            en_words = self._import_list("data.products_en", "ALL_PRODUCTS_EN")
+            en_words = self._import_list(
+                "data.products_en", "ALL_PRODUCTS_EN"
+            )
             n_en = len(en_words)
             words += en_words
         except Exception as e:
             log_error(
-                f"❌ [KF:_collect] products_en.py | {type(e).__name__}: {e}"
+                f"❌ [KF:_collect] products_en.py | "
+                f"{type(e).__name__}: {e}"
             )
 
-        # ۳) keywords_custom.json — اختصاصی (فقط اینجا)
+        # ۳) keywords_custom.json — اختصاصی
         custom = self._read_custom_keywords()
         n_custom = len(custom)
         words += custom
 
-        # ۴) سایر فایل‌های JSON مجاز (بدون keywords_custom)
+        # ۴) سایر فایل‌های JSON مجاز (keywords_*.json)
         n_extra = 0
         extra_files = self._json_files()
         for path in extra_files:
@@ -219,7 +262,7 @@ class KeywordFinder(BaseAnalyzer):
 
         elapsed_ms = (time.monotonic() - t0) * 1000
         log_info(
-            f"📚 [KF:_collect] {len(words)} کلمه از منابع | "
+            f"📚 [KF:_collect] {len(words)} کلمه | "
             f"fa={n_fa} en={n_en} custom={n_custom} "
             f"extra={n_extra} ({len(extra_files)} فایل) | "
             f"{elapsed_ms:.0f}ms"
@@ -227,8 +270,7 @@ class KeywordFinder(BaseAnalyzer):
 
         if elapsed_ms > _SLOW_LOAD_MS:
             log_warning(
-                f"🐌 [KF:_collect] کند | {elapsed_ms:.0f}ms "
-                f"(آستانه {_SLOW_LOAD_MS}ms)"
+                f"🐌 [KF:_collect] کند | {elapsed_ms:.0f}ms"
             )
         return words
 
@@ -240,7 +282,6 @@ class KeywordFinder(BaseAnalyzer):
           - دیکشنری با کلید "keywords": {"keywords": {"کود": {"tier": "T1"}}}
 
         ⚠️ اگر dict بود ولی کلید "keywords" نداشت → هیچ کلیدواژه‌ای برنمی‌گرداند
-           (تا version/updated_at اشتباهاً کلیدواژه نشوند).
         """
         path = str(data_paths.KEYWORDS_CUSTOM)
 
@@ -290,7 +331,8 @@ class KeywordFinder(BaseAnalyzer):
             else:
                 fmt = "dict_no_keywords"
                 log_warning(
-                    f"⚠️ [KF:custom] dict بدون کلید «keywords» | {path} | "
+                    f"⚠️ [KF:custom] dict بدون کلید «keywords» | "
+                    f"{path} | "
                     f"کلیدهای موجود: {list(data.keys())[:5]}"
                 )
 
@@ -301,12 +343,31 @@ class KeywordFinder(BaseAnalyzer):
         return out
 
     @staticmethod
-    def _extract_strings_from_json(path: str) -> list[str]:
-        """
-        استخراج رشته‌ها از یک فایل JSON عمومی.
+    def _is_keyword_like(s: str) -> bool:
+        """🎯 FIX #13: آیا این رشته شبیه کلیدواژه است (نه متادیتا)؟"""
+        if not s or len(s) < _MIN_KEYWORD_LEN:
+            return False
+        if len(s) > _MAX_KEYWORD_LEN:
+            return False
+        # اعداد خالص
+        if re.fullmatch(r"[\d.,:/\-\s]+", s):
+            return False
+        # تاریخ ISO
+        if re.match(r"^\d{4}[-/]\d{2}[-/]\d{2}", s):
+            return False
+        # hex/uuid
+        if re.fullmatch(
+            r"[0-9a-fA-F]{8}(-?[0-9a-fA-F]{4}){3}-?[0-9a-fA-F]{12}",
+            s,
+        ):
+            return False
+        return True
 
-        🐛 FIX: حالا dict تودرتو (nested) رو هم می‌گرده.
-        مثلاً: {"group1": ["a", "b"], "group2": {"x": "c"}}
+    @staticmethod
+    def _extract_strings_from_json(path: str) -> list[str]:
+        """استخراج رشته‌های شبیه کلیدواژه از یک فایل JSON عمومی.
+
+        dict تودرتو (nested) رو هم می‌گرده.
         """
         out: list[str] = []
         fn = os.path.basename(path)
@@ -316,39 +377,17 @@ class KeywordFinder(BaseAnalyzer):
                 data = json.load(f)
         except Exception as e:
             log_warning(
-                f"⚠️ [KF:extra] خواندن {fn} ناموفق — نادیده گرفته شد | "
-                f"{type(e).__name__}: {e}"
+                f"⚠️ [KF:extra] خواندن {fn} ناموفق — "
+                f"نادیده گرفته شد | {type(e).__name__}: {e}"
             )
             return out
 
-        def _is_keyword_like(s: str) -> bool:
-            """🎯 FIX #13: آیا این رشته شبیه کلیدواژه است (نه متادیتا)؟"""
-            if not s or len(s) < _MIN_KEYWORD_LEN:
-                return False
-            if len(s) > _MAX_KEYWORD_LEN:
-                return False
-            # اعداد خالص (1.0، 123، 3.14)
-            if re.fullmatch(r"[\d.,:/\-\s]+", s):
-                return False
-            # تاریخ ISO (2026-01-01 / 2026-01-01T00:00:00Z)
-            if re.match(r"^\d{4}[-/]\d{2}[-/]\d{2}", s):
-                return False
-            # hex/uuid
-            if re.fullmatch(
-                r"[0-9a-fA-F]{8}(-?[0-9a-fA-F]{4}){3}-?[0-9a-fA-F]{12}",
-                s,
-            ):
-                return False
-            return True
-
         def _walk(obj, depth: int = 0) -> None:
-            """بازگشتی: هر رشتهٔ معناداری در هر عمقی رو پیدا کن."""
-            if depth > 5:  # جلوگیری از بازگشت بی‌نهایت
+            if depth > 5:
                 return
             if isinstance(obj, str):
                 s = obj.strip()
-                # 🎯 FIX #13: فقط رشته‌های شبیه کلیدواژه
-                if _is_keyword_like(s):
+                if KeywordFinder._is_keyword_like(s):
                     out.append(s)
             elif isinstance(obj, (list, tuple, set)):
                 for x in obj:
@@ -377,7 +416,7 @@ class KeywordFinder(BaseAnalyzer):
                     if isinstance(x, str) and x.strip()
                 ]
             log_warning(
-                f"⚠️ [KF:import] {module_path}.{attr} یک لیست نیست | "
+                f"⚠️ [KF:import] {module_path}.{attr} لیست نیست | "
                 f"type={type(val).__name__}"
             )
         except ImportError as e:
@@ -391,11 +430,12 @@ class KeywordFinder(BaseAnalyzer):
             )
         return []
 
-    # ==================================================
+    # ═══════════════════════════════════════════
     # ساخت الگو (با مرزِ کلمه)
-    # ==================================================
+    # ═══════════════════════════════════════════
     @staticmethod
     def _build_pattern(keywords: list[str]) -> re.Pattern | None:
+        """ساخت regex با مرزِ کلمه — با fallback بدون مرز."""
         if not keywords:
             return None
 
@@ -413,13 +453,13 @@ class KeywordFinder(BaseAnalyzer):
             elapsed_ms = (time.monotonic() - t0) * 1000
             if elapsed_ms > _SLOW_PATTERN_MS:
                 log_warning(
-                    f"🐌 [KF:pattern] ساخت الگو کند | {len(cleaned)} کلمه | "
-                    f"{elapsed_ms:.0f}ms (آستانه {_SLOW_PATTERN_MS}ms)"
+                    f"🐌 [KF:pattern] ساخت الگو کند | "
+                    f"{len(cleaned)} کلمه | {elapsed_ms:.0f}ms"
                 )
             return pat
         except re.error as e:
             log_warning(
-                f"⚠️ [KF:pattern] ساخت با مرز ناموفق — تلاش بدون مرز | "
+                f"⚠️ [KF:pattern] مرز ناموفق — تلاش بدون مرز | "
                 f"{type(e).__name__}: {e}"
             )
             try:
@@ -434,9 +474,9 @@ class KeywordFinder(BaseAnalyzer):
                 )
                 return None
 
-    # ==================================================
+    # ═══════════════════════════════════════════
     # _load
-    # ==================================================
+    # ═══════════════════════════════════════════
     def _load(self, initial: bool = False):
         """بارگذاری کامل — از منابع تا ساخت الگو."""
         t0 = time.monotonic()
@@ -445,7 +485,7 @@ class KeywordFinder(BaseAnalyzer):
         raw = self._collect_keywords()
 
         # یکتا + strip
-        cleaned = set()
+        cleaned: set[str] = set()
         for k in raw:
             if isinstance(k, str):
                 s = k.strip()
@@ -454,21 +494,24 @@ class KeywordFinder(BaseAnalyzer):
 
         # افزودن توکنِ برند (اختیاری)
         n_tokens = 0
-        if _BRAND_TOKEN_ENABLED:
+        if BRAND_TOKEN_ENABLED:
             tokens = set()
             for name in cleaned:
                 parts = name.split()
-                if parts and len(parts[0]) >= _BRAND_TOKEN_MIN_LEN:
+                if (
+                    parts
+                    and len(parts[0]) >= BRAND_TOKEN_MIN_LEN
+                ):
                     tokens.add(parts[0])
             n_tokens = len(tokens - cleaned)
             cleaned |= tokens
             if n_tokens:
                 log_info(
                     f"🏷️ [KF:brand] {n_tokens} توکن برند اضافه شد "
-                    f"(min_len={_BRAND_TOKEN_MIN_LEN})"
+                    f"(min_len={BRAND_TOKEN_MIN_LEN})"
                 )
 
-        # مرتب: بلندترین اول (برای regex alternation اهمیت داره)
+        # مرتب: بلندترین اول
         self.keywords = sorted(cleaned, key=lambda s: (-len(s), s))
         self.pattern = self._build_pattern(self.keywords)
 
@@ -482,7 +525,8 @@ class KeywordFinder(BaseAnalyzer):
         if initial:
             log_success(
                 f"✅ [KF:load] init | {len(self.keywords)} کلیدواژه | "
-                f"pattern={pattern_status} | brand_tokens=+{n_tokens} | "
+                f"pattern={pattern_status} | "
+                f"brand_tokens=+{n_tokens} | "
                 f"{elapsed_ms:.0f}ms"
             )
         else:
@@ -496,8 +540,7 @@ class KeywordFinder(BaseAnalyzer):
 
         if elapsed_ms > _SLOW_LOAD_MS:
             log_warning(
-                f"🐌 [KF:load] کند | {elapsed_ms:.0f}ms "
-                f"(آستانه {_SLOW_LOAD_MS}ms)"
+                f"🐌 [KF:load] کند | {elapsed_ms:.0f}ms"
             )
 
     def _maybe_reload(self):
@@ -513,7 +556,7 @@ class KeywordFinder(BaseAnalyzer):
 
         changed = self._diff_signatures(self._signature, new_sig)
         log_info(
-            f"🔄 [KF:reload] تغییر شناسایی شد | "
+            f"🔄 [KF:reload] تغییر | "
             f"{len(changed)} فایل: {', '.join(changed[:5])}"
             + (
                 f" و {len(changed) - 5} دیگر"
@@ -534,9 +577,9 @@ class KeywordFinder(BaseAnalyzer):
                 changed.append(os.path.basename(path))
         return changed
 
-    # ==================================================
+    # ═══════════════════════════════════════════
     # تطبیق
-    # ==================================================
+    # ═══════════════════════════════════════════
     def match(self, text: str | None) -> list[str]:
         """فهرست کلیدواژه‌های یافت‌شده (مرتب و یکتا)."""
         self._maybe_reload()
@@ -552,40 +595,64 @@ class KeywordFinder(BaseAnalyzer):
             return False
         return self.pattern.search(text) is not None
 
-    # ==================================================
+    # ═══════════════════════════════════════════
     # رابط آنالیزور
-    # ==================================================
+    # ═══════════════════════════════════════════
     async def analyze(self, message: AnalyzedMessage) -> AnalyzedMessage:
-        """تحلیل پیام — لاگ debug در صورت یافتن کلیدواژه."""
+        """تحلیل پیام — یافتن کلیدواژه‌ها."""
         message.keywords = self.match(message.text or "")
         return message
 
-    # ==================================================
-    # ابزار عیب‌یابی (اختیاری — برای debug)
-    # ==================================================
+    # ═══════════════════════════════════════════
+    # ابزار عیب‌یابی
+    # ═══════════════════════════════════════════
     def get_stats(self) -> dict:
-        """خلاصهٔ وضعیت فعلی — برای /debug یا admin handler."""
+        """🎯 خلاصهٔ وضعیت فعلی — برای /debug یا admin handler."""
         return {
             "keywords": len(self.keywords),
             "pattern_ok": self.pattern is not None,
-            "brand_token": _BRAND_TOKEN_ENABLED,
+            "brand_token": BRAND_TOKEN_ENABLED,
+            "brand_token_min_len": BRAND_TOKEN_MIN_LEN,
             "data_dir": self.data_dir,
             "source_files": len(self._source_files()),
             "excluded_json": sorted(self._excluded_json),
             "last_check_ago_s": round(
                 time.monotonic() - self._last_check, 1
             ),
+            # 🎯 NEW: env-based thresholds
+            "reload_check_seconds": _RELOAD_CHECK_SECONDS,
+            "slow_load_ms": _SLOW_LOAD_MS,
+            "slow_pattern_ms": _SLOW_PATTERN_MS,
+            "min_keyword_len": _MIN_KEYWORD_LEN,
+            "max_keyword_len": _MAX_KEYWORD_LEN,
         }
 
 
-# ==================================================
+# ═══════════════════════════════════════════════════════════
 # instance مشترک سراسری
-# ==================================================
+# ═══════════════════════════════════════════════════════════
 _shared: KeywordFinder | None = None
 
 
-def get_keyword_finder(data_dir: str = "data") -> KeywordFinder:
+def get_keyword_finder(
+    data_dir: str | None = None,
+) -> KeywordFinder:
+    """Singleton — instance مشترک سراسری.
+
+    Args:
+        data_dir: مسیر پوشهٔ data (اختیاری — از data.paths می‌آید).
+    """
     global _shared
     if _shared is None:
         _shared = KeywordFinder(data_dir)
     return _shared
+
+
+def reset_keyword_finder() -> None:
+    """🎯 پاک‌کردن singleton — فقط برای تست.
+
+    ⚠️ در runtime صدا نزن — ممکنه referenceهای موجود بی‌اعتبار بشن.
+    """
+    global _shared
+    _shared = None
+    log_info("🗑️ [KF:singleton] reset شد")

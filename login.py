@@ -9,16 +9,13 @@ login.py — اسکریپت ورود تعاملی (یک‌بار اجرا برا
 اجرا:
     python login.py
 
-نسخهٔ ۶ (این نسخه):
-  - 🔴 FIX بزرگ: login_bale() حالا از Playwright استفاده می‌کند، نه baleclient.
-    دلیل: collectors/bale.py از Playwright استفاده می‌کند، پس لاگین هم
-    باید Playwright باشد. قبلاً login_bale از baleclient استفاده می‌کرد
-    که نصب نیست و ناسازگار بود.
-  - 🎨 منو: [2] بله (Bale - مرورگر) — واضح‌تر.
-  - ✅ حفظ همهٔ FIXهای نسخهٔ ۵:
-      * _safe_launch_context با inspect.signature
-      * _login_all با نگاشت مستقیم
-      * disconnect امن
+نسخهٔ ۷ (این نسخه):
+  - 🔴 FIX: منو [8] اینستاگرام → [7] (شماره‌گذاری پشت‌سرهم).
+  - 🔴 FIX: چک «ربات روشن است؟» قبل از هر لاگین مرورگری — چون
+    پروفایل Playwright قفل می‌شود و خطای exitCode=21 می‌دهد.
+  - 🔴 FIX: _ACTIONS کلید «8» → «7» برای اینستاگرام.
+  - 🎨 پیام واضح‌تر برای کاربر در صورت قفل‌بودن پروفایل.
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۶.
 """
 from __future__ import annotations
 
@@ -38,55 +35,104 @@ patch_console(verbose=False)
 # ═══════════════════════════════════════════
 # config + logger
 # ═══════════════════════════════════════════
-from config import PLUGINS_CONFIG, SESSIONS_DIR
+from config import LOGIN_INPUT_TIMEOUT_S, PLUGINS_CONFIG
 from core.kernel.logger import log_error, log_info, log_success, log_warning
+from data import paths as data_paths
 
 _LOGIN_PREFIX = "[LOGIN"
 
-# ─── timeout برای input کاربر (ثانیه) ───
-_INPUT_TIMEOUT_S = int(os.getenv("LOGIN_INPUT_TIMEOUT_S", "600"))
+# ─── timeout برای input کاربر (ثانیه) — از config ───
+_INPUT_TIMEOUT_S = LOGIN_INPUT_TIMEOUT_S
+
+# ─── مسیر PID (از data.paths) ───
+_PID_FILE = str(data_paths.BOT_PID)
 
 
 # ═══════════════════════════════════════════
 # helpers
 # ═══════════════════════════════════════════
-def _normalize_phone(phone: str) -> str:
-    """نرمال‌سازی شماره به فرمت محلی.
-
-    برای ایران (+98/98 → 0)، بقیه به‌عنوان-is.
+def _is_bot_running() -> tuple[bool, int | None]:
     """
-    p = (phone or "").strip()
-    if not p:
-        return ""
+    🔴 NEW: چک می‌کند ربات روشن است یا نه.
 
-    # ایران
-    if p.startswith("+98"):
-        return "0" + p[3:]
-    if p.startswith("0098"):
-        return "0" + p[4:]
-    if p.startswith("98") and len(p) >= 12:
-        # 98912... → 0912...
-        return "0" + p[2:]
+    چون Playwright با پروفایل قفل‌شده کار نمی‌کند و خطای
+    exitCode=21 می‌دهد، قبل از هر لاگین مرورگری این چک لازم است.
 
-    # بین‌الملل — دست نمی‌زنیم
-    if p.startswith("+"):
-        return p
+    Returns:
+        (is_running, pid)
+    """
+    try:
+        with open(_PID_FILE, encoding="utf-8") as f:
+            pid = int(f.read().strip())
+    except (FileNotFoundError, ValueError, OSError):
+        return False, None
 
-    # محلی ایرانی (بدون ۰) — فقط اگر طول منطقی باشد
-    if p.isdigit() and len(p) == 10:
-        return "0" + p
+    # چک زنده‌بودن پروسه
+    try:
+        import psutil
+        try:
+            p = psutil.Process(pid)
+            if not p.is_running():
+                return False, pid
+            try:
+                cmdline = " ".join(p.cmdline() or []).lower()
+                if "main.py" in cmdline or "python" in cmdline:
+                    return True, pid
+            except Exception:
+                return True, pid
+        except (psutil.NoSuchProcess, psutil.ZombieProcess):
+            return False, pid
+        except psutil.AccessDenied:
+            return True, pid
+    except ImportError:
+        # fallback بدون psutil
+        try:
+            os.kill(pid, 0)
+            return True, pid
+        except (OSError, ProcessLookupError):
+            return False, pid
 
-    return p
+    return False, pid
+
+
+def _warn_bot_running(platform_label: str) -> bool:
+    """
+    هشدار می‌دهد اگر ربات روشن است.
+
+    Returns:
+        True اگر کاربر تصمیم به ادامه گرفت، False اگر لغو کرد.
+    """
+    running, pid = _is_bot_running()
+    if not running:
+        return True
+
+    print()
+    print("╔" + "═" * 58 + "╗")
+    print("║  ⚠️  ربات روشن است — پروفایل Playwright قفل است!      ║")
+    print("╚" + "═" * 58 + "╝")
+    print()
+    print(f"  PID ربات: {pid}")
+    print()
+    print("  برای لاگین به مرورگر، ابتدا ربات را Stop کن:")
+    print("     ۱) python panel.py  →  گزینه [3] Stop")
+    print("     ۲) یا در همین ترمینال Ctrl+C بزن")
+    print()
+    print("  اگر ادامه بدهی، مرورگر با خطای زیر باز نمی‌شود:")
+    print("     Target page, context or browser has been closed")
+    print()
+
+    try:
+        ans = input(f"  با این حال ادامه بدهی؟ [{platform_label}] [y/N]: ")
+    except (EOFError, KeyboardInterrupt):
+        return False
+
+    return ans.strip().lower() in ("y", "yes")
 
 
 async def _input_async(
     prompt: str, timeout_s: int | None = None
 ) -> str | None:
-    """input غیرمسدودکننده — با timeout اختیاری.
-
-    Returns:
-        متن ورودی یا None در timeout/EOF/Cancel.
-    """
+    """input غیرمسدودکننده — با timeout اختیاری."""
     if timeout_s is None:
         timeout_s = _INPUT_TIMEOUT_S
 
@@ -124,11 +170,7 @@ async def _safe_disconnect_async(collector) -> None:
 async def _safe_disconnect_client(
     client, name: str = "client"
 ) -> None:
-    """
-    disconnect ایمن برای کلاینت‌های rubpy/telethon.
-
-    🐛 FIX: برای جلوگیری از نشت منبع در خطا.
-    """
+    """disconnect ایمن برای کلاینت‌های rubpy/telethon."""
     if client is None:
         return
     try:
@@ -149,22 +191,7 @@ async def _safe_launch_context(collector, headless: bool = False):
     """
     صدا زدن _launch_context با امضای درست.
 
-    🔴 FIX نسخهٔ ۵: به‌جای try/except ترتیبی (که همیشه اولین تلاش
-    TypeError می‌داد)، با inspect.signature پارامتر واقعی رو کشف
-    می‌کنیم.
-
-    کلکتورهای پروژه use_headless دارن، نه headless. پس نسخهٔ قبلی
-    الکی یه خطای TypeError تولید می‌کرد و لاگ رو شلوغ می‌کرد.
-
-    منطق:
-      ۱) با inspect.signature دنبال پارامتری که «headless» توش هست
-         می‌گردیم (use_headless یا headless).
-      ۲) اون پارامتر رو با مقدار headless صدا می‌زنیم.
-      ۳) اگه پارامتری پیدا نشد → بدون پارامتر صدا می‌زنیم.
-      ۴) اگه signature کار نکرد → fallback به try با نام‌های استاندارد.
-
-    Returns:
-        context یا None در خطا.
+    با inspect.signature پارامتر «headless» را کشف می‌کنیم.
     """
     if collector is None:
         log_error(
@@ -180,7 +207,6 @@ async def _safe_launch_context(collector, headless: bool = False):
         )
         return None
 
-    # ─── کشف نام پارامتر ───
     param_name: str | None = None
     try:
         sig = inspect.signature(launch)
@@ -189,7 +215,6 @@ async def _safe_launch_context(collector, headless: bool = False):
                 param_name = p_name
                 break
     except (ValueError, TypeError) as e:
-        # signature قابل خواندن نیست — می‌افتیم روی fallback
         log_info(
             f"   ℹ️ _launch_context signature نامشخص | "
             f"{type(e).__name__}"
@@ -200,7 +225,6 @@ async def _safe_launch_context(collector, headless: bool = False):
             f"{type(e).__name__}: {e}"
         )
 
-    # ─── صدا زدن ───
     try:
         if param_name:
             t0 = time.monotonic()
@@ -211,7 +235,6 @@ async def _safe_launch_context(collector, headless: bool = False):
                 f"ctx={'✅' if ctx else '❌'} | {elapsed_ms:.0f}ms"
             )
             return ctx
-        # بدون پارامتر
         t0 = time.monotonic()
         ctx = await launch()
         elapsed_ms = (time.monotonic() - t0) * 1000
@@ -221,7 +244,6 @@ async def _safe_launch_context(collector, headless: bool = False):
         )
         return ctx
     except TypeError as e:
-        # signature کشف‌شده کار نکرد → fallback
         log_warning(
             f"   ⚠️ _launch_context با «{param_name}» TypeError | "
             f"{e} — امتحان fallback"
@@ -250,12 +272,11 @@ async def _safe_launch_context(collector, headless: bool = False):
 
 
 # ═══════════════════════════════════════════
-# مسیرهای نشست (از config، نه هاردکد)
+# مسیرهای نشست (از config)
 # ═══════════════════════════════════════════
 def _rubika_session_path() -> str:
-    """مسیر نشست روبیکا — از config (نه هاردکد)."""
     cfg = PLUGINS_CONFIG.get("rubikacollector", {}) or {}
-    default_path = os.path.join(SESSIONS_DIR, "rubika_session")
+    default_path = str(data_paths.SESSIONS_DIR / "rubika_session")
     p = cfg.get("session_path") or default_path
     try:
         os.makedirs(
@@ -271,11 +292,8 @@ def _rubika_session_path() -> str:
 
 
 def _telegram_session_path() -> str:
-    """مسیر نشست تلگرام — از config."""
     cfg = PLUGINS_CONFIG.get("telegramcollector", {}) or {}
-    default_path = os.path.join(
-        SESSIONS_DIR, "telegram_session"
-    )
+    default_path = str(data_paths.SESSIONS_DIR / "telegram_session")
     p = cfg.get("session_path") or default_path
     try:
         os.makedirs(
@@ -289,16 +307,26 @@ def _telegram_session_path() -> str:
         )
     return p
 
-
+def _normalize_phone(phone: str) -> str:
+    """نرمال‌سازی شماره تلفن ایران → 09XXXXXXXXX."""
+    if not phone:
+        return ""
+    p = str(phone).strip()
+    if p.startswith("+98"):
+        return "0" + p[3:]
+    if p.startswith("98") and not p.startswith("980"):
+        return "0" + p[2:]
+    if p.startswith("9") and len(p) == 10:
+        return "0" + p
+    if not p.startswith("0"):
+        return "0" + p
+    return p
+    
 # ═══════════════════════════════════════════
 # روبیکا (rubpy)
 # ═══════════════════════════════════════════
 async def login_rubika() -> bool:
-    """
-    ورود روبیکا با شماره + کد پیامکی.
-
-    🔴 FIX: client در finally disconnect می‌شود.
-    """
+    """ورود روبیکا با شماره + کد پیامکی."""
     t0 = time.monotonic()
     log_info(f"▶️ {_LOGIN_PREFIX}:rubika] شروع")
 
@@ -382,13 +410,18 @@ async def login_rubika() -> bool:
 
 
 # ═══════════════════════════════════════════
-# تلگرام (telethon)
+# تلگرام (Playwright / web)
 # ═══════════════════════════════════════════
 async def login_telegram() -> bool:
-    """ورود تعاملی به تلگرام وِب (مرورگر) — بدون api_id."""
+    """ورود تعاملی به تلگرام وِب (مرورگر)."""
     print("[..] تلگرام وِب: باز کردن مرورگر...")
     print("     ⚠️ VPN باید روشن باشد (web.telegram.org)")
     print()
+
+    # 🔴 NEW: چک ربات
+    if not _warn_bot_running("تلگرام"):
+        log_warning(f"⚠️ {_LOGIN_PREFIX}:telegram] لغو شد")
+        return False
 
     try:
         from playwright.async_api import async_playwright
@@ -396,10 +429,10 @@ async def login_telegram() -> bool:
         print("[X] playwright نصب نیست")
         return False
 
-    from config import STORAGE_DIR, CHROME_PATH
+    from config import CHROME_PATH
 
-    user_data_dir = os.path.join(
-        STORAGE_DIR, "sessions", "telegram_web"
+    user_data_dir = str(
+        data_paths.SESSIONS_DIR / "telegram_web"
     )
     os.makedirs(user_data_dir, exist_ok=True)
 
@@ -448,10 +481,9 @@ async def login_telegram() -> bool:
         print("⏳ منتظر می‌مانم تا مرورگر را ببندی...")
         print()
 
-        # منتظر بمان تا کاربر مرورگر را ببندد
         try:
             await ctx.pages[0].wait_for_event(
-                "close", timeout=600000  # ۱۰ دقیقه
+                "close", timeout=600000
             )
         except Exception:
             pass
@@ -476,7 +508,7 @@ async def login_telegram() -> bool:
         except Exception:
             pass
 
-            
+
 # ═══════════════════════════════════════════
 # ورود مرورگری مشترک
 # ═══════════════════════════════════════════
@@ -486,13 +518,20 @@ async def login_browser(
     url: str,
 ) -> bool:
     """
-    ورود مرورگری مشترک (ایتا / بله / واتساپ / لینکدین).
+    ورود مرورگری مشترک (ایتا / بله / واتساپ / لینکدین / اینستاگرام).
 
-    🔴 FIX: context در finally بسته می‌شود (حتی در لغو).
+    🔴 NEW: قبل از باز کردن مرورگر، چک می‌کند ربات روشن نباشد.
     """
     t0 = time.monotonic()
     tag = platform_label.lower().replace(" ", "_")
     log_info(f"▶️ {_LOGIN_PREFIX}:browser:{tag}] شروع | url={url}")
+
+    # 🔴 NEW: چک ربات
+    if not _warn_bot_running(platform_label):
+        log_warning(
+            f"⚠️ {_LOGIN_PREFIX}:browser:{tag}] لغو شد (ربات روشن)"
+        )
+        return False
 
     try:
         from playwright.async_api import async_playwright
@@ -503,7 +542,6 @@ async def login_browser(
         )
         return False
 
-    # ساخت collector با headless=False
     try:
         try:
             collector = collector_cls(headless=False)
@@ -521,7 +559,6 @@ async def login_browser(
     logged_in = False
 
     try:
-        # راه‌اندازی playwright
         try:
             t_launch = time.monotonic()
             collector._pw = await async_playwright().start()
@@ -543,7 +580,6 @@ async def login_browser(
             )
             return False
 
-        # باز کردن صفحه
         try:
             page = (
                 collector._context.pages[0]
@@ -563,7 +599,6 @@ async def login_browser(
             )
             return False
 
-        # انتظار input کاربر
         user_input = await _input_async(
             f"\n➡️ بعد از ورود کامل به {platform_label}، "
             f"اینجا Enter بزن (timeout={_INPUT_TIMEOUT_S}s)... "
@@ -579,7 +614,6 @@ async def login_browser(
 
         await asyncio.sleep(2)
 
-        # ─── چک ورود ───
         try:
             logged_in = await collector._is_logged_in()
         except Exception as e:
@@ -640,16 +674,6 @@ async def login_browser(
 # wrappers
 # ═══════════════════════════════════════════
 async def login_bale() -> bool:
-    """
-    ورود بله با مرورگر (Playwright) — هماهنگ با collectors/bale.py.
-
-    🔴 FIX نسخهٔ ۶: قبلاً از baleclient استفاده می‌کرد که نصب نیست
-    و با کلکتور فعلی (Playwright-based) ناسازگار بود.
-
-    حالا مثل ایتا/واتساپ/لینکدین از login_browser استفاده می‌کند.
-    مرورگر باز می‌شود، کاربر با شماره + کد پیامکی وارد می‌شود،
-    پروفایل در storage/sessions/bale_web ذخیره می‌شود.
-    """
     from collectors.bale import BaleCollector
     return await login_browser(
         "بله", BaleCollector, "https://web.bale.ai/"
@@ -674,12 +698,12 @@ async def login_whatsapp() -> bool:
 
 async def login_linkedin() -> bool:
     from collectors.linkedin import LinkedInCollector
-    # مستقیم به feed (نه login) — بعد از login state ذخیره می‌شود
     return await login_browser(
         "لینکدین",
         LinkedInCollector,
         "https://www.linkedin.com/feed/",
     )
+
 
 async def login_instagram() -> bool:
     from collectors.instagram import InstagramCollector
@@ -688,8 +712,10 @@ async def login_instagram() -> bool:
         InstagramCollector,
         "https://www.instagram.com/",
     )
+
+
 # ═══════════════════════════════════════════
-# منو
+# منو — 🔴 FIX: [8] → [7] برای اینستاگرام
 # ═══════════════════════════════════════════
 _MENU = """
 ╔══════════════════════════════════════════════════════════╗
@@ -701,13 +727,14 @@ _MENU = """
 ║  [4] تلگرام (Telegram)                                   ║
 ║  [5] واتساپ (WhatsApp - مرورگر/QR)                       ║
 ║  [6] لینکدین (LinkedIn - مرورگر)                         ║
-║  [8] اینستاگرام (Instagram - مرورگر)                     ║
+║  [7] اینستاگرام (Instagram - مرورگر)                     ║
 ║  [9] ورود همه (به ترتیب)                                 ║
 ║  [0] خروج                                                ║
 ╚══════════════════════════════════════════════════════════╝
 """
 
 
+# 🔴 FIX: کلید «8» → «7» برای اینستاگرام
 _ACTIONS: dict[str, tuple[str, Callable[[], Awaitable[bool]]]] = {
     "1": ("rubika", login_rubika),
     "2": ("bale", login_bale),
@@ -715,22 +742,25 @@ _ACTIONS: dict[str, tuple[str, Callable[[], Awaitable[bool]]]] = {
     "4": ("telegram", login_telegram),
     "5": ("whatsapp", login_whatsapp),
     "6": ("linkedin", login_linkedin),
-    "8": ("instagram", login_instagram),
+    "7": ("instagram", login_instagram),
 }
-# 🎯 FIX: نگاشت نام → تابع (برای _login_all)
+
 _BY_NAME: dict[str, Callable[[], Awaitable[bool]]] = {
     name: func for _key, (name, func) in _ACTIONS.items()
 }
 
-# ترتیب ورود در حالت «ورود همه»
 _LOGIN_ALL_ORDER = [
     "rubika", "bale", "eitaa", "telegram",
     "whatsapp", "linkedin", "instagram",
 ]
 
+
 async def _login_all() -> None:
     """ورود به همه پلتفرم‌ها به ترتیب."""
-    log_info(f"🎯 {_LOGIN_PREFIX}:all] ورود به {len(_LOGIN_ALL_ORDER)} پلتفرم")
+    log_info(
+        f"🎯 {_LOGIN_PREFIX}:all] ورود به "
+        f"{len(_LOGIN_ALL_ORDER)} پلتفرم"
+    )
 
     success_count = 0
     fail_count = 0
@@ -768,13 +798,24 @@ async def _login_all() -> None:
 async def main() -> None:
     log_info(f"▶️ {_LOGIN_PREFIX}:main] شروع")
 
+    # 🔴 NEW: هشدار اولیه اگر ربات روشن است
+    running, pid = _is_bot_running()
+    if running:
+        print()
+        print("╔" + "═" * 58 + "╗")
+        print("║  ⚠️  توجه: ربات الان روشن است (PID: {:>6})         ║".format(pid or 0))
+        print("║  برای لاگین مرورگری، ابتدا ربات را Stop کن.          ║")
+        print("╚" + "═" * 58 + "╝")
+
     while True:
         print(_MENU)
 
         try:
             choice = await _input_async("انتخاب: ", timeout_s=300)
         except KeyboardInterrupt:
-            log_info(f"ℹ️ {_LOGIN_PREFIX}:main] KeyboardInterrupt در منو")
+            log_info(
+                f"ℹ️ {_LOGIN_PREFIX}:main] KeyboardInterrupt در منو"
+            )
             return
 
         if choice is None:
@@ -787,7 +828,6 @@ async def main() -> None:
             log_info(f"ℹ️ {_LOGIN_PREFIX}:main] خروج")
             return
 
-        # ورود همه
         if choice == "9":
             log_info(f"🎯 {_LOGIN_PREFIX}:main] ورود همه")
             await _login_all()
@@ -827,7 +867,6 @@ async def main() -> None:
             for ln in traceback.format_exc().splitlines()[-5:]:
                 log_error(f"   ↳ {ln}")
 
-        # سؤال: ادامه؟
         try:
             cont = await _input_async(
                 "\nمی‌خواهی پلتفرم دیگری هم وارد شوی؟ "

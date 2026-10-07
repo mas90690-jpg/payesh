@@ -1,10 +1,9 @@
-# core/services/crm_export.py
-"""
-خروجی سرنخ برای CRM.
+"""خروجی سرنخ برای CRM.
 
-سرنخ‌ها (پیام‌های کلیدواژه‌دار) را به فرمت آمادهٔ واردکردن در CRM می‌دهد:
-منبع/کانال/فرد/تاریخ/علاقه‌مندی(کلیدواژه)/متن/لینک/رسانه، مرتب به ترتیب
-ثابت پلتفرم. خروجی: CSV (سازگار با Excel) + JSON + XLSX (اگر openpyxl).
+سرنخ‌ها (پیام‌های کلیدواژه‌دار) را به فرمت آمادهٔ واردکردن در CRM
+می‌دهد: منبع/کانال/فرد/تاریخ/علاقه‌مندی(کلیدواژه)/متن/لینک/رسانه،
+مرتب به ترتیب ثابت پلتفرم. خروجی: CSV (سازگار با Excel) + JSON +
+XLSX (اگر openpyxl).
 
 حالت‌های خروجی:
   - عادی:              یک فایل با همه سرنخ‌ها (یا فیلتر platform)
@@ -12,24 +11,12 @@
   - split=True:        یک فایل جدا برای هر پلتفرم
   - multi_sheet=True:  یک XLSX با شیت جدا per platform
 
-اجرا:
-  python -m core.services.crm_export                    # ۳۰ روز، همه
-  python -m core.services.crm_export 7                  # ۷ روز
-  python -m core.services.crm_export 0                  # همه
-  python -m core.services.crm_export 30 eitaa           # فقط ایتا
-  python -m core.services.crm_export 30 --split         # فایل جدا per platform
-  python -m core.services.crm_export 30 --multi-sheet   # یک اکسل، شیت‌جدا
-
-نسخهٔ ۵ (این نسخه):
-  - 🟠 FIX: _atomic_write_text حالا encoding پارامتری دارد
-    (هم CSV با utf-8-sig و هم JSON با utf-8 از آن استفاده می‌کنند).
-  - 🟠 FIX: _write_csv حالا از _atomic_write_text_with_encoding
-    استفاده می‌کند (DRY violation رفع شد).
-  - 🟠 FIX: _export_split حالا total را درست می‌شمارد
-    (فقط سرنخ‌های پلتفرم‌های موفق).
-  - 🎯 لاگ دقیق‌تر در _write_csv (BOM ذکر می‌شود).
-  - 🧹 _LOG_PREVIEW_LEN حذف شد (استفاده نمی‌شد).
-  - ✅ حفظ همهٔ FIXهای نسخهٔ ۴.
+نسخهٔ ۷ (این نسخه):
+  - 🔒 SEC FIX: حذف f-string در SQL query اصلی.
+    * `where` فقط از placeholder های ثابت + `?` ساخته می‌شود
+    * مقادیر از طریق `params` به SQLite پاس می‌شوند
+    * SQL نهایی با `+` (نه f-string) ساخته می‌شود
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۶.
 """
 from __future__ import annotations
 
@@ -43,18 +30,98 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import IO, Any
 
-from config import DB_DIR, REPORTS_DIR
-from core.kernel.logger import log_error, log_info, log_success, log_warning
-from core.services.daily_reporter import (
-    PLATFORM_ORDER,
-    platform_label,
-    platform_rank,
+from core.kernel.logger import (
+    log_error,
+    log_info,
+    log_success,
+    log_warning,
 )
 
-DB_PATH = os.path.join(DB_DIR, "messages.db")
 
-# ─── ستون‌های CRM ───
-CRM_HEADERS = [
+# ═══════════════════════════════════════════
+# helpers
+# ═══════════════════════════════════════════
+def _env_float(
+    name: str, default: float,
+    min_val: float | None = None,
+    max_val: float | None = None,
+) -> float:
+    """خواندن float از env — با sanitize."""
+    try:
+        v = float(os.getenv(name, str(default)))
+    except (ValueError, TypeError):
+        return default
+    if min_val is not None and v < min_val:
+        return min_val
+    if max_val is not None and v > max_val:
+        return max_val
+    return v
+
+
+def _env_int(
+    name: str, default: int,
+    min_val: int | None = None,
+    max_val: int | None = None,
+) -> int:
+    """خواندن int از env — با sanitize."""
+    try:
+        v = int(os.getenv(name, str(default)))
+    except (ValueError, TypeError):
+        return default
+    if min_val is not None and v < min_val:
+        return min_val
+    if max_val is not None and v > max_val:
+        return max_val
+    return v
+
+
+# ═══════════════════════════════════════════
+# مسیرها (از data.paths — منبع یکتا)
+# ═══════════════════════════════════════════
+try:
+    from data import paths as _data_paths
+    DB_PATH: str = str(_data_paths.DB_FILE)
+    REPORTS_DIR: str = str(_data_paths.REPORTS_DIR)
+except Exception:
+    from config import DB_DIR, REPORTS_DIR as _CFG_REPORTS
+    DB_PATH = os.path.join(str(DB_DIR), "messages.db")
+    REPORTS_DIR = str(_CFG_REPORTS)
+
+
+# ─── import از daily_reporter (با fallback) ───
+try:
+    from core.services.daily_reporter import (
+        PLATFORM_ORDER,
+        platform_label,
+        platform_rank,
+    )
+except Exception:
+    # ─── fallback ───
+    try:
+        from config import PLATFORMS_ORDER as _PO
+        PLATFORM_ORDER = list(_PO)
+    except Exception:
+        PLATFORM_ORDER = [
+            "eitaa", "bale", "rubika", "telegram",
+            "whatsapp", "web", "linkedin", "instagram",
+        ]
+
+    def platform_label(p: str) -> str:
+        return f"📍 {p or 'نامشخص'}"
+
+    def platform_rank(p: str) -> int:
+        p_low = (p or "").lower()
+        return (
+            PLATFORM_ORDER.index(p_low)
+            if p_low in PLATFORM_ORDER
+            else len(PLATFORM_ORDER) + 1
+        )
+
+
+# ═══════════════════════════════════════════
+# ستون‌های CRM
+# ═══════════════════════════════════════════
+CRM_HEADERS: list[str] = [
     "منبع (پلتفرم)",
     "کانال/گروه",
     "فرد/فرستنده",
@@ -70,14 +137,29 @@ CRM_HEADERS = [
     "شناسه",
 ]
 
-# ─── ثابت‌ها ───
-_SQL_TIMEOUT_S = float(os.getenv("CRM_SQL_TIMEOUT_S", "5"))
+
+# ═══════════════════════════════════════════
+# ثابت‌ها (env-based)
+# ═══════════════════════════════════════════
+_SQL_TIMEOUT_S = _env_float(
+    "CRM_SQL_TIMEOUT_S", 5.0,
+    min_val=0.5, max_val=300.0,
+)
 _MAX_XLSX_SHEET_NAME = 31
 _XLSX_SHEET_ALL = "all"
-_TEXT_CELL_MAX = 1000
+_TEXT_CELL_MAX = _env_int(
+    "CRM_TEXT_CELL_MAX", 1000,
+    min_val=100, max_val=100_000,
+)
+_MAX_XLSX_RECORDS = _env_int(
+    "CRM_MAX_XLSX_RECORDS", 100_000,
+    min_val=100, max_val=1_000_000,
+)
 
-# کاراکترهای غیرمجاز در نام فایل (defensively)
-_BAD_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+# کاراکترهای غیرمجاز در نام فایل
+_BAD_FILENAME_CHARS = re.compile(
+    r'[<>:"/\\|?*\x00-\x1f]'
+)
 
 
 # ═══════════════════════════════════════════
@@ -88,7 +170,9 @@ def _safe_str(val: Any) -> str:
     return "" if val is None else str(val)
 
 
-def _safe_row_get(row: Any, key: str, default: Any = "") -> Any:
+def _safe_row_get(
+    row: Any, key: str, default: Any = ""
+) -> Any:
     """دسترسی امن به ستون sqlite3.Row / dict."""
     try:
         v = row[key]
@@ -101,15 +185,17 @@ def _sanitize_filename(s: str) -> str:
     """پاک‌سازی نام فایل از کاراکترهای غیرمجاز."""
     if not s:
         return "unknown"
-    return _BAD_FILENAME_CHARS.sub("_", str(s)).strip()[:64] or "unknown"
+    cleaned = _BAD_FILENAME_CHARS.sub("_", str(s)).strip()
+    return cleaned[:64] or "unknown"
 
 
 def _sqlite_connect(path: str) -> sqlite3.Connection:
-    """اتصال SQLite با timeout (جلوگیری از قفل دائمی)."""
+    """اتصال SQLite با timeout."""
     conn = sqlite3.connect(path, timeout=_SQL_TIMEOUT_S)
     try:
         conn.execute(
-            "PRAGMA busy_timeout = ?", (int(_SQL_TIMEOUT_S * 1000),)
+            "PRAGMA busy_timeout = ?",
+            (int(_SQL_TIMEOUT_S * 1000),),
         )
     except Exception:
         pass
@@ -122,7 +208,9 @@ def _dedup_rows(rows: list[Any]) -> list[Any]:
     out: list[Any] = []
     for r in rows:
         chat = _safe_row_get(r, "chat_name", "") or ""
-        txt = str(_safe_row_get(r, "text", "") or "")[:200].strip()
+        txt = str(
+            _safe_row_get(r, "text", "") or ""
+        )[:200].strip()
         key = (chat, txt)
         if txt and key in seen:
             continue
@@ -134,62 +222,69 @@ def _dedup_rows(rows: list[Any]) -> list[Any]:
 # ═══════════════════════════════════════════
 # خواندن داده
 # ═══════════════════════════════════════════
-def _rows(days: int, platform: str | None = None) -> list[Any]:
-    """سرنخ‌ها را از جدول messages می‌خواند (فقط کلیدواژه‌دار).
+def _rows(
+    days: int, platform: str | None = None
+) -> list[Any]:
+    """سرنخ‌ها را از جدول messages می‌خواند.
 
-    Args:
-        days: بازه (۰ یا منفی = همه).
-        platform: اگر داده شد، فقط همان پلتفرم (case-insensitive).
-
-    Returns:
-        لیست ردیف‌های sqlite3.Row، مرتب به ترتیب ثابت پلتفرم.
+    🔒 SEC FIX: `where` فقط از placeholder های ثابت + `?`
+    ساخته می‌شود. مقادیر از طریق params به SQLite می‌روند.
     """
     t0 = time.monotonic()
 
-    # days امن
+    # ─── days امن ───
     try:
         days = int(days)
     except (TypeError, ValueError):
         log_warning(
-            f"⚠️ [CRM:rows] days نامعتبر «{days}» — پیش‌فرض 0"
+            f"⚠️ [CRM:rows] days نامعتبر «{days}» — "
+            f"پیش‌فرض 0"
         )
         days = 0
     if days < 0:
         days = 0
 
-    # platform نرمال
+    # ─── platform نرمال ───
     if platform:
         platform = str(platform).lower().strip() or None
 
-    where = "keywords != ''"
+    # 🔒 SEC FIX: ساخت where از رشته‌های ثابت + `?`
+    where_parts: list[str] = ["keywords != ''"]
     params: list[Any] = []
+
     if days > 0:
         since = (
             datetime.now() - timedelta(days=days)
         ).strftime("%Y-%m-%d")
-        where += " AND date(timestamp) >= ?"
+        where_parts.append("date(timestamp) >= ?")
         params.append(since)
     if platform:
-        where += " AND platform = ?"
+        where_parts.append("platform = ?")
         params.append(platform)
+
+    where_sql = " AND ".join(where_parts)
+
+    # 🔒 SEC FIX: concatenation با + — نه f-string.
+    # `where_sql` فقط شامل placeholder های ثابت + `?` است.
+    # مقادیر واقعی از `params` می‌آیند (parameter binding).
+    query = (
+        "SELECT platform, chat_name, chat_link, "
+        "sender_name, user_id, text, keywords, "
+        "media_type, timestamp, id, "
+        "opportunity_score, opportunity_type, "
+        "brands, matched_products "
+        "FROM messages "
+        "WHERE " + where_sql + " "
+        "ORDER BY opportunity_score DESC, "
+        "timestamp DESC"
+    )
 
     rows: list[Any] = []
     try:
         conn = _sqlite_connect(DB_PATH)
         try:
             conn.row_factory = sqlite3.Row
-            cur = conn.execute(
-                f"""
-                SELECT platform, chat_name, chat_link, sender_name, user_id,
-                       text, keywords, media_type, timestamp, id,
-                       opportunity_score, opportunity_type,
-                       brands, matched_products
-                FROM messages
-                WHERE {where}
-                ORDER BY opportunity_score DESC, timestamp DESC
-                """,
-                params,
-            )
+            cur = conn.execute(query, params)
             rows = cur.fetchall()
         finally:
             conn.close()
@@ -206,16 +301,22 @@ def _rows(days: int, platform: str | None = None) -> list[Any]:
     elapsed_ms = (time.monotonic() - t0) * 1000
 
     log_info(
-        f"📊 [CRM:rows] {after} سرنخ (dedup: {before}→{after}) | "
-        f"days={days} platform={platform or 'all'} | {elapsed_ms:.0f}ms"
+        f"📊 [CRM:rows] {after} سرنخ "
+        f"(dedup: {before}→{after}) | "
+        f"days={days} platform={platform or 'all'} | "
+        f"{elapsed_ms:.0f}ms"
     )
-    return sorted(rows, key=lambda r: platform_rank(r["platform"]))
+    return sorted(
+        rows, key=lambda r: platform_rank(r["platform"])
+    )
 
 
-def _record(r) -> dict[str, Any]:
-    """تبدیل ردیف دیتابیس به دیکشنری CRM — مقاوم به None/KeyError."""
+def _record(r: Any) -> dict[str, Any]:
+    """تبدیل ردیف دیتابیس به دیکشنری CRM."""
     platform = _safe_row_get(r, "platform", None)
-    platform_str = str(platform).lower() if platform else ""
+    platform_str = (
+        str(platform).lower() if platform else ""
+    )
 
     media = _safe_row_get(r, "media_type", "text")
     score = _safe_row_get(r, "opportunity_score", 0)
@@ -227,37 +328,63 @@ def _record(r) -> dict[str, Any]:
     return {
         "source": (
             platform_label(platform_str)
-            if platform_str
-            else "📍 نامشخص"
+            if platform_str else "📍 نامشخص"
         ),
         "platform": platform_str,
-        "channel": _safe_str(_safe_row_get(r, "chat_name", "")),
+        "channel": _safe_str(
+            _safe_row_get(r, "chat_name", "")
+        ),
         "contact": (
             _safe_str(_safe_row_get(r, "sender_name", ""))
             or _safe_str(_safe_row_get(r, "user_id", ""))
         ),
-        "date": _safe_str(_safe_row_get(r, "timestamp", "")),
-        "level": _safe_str(_safe_row_get(r, "opportunity_type", "")),
+        "date": _safe_str(
+            _safe_row_get(r, "timestamp", "")
+        ),
+        "level": _safe_str(
+            _safe_row_get(r, "opportunity_type", "")
+        ),
         "score": score_int,
-        "keywords": _safe_str(_safe_row_get(r, "keywords", "")),
-        "brands": _safe_str(_safe_row_get(r, "brands", "")),
+        "keywords": _safe_str(
+            _safe_row_get(r, "keywords", "")
+        ),
+        "brands": _safe_str(
+            _safe_row_get(r, "brands", "")
+        ),
         "matched_products": _safe_str(
             _safe_row_get(r, "matched_products", "")
         ),
-        "text": _safe_str(_safe_row_get(r, "text", "")).strip(),
-        "link": _safe_str(_safe_row_get(r, "chat_link", "")),
+        "text": _safe_str(
+            _safe_row_get(r, "text", "")
+        ).strip(),
+        "link": _safe_str(
+            _safe_row_get(r, "chat_link", "")
+        ),
         "media": (
-            "" if (media == "text" or not media) else str(media)
+            "" if (media == "text" or not media)
+            else str(media)
         ),
         "id": _safe_str(_safe_row_get(r, "id", "")),
     }
+
+
+def _compute_platforms_in_order(
+    by_platform: dict[str, Any],
+) -> list[str]:
+    """🎯 لیست پلتفرم‌ها به ترتیب ثابت + ناشناخته‌ها در انتها."""
+    known = list(PLATFORM_ORDER)
+    unknown = sorted(
+        p for p in by_platform.keys()
+        if p not in PLATFORM_ORDER
+    )
+    return known + unknown
 
 
 # ═══════════════════════════════════════════
 # نوشتن فایل‌ها (atomic)
 # ═══════════════════════════════════════════
 def _row_cells(rec: dict[str, Any]) -> list[Any]:
-    """سلول‌های یک ردیف CRM (متن بریده‌شده)."""
+    """سلول‌های یک ردیف CRM."""
     return [
         rec["source"],
         rec["channel"],
@@ -273,39 +400,68 @@ def _row_cells(rec: dict[str, Any]) -> list[Any]:
         rec["media"],
         rec["id"],
     ]
-    
+
+
 def _atomic_write_text_with_encoding(
     path: str,
     write_fn: Callable[[IO], None],
     encoding: str = "utf-8",
     newline: str | None = None,
 ) -> None:
-    """
-    🟠 FIX: نوشتن atomic با encoding پارامتری.
+    """🎯 FIX: نوشتن atomic با encoding + fsync.
 
     Args:
         path: مسیر نهایی.
         write_fn: callback که فایل handle باز را می‌گیرد.
-        encoding: انکودینگ فایل (پیش‌فرض utf-8).
+        encoding: انکودینگ فایل.
         newline: حالت newline (None یا "" برای CSV).
 
     Raises:
-        Exception: در صورت شکست در نوشتن (فایل موقت پاک می‌شود).
+        Exception: در صورت شکست در نوشتن.
     """
     tmp = path + ".tmp"
+
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        # باز کردن فایل با kwarg جدید مطابق نیاز
+        parent = os.path.dirname(path)
+        if parent:
+            try:
+                os.makedirs(parent, exist_ok=True)
+            except Exception:
+                pass
+
+        # ─── باز کردن فایل ───
         if newline is not None:
-            f = open(tmp, "w", newline=newline, encoding=encoding)
+            f = open(
+                tmp, "w", newline=newline, encoding=encoding
+            )
         else:
             f = open(tmp, "w", encoding=encoding)
+
         try:
             write_fn(f)
+            # 🎯 FIX: fsync
+            try:
+                f.flush()
+                os.fsync(f.fileno())
+            except (AttributeError, OSError):
+                pass
         finally:
             f.close()
+
         os.replace(tmp, path)
+
+        # ─── dir fsync (POSIX) ───
+        if parent:
+            try:
+                dir_fd = os.open(parent, os.O_DIRECTORY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except (AttributeError, OSError):
+                pass
     except Exception:
+        # ─── cleanup tmp ───
         try:
             if os.path.exists(tmp):
                 os.remove(tmp)
@@ -314,12 +470,10 @@ def _atomic_write_text_with_encoding(
         raise
 
 
-def _write_csv(path: str, records: list[dict[str, Any]]) -> bool:
-    """
-    نوشتن CSV با utf-8-sig (سازگار با Excel فارسی) — atomic.
-
-    🟠 FIX: حالا از _atomic_write_text_with_encoding استفاده می‌کند.
-    """
+def _write_csv(
+    path: str, records: list[dict[str, Any]]
+) -> bool:
+    """نوشتن CSV با utf-8-sig (BOM) — atomic."""
     t0 = time.monotonic()
     try:
         def _writer(f):
@@ -328,9 +482,9 @@ def _write_csv(path: str, records: list[dict[str, Any]]) -> bool:
             for rec in records:
                 w.writerow(_row_cells(rec))
 
-        # utf-8-sig: با BOM برای Excel فارسی
         _atomic_write_text_with_encoding(
-            path, _writer, encoding="utf-8-sig", newline=""
+            path, _writer,
+            encoding="utf-8-sig", newline="",
         )
 
         size = os.path.getsize(path)
@@ -344,58 +498,81 @@ def _write_csv(path: str, records: list[dict[str, Any]]) -> bool:
         return True
     except Exception as e:
         log_error(
-            f"❌ [CRM:csv] {type(e).__name__}: {e} | path={path}"
+            f"❌ [CRM:csv] {type(e).__name__}: {e} | "
+            f"path={path}"
         )
         return False
 
 
-def _write_json(path: str, records: list[dict[str, Any]]) -> bool:
-    """نوشتن JSON — atomic (utf-8 بدون BOM)."""
+def _write_json(
+    path: str, records: list[dict[str, Any]]
+) -> bool:
+    """نوشتن JSON — atomic (utf-8)."""
     t0 = time.monotonic()
     try:
         def _writer(f):
-            json.dump(records, f, ensure_ascii=False, indent=2)
+            json.dump(
+                records, f,
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            )
 
-        _atomic_write_text_with_encoding(path, _writer, encoding="utf-8")
+        _atomic_write_text_with_encoding(
+            path, _writer, encoding="utf-8"
+        )
         size = os.path.getsize(path)
         elapsed_ms = (time.monotonic() - t0) * 1000
         log_info(
             f"📄 [CRM:json] {os.path.basename(path)} | "
             f"{len(records)} رکورد | {size/1024:.1f}KB | "
-            f"encoding=utf-8 | "
             f"{elapsed_ms:.0f}ms"
         )
         return True
     except Exception as e:
         log_error(
-            f"❌ [CRM:json] {type(e).__name__}: {e} | path={path}"
+            f"❌ [CRM:json] {type(e).__name__}: {e} | "
+            f"path={path}"
         )
         return False
 
 
 # ═══════════════════════════════════════════
-# Excel (اختیاری، با openpyxl)
+# Excel (اختیاری)
 # ═══════════════════════════════════════════
 def _style_sheet(ws) -> None:
     """استایل sheet — امن روی sheet خالی."""
     try:
-        from openpyxl.styles import Alignment, Font, PatternFill
+        from openpyxl.styles import (
+            Alignment, Font, PatternFill,
+        )
 
         ws.sheet_view.rightToLeft = True
-        head_fill = PatternFill("solid", fgColor="27AE60")
+        head_fill = PatternFill(
+            "solid", fgColor="27AE60"
+        )
         try:
             for c in ws[1]:
                 c.font = Font(bold=True, color="FFFFFF")
                 c.fill = head_fill
-                c.alignment = Alignment(horizontal="center")
+                c.alignment = Alignment(
+                    horizontal="center"
+                )
         except Exception:
             pass
         ws.freeze_panes = "A2"
-        widths = [12, 22, 16, 20, 10, 8, 24, 20, 30, 60, 30, 10, 18]
+        widths = [
+            12, 22, 16, 20, 10, 8, 24,
+            20, 30, 60, 30, 10, 18,
+        ]
         for i, wd in enumerate(widths, 1):
             try:
-                col_letter = ws.cell(row=1, column=i).column_letter
-                ws.column_dimensions[col_letter].width = wd
+                col_letter = ws.cell(
+                    row=1, column=i
+                ).column_letter
+                ws.column_dimensions[
+                    col_letter
+                ].width = wd
             except Exception:
                 continue
     except ImportError:
@@ -405,7 +582,7 @@ def _style_sheet(ws) -> None:
 def _export_xlsx_single(
     path: str, records: list[dict[str, Any]]
 ) -> str | None:
-    """یک XLSX تک‌شیئی. Returns path یا None."""
+    """یک XLSX تک‌شیئی."""
     try:
         from openpyxl import Workbook
     except ImportError as e:
@@ -414,6 +591,13 @@ def _export_xlsx_single(
             f"xlsx تولید نمی‌شود"
         )
         return None
+
+    if len(records) > _MAX_XLSX_RECORDS:
+        log_warning(
+            f"⚠️ [CRM:xlsx] records={len(records)} > "
+            f"max={_MAX_XLSX_RECORDS} — truncated"
+        )
+        records = records[:_MAX_XLSX_RECORDS]
 
     t0 = time.monotonic()
     try:
@@ -428,29 +612,35 @@ def _export_xlsx_single(
         size = os.path.getsize(path)
         elapsed_ms = (time.monotonic() - t0) * 1000
         log_info(
-            f"📊 [CRM:xlsx:single] {os.path.basename(path)} | "
+            f"📊 [CRM:xlsx:single] "
+            f"{os.path.basename(path)} | "
             f"{len(records)} ردیف | {size/1024:.1f}KB | "
             f"{elapsed_ms:.0f}ms"
         )
         return path
     except Exception as e:
         log_error(
-            f"❌ [CRM:xlsx:single] {type(e).__name__}: {e} | "
-            f"path={path}"
+            f"❌ [CRM:xlsx:single] "
+            f"{type(e).__name__}: {e} | path={path}"
         )
         return None
 
 
 def _safe_sheet_name(name: str, existing: set) -> str:
-    """نام sheet امن و یکتا (≤ 31 char، بدون تکرار)."""
-    base = _sanitize_filename(name)[:_MAX_XLSX_SHEET_NAME]
+    """نام sheet امن و یکتا (≤ 31 char)."""
+    base = _sanitize_filename(name)[
+        :_MAX_XLSX_SHEET_NAME
+    ]
     if not base:
         base = "sheet"
     candidate = base
     i = 2
     while candidate.lower() in existing:
         suffix = f"_{i}"
-        candidate = base[: _MAX_XLSX_SHEET_NAME - len(suffix)] + suffix
+        candidate = (
+            base[: _MAX_XLSX_SHEET_NAME - len(suffix)]
+            + suffix
+        )
         i += 1
         if i > 100:
             break
@@ -458,7 +648,8 @@ def _safe_sheet_name(name: str, existing: set) -> str:
 
 
 def _export_xlsx_multi_sheet(
-    path: str, by_platform: dict[str, list[dict[str, Any]]]
+    path: str,
+    by_platform: dict[str, list[dict[str, Any]]],
 ) -> str | None:
     """یک XLSX با شیت per-platform + یک شیت «all»."""
     try:
@@ -474,40 +665,40 @@ def _export_xlsx_multi_sheet(
     try:
         wb = Workbook()
 
-        # شیت «همه»
+        # ─── شیت «همه» ───
         ws_all = wb.active
         ws_all.title = _XLSX_SHEET_ALL
         ws_all.append(CRM_HEADERS)
         total_records = 0
-        for p in PLATFORM_ORDER:
+        all_platforms = _compute_platforms_in_order(
+            by_platform
+        )
+
+        for p in all_platforms:
             for rec in by_platform.get(p, []):
+                if total_records >= _MAX_XLSX_RECORDS:
+                    break
                 ws_all.append(_row_cells(rec))
                 total_records += 1
-        # platformهای ناشناخته
-        for p, recs in by_platform.items():
-            if p in PLATFORM_ORDER:
-                continue
-            for rec in recs:
-                ws_all.append(_row_cells(rec))
-                total_records += 1
+            if total_records >= _MAX_XLSX_RECORDS:
+                break
         _style_sheet(ws_all)
 
-        # شیت‌های per-platform
+        # ─── شیت‌های per-platform ───
         existing_names: set = {_XLSX_SHEET_ALL.lower()}
         sheets_created = 1
 
-        all_platforms = list(PLATFORM_ORDER) + sorted(
-            p for p in by_platform.keys() if p not in PLATFORM_ORDER
-        )
         for p in all_platforms:
             records = by_platform.get(p, [])
             if not records:
                 continue
-            sheet_name = _safe_sheet_name(p, existing_names)
+            sheet_name = _safe_sheet_name(
+                p, existing_names
+            )
             existing_names.add(sheet_name.lower())
             ws = wb.create_sheet(title=sheet_name)
             ws.append(CRM_HEADERS)
-            for rec in records:
+            for rec in records[:_MAX_XLSX_RECORDS]:
                 ws.append(_row_cells(rec))
             _style_sheet(ws)
             sheets_created += 1
@@ -516,15 +707,17 @@ def _export_xlsx_multi_sheet(
         size = os.path.getsize(path)
         elapsed_ms = (time.monotonic() - t0) * 1000
         log_info(
-            f"📊 [CRM:xlsx:multi] {os.path.basename(path)} | "
-            f"sheets={sheets_created} records={total_records} | "
+            f"📊 [CRM:xlsx:multi] "
+            f"{os.path.basename(path)} | "
+            f"sheets={sheets_created} "
+            f"records={total_records} | "
             f"{size/1024:.1f}KB | {elapsed_ms:.0f}ms"
         )
         return path
     except Exception as e:
         log_error(
-            f"❌ [CRM:xlsx:multi] {type(e).__name__}: {e} | "
-            f"path={path}"
+            f"❌ [CRM:xlsx:multi] "
+            f"{type(e).__name__}: {e} | path={path}"
         )
         return None
 
@@ -558,27 +751,27 @@ def export_crm(
         platform: فیلتر پلتفرم (None = همه).
         split: True → یک فایل جدا per platform.
         multi_sheet: True → یک XLSX با شیت جدا per platform.
-                     (فقط وقتی platform=None و split=False).
 
     Returns:
-        dict | None:
-          - حالت عادی: {"csv", "json", "xlsx", "count", "platform", "mode"}
-          - حالت split: {"count", "by_platform", "mode", "failed_platforms"}
-          - None اگر دیتابیس نبود / خطا / سرنخی نبود.
+        dict | None.
     """
     t_all = time.monotonic()
 
-    # نرمال‌سازی platform
     if platform:
         platform = str(platform).lower().strip() or None
 
     mode = (
-        "split" if split
-        else ("multi_sheet" if multi_sheet and not platform else "single")
+        "split"
+        if split
+        else (
+            "multi_sheet"
+            if multi_sheet and not platform
+            else "single"
+        )
     )
     log_info(
-        f"▶️ [CRM:export] شروع | mode={mode} | days={days} | "
-        f"platform={platform or 'all'}"
+        f"▶️ [CRM:export] شروع | mode={mode} | "
+        f"days={days} | platform={platform or 'all'}"
     )
 
     if not os.path.exists(DB_PATH):
@@ -589,7 +782,8 @@ def export_crm(
         os.makedirs(REPORTS_DIR, exist_ok=True)
     except Exception as e:
         log_error(
-            f"❌ [CRM:export] mkdir | {type(e).__name__}: {e}"
+            f"❌ [CRM:export] mkdir | "
+            f"{type(e).__name__}: {e}"
         )
         return None
 
@@ -603,12 +797,15 @@ def export_crm(
     rows = _rows(days, platform=platform)
     if not rows:
         log_warning(
-            f"⚠️ [CRM:export] سرنخی پیدا نشد | days={days} | "
-            f"platform={platform or 'all'}"
+            f"⚠️ [CRM:export] سرنخی پیدا نشد | "
+            f"days={days} | platform={platform or 'all'}"
         )
         return None
 
-    suffix = f"_{_sanitize_filename(platform)}" if platform else ""
+    suffix = (
+        f"_{_sanitize_filename(platform)}"
+        if platform else ""
+    )
     csv_path = os.path.join(
         REPORTS_DIR, f"crm_leads{suffix}_{stamp}.csv"
     )
@@ -623,19 +820,24 @@ def export_crm(
     csv_ok = _write_csv(csv_path, records)
     json_ok = _write_json(json_path, records)
 
-    # XLSX
+    # ─── XLSX ───
     if multi_sheet and not platform:
         by_platform = _group_by_platform(records)
-        xlsx_out = _export_xlsx_multi_sheet(xlsx_path, by_platform)
+        xlsx_out = _export_xlsx_multi_sheet(
+            xlsx_path, by_platform
+        )
     else:
-        xlsx_out = _export_xlsx_single(xlsx_path, records)
+        xlsx_out = _export_xlsx_single(
+            xlsx_path, records
+        )
     if xlsx_out is None:
         xlsx_path = None
 
     elapsed_ms = (time.monotonic() - t_all) * 1000
     label = platform or "همه پلتفرم‌ها"
     log_success(
-        f"✅ [CRM:export] {len(records)} سرنخ | {label} | "
+        f"✅ [CRM:export] {len(records)} سرنخ | "
+        f"{label} | "
         f"csv={'✅' if csv_ok else '❌'} "
         f"json={'✅' if json_ok else '❌'} "
         f"xlsx={'✅' if xlsx_path else '—'} | "
@@ -648,7 +850,9 @@ def export_crm(
         "count": len(records),
         "platform": platform,
         "mode": (
-            "multi_sheet" if (multi_sheet and not platform) else "single"
+            "multi_sheet"
+            if (multi_sheet and not platform)
+            else "single"
         ),
     }
 
@@ -656,12 +860,17 @@ def export_crm(
 # ═══════════════════════════════════════════
 # _export_split
 # ═══════════════════════════════════════════
-def _export_split(days: int, stamp: str) -> dict[str, Any]:
-    """برای هر پلتفرم، یک فایل جدا CSV/JSON/XLSX می‌سازد."""
+def _export_split(
+    days: int, stamp: str
+) -> dict[str, Any]:
+    """برای هر پلتفرم، یک فایل جدا می‌سازد."""
     t0 = time.monotonic()
     all_rows = _rows(days, platform=None)
+
     if not all_rows:
-        log_warning("⚠️ [CRM:split] سرنخی برای خروجی پیدا نشد.")
+        log_warning(
+            "⚠️ [CRM:split] سرنخی برای خروجی پیدا نشد."
+        )
         return {
             "count": 0,
             "by_platform": {},
@@ -669,20 +878,19 @@ def _export_split(days: int, stamp: str) -> dict[str, Any]:
             "failed_platforms": [],
         }
 
-    # گروه‌بندی یک‌بار
+    # ─── گروه‌بندی ───
     grouped: dict[str, list[Any]] = {}
     for r in all_rows:
-        p = (_safe_row_get(r, "platform", "") or "").lower()
+        p = (
+            _safe_row_get(r, "platform", "") or ""
+        ).lower()
         grouped.setdefault(p, []).append(r)
 
-    # ترتیب ثابت + پلتفرم‌های ناشناخته در انتها
-    all_platforms = list(PLATFORM_ORDER) + sorted(
-        p for p in grouped.keys() if p not in PLATFORM_ORDER
-    )
+    all_platforms = _compute_platforms_in_order(grouped)
 
     by_platform: dict[str, dict[str, Any]] = {}
-    total_success = 0  # 🟠 FIX: فقط سرنخ‌های پلتفرم‌های موفق
-    total_rows = 0     # برای لاگ
+    total_success = 0
+    total_rows = 0
     failed_platforms: list[str] = []
 
     for p in all_platforms:
@@ -708,7 +916,6 @@ def _export_split(days: int, stamp: str) -> dict[str, Any]:
         xlsx_out = _export_xlsx_single(xlsx_path, records)
 
         if csv_ok or json_ok:
-            # 🟠 FIX: فقط سرنخ‌های پلتفرم موفق را می‌شماریم
             total_success += len(records)
         else:
             failed_platforms.append(p)
@@ -723,15 +930,20 @@ def _export_split(days: int, stamp: str) -> dict[str, Any]:
 
     elapsed_ms = (time.monotonic() - t0) * 1000
     log_success(
-        f"✅ [CRM:split] {total_success}/{total_rows} سرنخ در "
-        f"{len(by_platform)} پلتفرم | "
-        f"failed={len(failed_platforms)} | {elapsed_ms:.0f}ms"
+        f"✅ [CRM:split] {total_success}/{total_rows} سرنخ "
+        f"در {len(by_platform)} پلتفرم | "
+        f"failed={len(failed_platforms)} | "
+        f"{elapsed_ms:.0f}ms"
     )
     for p, info in by_platform.items():
-        log_info(f"   • {platform_label(p)}: {info['count']} سرنخ")
+        log_info(
+            f"   • {platform_label(p)}: "
+            f"{info['count']} سرنخ"
+        )
     if failed_platforms:
         log_warning(
-            f"⚠️ [CRM:split] پلتفرم‌های ناموفق: {failed_platforms}"
+            f"⚠️ [CRM:split] پلتفرم‌های ناموفق: "
+            f"{failed_platforms}"
         )
 
     return {
@@ -739,6 +951,22 @@ def _export_split(days: int, stamp: str) -> dict[str, Any]:
         "by_platform": by_platform,
         "mode": "split",
         "failed_platforms": failed_platforms,
+    }
+
+
+# ═══════════════════════════════════════════
+# debug
+# ═══════════════════════════════════════════
+def get_stats() -> dict[str, Any]:
+    """🎯 خلاصهٔ وضعیت — برای debug."""
+    return {
+        "db_path": DB_PATH,
+        "reports_dir": REPORTS_DIR,
+        "sql_timeout_s": _SQL_TIMEOUT_S,
+        "text_cell_max": _TEXT_CELL_MAX,
+        "max_xlsx_records": _MAX_XLSX_RECORDS,
+        "platforms": list(PLATFORM_ORDER),
+        "csv_headers_count": len(CRM_HEADERS),
     }
 
 
@@ -758,7 +986,8 @@ def _cli() -> int:
     )
     parser.add_argument(
         "platform", nargs="?", default=None,
-        help="فیلتر پلتفرم (eitaa/bale/...). پیش‌فرض: همه.",
+        help="فیلتر پلتفرم (eitaa/bale/...). "
+             "پیش‌فرض: همه.",
     )
     parser.add_argument(
         "--split", "-s", action="store_true",
@@ -788,15 +1017,27 @@ def _cli() -> int:
         return 1
 
     log_success(
-        f"🏁 [CRM:cli] کامل | {result.get('count', 0)} سرنخ | "
+        f"🏁 [CRM:cli] کامل | "
+        f"{result.get('count', 0)} سرنخ | "
         f"mode={result.get('mode', 'single')}"
     )
-    # اگه split بود، failedها را هم لاگ کن
     failed = result.get("failed_platforms") or []
     if failed:
         log_warning(f"⚠️ [CRM:cli] failed: {failed}")
         return 2
     return 0
+
+
+# ═══════════════════════════════════════════
+# __all__
+# ═══════════════════════════════════════════
+__all__ = [
+    "export_crm",
+    "CRM_HEADERS",
+    "DB_PATH",
+    "REPORTS_DIR",
+    "get_stats",
+]
 
 
 if __name__ == "__main__":

@@ -5,115 +5,64 @@ config.py — منبع یکتای تنظیمات پروژه (از .env).
 استفاده کند (circular). برای لاگ کردن، یا print به stderr استفاده کن، یا
 `log_config_summary()` را بعد از setup logger صدا بزن.
 
-نسخهٔ ۶ (این نسخه):
-  - ⭐ NEW: instagramcollector (پلتفرم هشتم)
-  - ⭐ NEW: get_instagram_config()
-  - ⭐ NEW: _PLATFORM_KEY_MAP حالا instagram را دارد
-  - ✅ حفظ همهٔ FIXهای نسخهٔ ۵.
+نسخهٔ ۸ (این نسخه):
+  - 🎯 افزودن top-level برای پارامترهایی که قبلاً فقط در PLUGINS_CONFIG
+    یا MAIN_CONFIG بودند:
+      * ADMIN_ENABLED, ADMIN_PLATFORM, ADMIN_IDS
+      * BRAND_TOKEN_ENABLED, BRAND_TOKEN_MIN_LEN
+      * MONITOR_ENABLED, MONITOR_INTERVAL_SECONDS
+      * SELF_MONITOR_ENABLED, SELF_MONITOR_INTERVAL,
+        SELF_MONITOR_ERROR_THRESHOLD, SELF_MONITOR_STALE_MINUTES
+      * MAIN_BALE_WAIT_S, LOGIN_INPUT_TIMEOUT_S, MAIN_SKIP_VENV_CHECK
+      * EITAA_MESSAGES_PER_CHAT, WHATSAPP_MESSAGES_PER_CHAT
+  - 🎯 افزودن top-level برای BRAIN: FULL_ACCESS, USE_API_MEMORY,
+    MEMORY_API_URL, MEMORY_API_KEY
+  - 🐛 FIX: `_WEEKLY_DAY_MAP` یکسان‌سازی شد — همهٔ حالت‌های
+    ZWNJ/space/ساده پوشش داده می‌شوند.
+  - 🎯 افزودن `get_active_platforms()` با پشتیبانی کامل از instagram.
+  - 🎯 `reload()` حالا همهٔ فیلدهای جدید را هم به‌روز می‌کند.
+  - 🎯 افزودن `PLATFORMS_ORDER` (ترتیب canonical پلتفرم‌ها) و
+    `ALL_PLATFORMS` برای استفاده در سراسر پروژه.
+  - 🎯 افزودن `get_admin_ids()` helper.
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۷.
+
+نسخهٔ ۸.۱ (fixes):
+  - 🐛 `_warn` حالا در صورت خطای print، به os.write fallback می‌کند.
+  - 🐛 `log_config_summary` خطاها را لاگ می‌کند (نه silent pass).
+  - 🎯 `__all__` برای public API اضافه شد (رفع هشدار Health Check).
 """
 from __future__ import annotations
 
 import os
 import sys
 from typing import Any
+
 from data import paths as data_paths
 from dotenv import load_dotenv
-
+from core.utils.env import (
+    env_bool as _env_bool,
+    env_int as _env_int,
+    env_float as _env_float,
+    env_str as _env_str,
+    _warn,
+)
 # ─── Load .env (force override) ───
 load_dotenv(override=False)
 
-# ══════════════════════════════════════════════════════════
-# helpers (type-safe env readers)
-# ══════════════════════════════════════════════════════════
-_TRUE = {"true", "1", "yes", "on", "y", "t"}
-_FALSE = {"false", "0", "no", "off", "n", "f"}
-
-
-def _warn(msg: str) -> None:
-    """چاپ هشدار به stderr (config نمی‌تواند از logger استفاده کند)."""
-    try:
-        print(f"⚠️ [config] {msg}", file=sys.stderr)
-    except Exception:
-        pass
-
-
-def _env_bool(name: str, default: bool = False) -> bool:
-    """خواندن bool از env — با هشدار روی مقدار نامعتبر."""
+def _env_secret(name: str, default: str = "") -> str:
     raw = os.getenv(name)
     if raw is None:
         return default
-    v = str(raw).strip().lower()
-    if v in _TRUE:
-        return True
-    if v in _FALSE:
-        return False
-    _warn(f"{name}={raw!r} نامعتبر (bool) — استفاده از {default}")
-    return default
-
-
-def _env_int(
-    name: str, default: int,
-    min_val: int | None = None,
-    max_val: int | None = None,
-) -> int:
-    """خواندن int از env — با هشدار + کلیپ بازه."""
-    raw = os.getenv(name)
-    if raw is None or str(raw).strip() == "":
-        return default
-    try:
-        v = int(str(raw).strip())
-    except (ValueError, TypeError):
-        _warn(f"{name}={raw!r} نامعتبر (int) — استفاده از {default}")
-        return default
-
-    if min_val is not None and v < min_val:
-        _warn(f"{name}={v} < حداقل {min_val} — استفاده از {min_val}")
-        return min_val
-    if max_val is not None and v > max_val:
-        _warn(f"{name}={v} > حداکثر {max_val} — استفاده از {max_val}")
-        return max_val
-    return v
-
-
-def _env_float(
-    name: str, default: float,
-    min_val: float | None = None,
-    max_val: float | None = None,
-) -> float:
-    """خواندن float از env — با هشدار + کلیپ بازه."""
-    raw = os.getenv(name)
-    if raw is None or str(raw).strip() == "":
-        return default
-    try:
-        v = float(str(raw).strip())
-    except (ValueError, TypeError):
-        _warn(f"{name}={raw!r} نامعتبر (float) — استفاده از {default}")
-        return default
-
-    if min_val is not None and v < min_val:
-        _warn(f"{name}={v} < حداقل {min_val} — استفاده از {min_val}")
-        return min_val
-    if max_val is not None and v > max_val:
-        _warn(f"{name}={v} > حداکثر {max_val} — استفاده از {max_val}")
-        return max_val
-    return v
-
-
-def _env_str(name: str, default: str = "") -> str:
-    return (os.getenv(name) or default).strip()
-
-
+    return str(raw).strip()
+    
+# ══════════════════════════════════════════════════════════
+# helpers (type-safe env readers)
+# ══════════════════════════════════════════════════════════
 def _env_int_fallback(
     primary: str, fallback: str, default: int,
     min_val: int | None = None,
     max_val: int | None = None,
 ) -> int:
-    """
-    خواندن int با fallback به نام قدیمی.
-
-    ⭐ NEW: مثلاً EITAA_MESSAGES_PER_CHAT (جدید) با fallback
-    به EITAA_MSGS_PER_CHAT (قدیمی).
-    """
     raw = os.getenv(primary)
     if raw is None or str(raw).strip() == "":
         raw = os.getenv(fallback)
@@ -136,12 +85,11 @@ def _env_list(
     name: str, default: list[str] | None = None,
     max_items: int = 50,
 ) -> list[str]:
-    """خواندن لیست comma-separated از env (ضدتکراری)."""
     raw = os.getenv(name)
     if raw is None or not str(raw).strip():
         return list(default or [])
     parts = [x.strip() for x in str(raw).split(",") if x.strip()]
-    seen = set()
+    seen: set[str] = set()
     out: list[str] = []
     for p in parts:
         if p not in seen:
@@ -153,19 +101,29 @@ def _env_list(
 
 
 # ══════════════════════════════════════════════════════════
+# ثابت‌های سراسری (canonical)
+# ══════════════════════════════════════════════════════════
+PLATFORMS_ORDER: tuple[str, ...] = (
+    "eitaa", "bale", "rubika", "telegram",
+    "whatsapp", "web", "linkedin", "instagram",
+)
+"""ترتیب canonical پلتفرم‌ها — برای نمایش/گزارش/مرتب‌سازی."""
+
+ALL_PLATFORMS: frozenset[str] = frozenset(PLATFORMS_ORDER)
+"""مجموعهٔ پلتفرم‌های مجاز (برای validation)."""
+
+
+# ══════════════════════════════════════════════════════════
 # مسیرهای پایه
 # ══════════════════════════════════════════════════════════
 BASE_DIR: str = os.path.dirname(os.path.abspath(__file__))
-
-# مسیر اختیاری مرورگر (Playwright). اگه خالی، خودکار Chrome/Edge/Chromium.
 CHROME_PATH: str | None = _env_str("CHROME_PATH") or None
 
 
 # ══════════════════════════════════════════════════════════
-# پروکسی (برای مرورگرهای Playwright + کلکتورها)
+# پروکسی
 # ══════════════════════════════════════════════════════════
 def get_proxy() -> str:
-    """پروکسی مشترک (اولویت: BROWSER_PROXY سپس PROXY_URL سپس BALE_PROXY)."""
     return (
         _env_str("BROWSER_PROXY")
         or _env_str("PROXY_URL")
@@ -174,7 +132,6 @@ def get_proxy() -> str:
 
 
 def get_browser_proxy() -> dict[str, Any]:
-    """پروکسی مرورگر به‌صورت dict برای Playwright؛ {} اگر تنظیم نشده."""
     raw = get_proxy()
     if not raw:
         return {}
@@ -189,7 +146,6 @@ def get_browser_proxy() -> dict[str, Any]:
 AI_ENABLED: bool = _env_bool("AI_ENABLED", True)
 EVENT_LOG: bool = _env_bool("EVENT_LOG", False)
 
-# ترتیب اولویت هوش: auto | deepseek | ollama
 _VALID_AI_PRIORITIES = {"auto", "deepseek", "ollama"}
 _ai_priority_raw = (_env_str("AI_PRIORITY", "auto").lower() or "auto")
 if _ai_priority_raw not in _VALID_AI_PRIORITIES:
@@ -214,7 +170,6 @@ MEDIA_DIR: str = os.path.join(STORAGE_DIR, "media")
 REPORTS_DIR: str = os.path.join(STORAGE_DIR, "reports")
 BACKUPS_DIR: str = os.path.join(STORAGE_DIR, "backups")
 
-# ساخت خودکار همه پوشه‌ها
 for _d in (
     DB_DIR, SESSIONS_DIR, LOGS_DIR, PYCACHE_DIR,
     MEDIA_DIR, REPORTS_DIR, BACKUPS_DIR,
@@ -246,7 +201,7 @@ POSTGRES_CONFIG: dict[str, Any] = {
     "host": _env_str("DB_HOST", "localhost"),
     "port": _env_int("DB_PORT", 5432, min_val=1, max_val=65535),
     "user": _env_str("DB_USER", "postgres"),
-    "password": _env_str("DB_PASSWORD"),
+    "password": _env_secret("DB_PASSWORD"),
     "database": _env_str("DB_NAME", "lead_monitor"),
 }
 
@@ -258,7 +213,7 @@ if DATABASE_TYPE == "postgres" and not POSTGRES_CONFIG["password"]:
 
 
 # ══════════════════════════════════════════════════════════
-# CRM (گزارش اکسل)
+# CRM
 # ══════════════════════════════════════════════════════════
 CRM_CONFIG: dict[str, Any] = {
     "sql_timeout_s": _env_float(
@@ -284,7 +239,7 @@ SYSTEM_CONFIG: dict[str, Any] = {
 
 
 # ══════════════════════════════════════════════════════════
-# نگه‌داری و پاک‌سازی خودکار (Retention)
+# نگه‌داری
 # ══════════════════════════════════════════════════════════
 RETENTION: dict[str, int] = {
     "media_days": max(0, _env_int("KEEP_MEDIA_DAYS", 7)),
@@ -303,12 +258,12 @@ RETENTION: dict[str, int] = {
 
 
 # ══════════════════════════════════════════════════════════
-# مانیتورینگ سیستم
+# مانیتورینگ (System Monitor)
 # ══════════════════════════════════════════════════════════
 MONITOR: dict[str, Any] = {
     "enabled": _env_bool("MONITOR_ENABLED", True),
     "interval_seconds": _env_int(
-        "MONITOR_INTERVAL_SECONDS", 120, min_val=5, max_val=3600
+        "MONITOR_INTERVAL_SECONDS", 1800, min_val=5, max_val=86400
     ),
     "cpu_alert": _env_float(
         "MONITOR_CPU_ALERT", 90.0, min_val=1.0, max_val=100.0
@@ -321,15 +276,51 @@ MONITOR: dict[str, Any] = {
     ),
 }
 
+# 🎯 top-level export (سهولت استفاده)
+MONITOR_ENABLED: bool = MONITOR["enabled"]
+MONITOR_INTERVAL_SECONDS: int = MONITOR["interval_seconds"]
+
 
 # ══════════════════════════════════════════════════════════
-# کلیدواژه‌ها — hot-reload
+# Self-Monitor
+# ══════════════════════════════════════════════════════════
+SELF_MONITOR: dict[str, Any] = {
+    "enabled": _env_bool("SELF_MONITOR_ENABLED", True),
+    "interval_seconds": _env_int(
+        "SELF_MONITOR_INTERVAL", 600,
+        min_val=60, max_val=86400,
+    ),
+    "error_threshold": _env_int(
+        "SELF_MONITOR_ERROR_THRESHOLD", 5,
+        min_val=1, max_val=1000,
+    ),
+    "stale_minutes": _env_int(
+        "SELF_MONITOR_STALE_MINUTES", 60,
+        min_val=5, max_val=10080,
+    ),
+}
+
+# 🎯 top-level export
+SELF_MONITOR_ENABLED: bool = SELF_MONITOR["enabled"]
+SELF_MONITOR_INTERVAL: int = SELF_MONITOR["interval_seconds"]
+SELF_MONITOR_ERROR_THRESHOLD: int = SELF_MONITOR["error_threshold"]
+SELF_MONITOR_STALE_MINUTES: int = SELF_MONITOR["stale_minutes"]
+
+
+# ══════════════════════════════════════════════════════════
+# کلیدواژه‌ها
 # ══════════════════════════════════════════════════════════
 KEYWORDS_CONFIG: dict[str, Any] = {
     "reload_seconds": _env_float(
-        "KEYWORDS_RELOAD_SECONDS", 5.0, min_val=1.0, max_val=3600.0
+        "KEYWORDS_RELOAD_SECONDS", 120.0, min_val=1.0, max_val=3600.0
     ),
 }
+
+# 🎯 Brand token — قبلاً فقط در PLUGINS_CONFIG بود
+BRAND_TOKEN_ENABLED: bool = _env_bool("BRAND_TOKEN_ENABLED", False)
+BRAND_TOKEN_MIN_LEN: int = _env_int(
+    "BRAND_TOKEN_MIN_LEN", 4, min_val=1, max_val=30
+)
 
 
 # ══════════════════════════════════════════════════════════
@@ -346,7 +337,7 @@ LOG_CONFIG: dict[str, Any] = {
 
 
 # ══════════════════════════════════════════════════════════
-# پشتیبان‌گیری خودکار
+# پشتیبان‌گیری
 # ══════════════════════════════════════════════════════════
 BACKUP_CONFIG: dict[str, Any] = {
     "daily_hours": _env_int(
@@ -368,28 +359,36 @@ BACKUP_CONFIG: dict[str, Any] = {
 
 
 # ══════════════════════════════════════════════════════════
-# گزارش خودکار
+# گزارش (Reporting)
 # ══════════════════════════════════════════════════════════
-_WEEKLY_DAY_MAP = {
+# 🐛 FIX: یکسان‌سازی همهٔ حالت‌های ZWNJ/space برای روزهای هفته
+_WEEKLY_DAY_MAP: dict[str, str] = {
+    # انگلیسی کامل
     "saturday": "sat", "sunday": "sun", "monday": "mon",
     "tuesday": "tue", "wednesday": "wed", "thursday": "thu",
     "friday": "fri",
+    # انگلیسی کوتاه
     "sat": "sat", "sun": "sun", "mon": "mon",
     "tue": "tue", "wed": "wed", "thu": "thu", "fri": "fri",
-    "شنبه": "sat", "یکشنبه": "sun", "یک‌شنبه": "sun",
-    "دوشنبه": "mon", "دو‌شنبه": "mon",
-    "سه‌شنبه": "tue", "سه شنبه": "tue",
+    # فارسی — همهٔ حالت‌های ZWNJ / فاصله / ساده
+    "شنبه": "sat",
+    "یکشنبه": "sun", "یک‌شنبه": "sun", "یک شنبه": "sun",
+    "دوشنبه": "mon", "دو‌شنبه": "mon", "دو شنبه": "mon",
+    "سه‌شنبه": "tue", "سه شنبه": "tue", "سهشنبه": "tue",
     "چهارشنبه": "wed", "چهار‌شنبه": "wed",
+    "چهار شنبه": "wed", "چهارشنبه": "wed",
     "پنجشنبه": "thu", "پنج‌شنبه": "thu",
+    "پنج شنبه": "thu", "پنجشنبه": "thu",
     "جمعه": "fri",
 }
 
 
 def _normalize_weekly_day(raw: str) -> str:
-    """نرمال‌سازی روز هفته (فارسی/انگلیسی → کد APScheduler)."""
     if not raw:
         return "sat"
     key = str(raw).strip().lower()
+    # نرمال‌سازی: ZWNJ → فاصله
+    key = key.replace("\u200c", " ")
     mapped = _WEEKLY_DAY_MAP.get(key)
     if mapped:
         return mapped
@@ -414,7 +413,7 @@ REPORT: dict[str, Any] = {
 
 
 # ══════════════════════════════════════════════════════════
-# Observability (HTTP server + rate limit + cache)
+# Observability
 # ══════════════════════════════════════════════════════════
 OBS_CONFIG: dict[str, Any] = {
     "enabled": _env_bool("OBS_ENABLED", True),
@@ -448,11 +447,11 @@ OBS_CONFIG: dict[str, Any] = {
 
 
 # ══════════════════════════════════════════════════════════
-# main / login — timeoutها
+# main / login
 # ══════════════════════════════════════════════════════════
 MAIN_CONFIG: dict[str, Any] = {
     "bale_wait_s": _env_int(
-        "MAIN_BALE_WAIT_S", 60, min_val=10, max_val=300
+        "MAIN_BALE_WAIT_S", 10, min_val=10, max_val=300
     ),
     "login_input_timeout_s": _env_int(
         "LOGIN_INPUT_TIMEOUT_S", 600, min_val=30, max_val=3600
@@ -460,49 +459,72 @@ MAIN_CONFIG: dict[str, Any] = {
     "skip_venv_check": _env_bool("MAIN_SKIP_VENV_CHECK", False),
 }
 
+# 🎯 top-level export (سهولت استفاده در login.py, main.py)
+MAIN_BALE_WAIT_S: int = MAIN_CONFIG["bale_wait_s"]
+LOGIN_INPUT_TIMEOUT_S: int = MAIN_CONFIG["login_input_timeout_s"]
+MAIN_SKIP_VENV_CHECK: bool = MAIN_CONFIG["skip_venv_check"]
+
 
 # ══════════════════════════════════════════════════════════
-# SafeBrain (گارد امن)
+# SafeBrain
 # ══════════════════════════════════════════════════════════
 SAFE_BRAIN_CONFIG: dict[str, Any] = {
     "max_api_hour": max(
-        0, _env_int("SAFE_BRAIN_MAX_API_HOUR", 20)
+        0, _env_int("SAFE_BRAIN_MAX_API_HOUR", 0)
     ),
     "ai_timeout_s": _env_float(
-        "SAFE_BRAIN_AI_TIMEOUT_S", 30.0,
+        "SAFE_BRAIN_AI_TIMEOUT_S", 45.0,
         min_val=5.0, max_val=300.0,
     ),
 }
 
 
 # ══════════════════════════════════════════════════════════
-# پلاگین‌ها (Collectors + Handlers)
+# ChatOps / Admin — 🎯 top-level export (P0 fix)
+# ══════════════════════════════════════════════════════════
+ADMIN_ENABLED: bool = _env_bool("ADMIN_ENABLED", True)
+ADMIN_PLATFORM: str = _env_str("ADMIN_PLATFORM", "bale") or "bale"
+ADMIN_IDS: list[str] = [
+    x.strip() for x in _env_str("ADMIN_IDS", "").split(",") if x.strip()
+]
+
+
+# 🎯 FIX: MEMORY_MAX — قبلاً در admin_handler.py تعریف نشده بود
+ADMIN_MEMORY_MAX: int = _env_int(
+    "ADMIN_MEMORY_MAX", 200, min_val=10, max_val=10_000
+)
+# نام مستعار برای سازگاری با admin_handler.py
+MEMORY_MAX: int = ADMIN_MEMORY_MAX
+
+def get_admin_ids() -> list[str]:
+    """لیست user_idهای مدیر (خالص)."""
+    return list(ADMIN_IDS)
+
+
+# ══════════════════════════════════════════════════════════
+# پلاگین‌ها
 # ══════════════════════════════════════════════════════════
 def _build_plugins_config() -> dict[str, Any]:
-    """ساخت PLUGINS_CONFIG از env (قابل فراخوانی در reload)."""
     return {
-        # اگه خالی باشه → همه plugins فعال
         "enabled_plugins": _env_list("ENABLED_PLUGINS"),
 
-        # ═══ بله (مرورگری) ═══
+        # بله
         "balecollector": {
             "phone": _env_str("BALE_PHONE"),
             "password": _env_str("BALE_PASSWORD"),
-            "session_path": os.path.join(
-                SESSIONS_DIR, "bale_web"
-            ),
+            "session_path": os.path.join(SESSIONS_DIR, "bale_web"),
             "headless": _env_bool("BROWSER_HEADLESS", True),
             "poll_seconds": _env_int(
-                "BALE_POLL_SECONDS", 300, min_val=10, max_val=86400
+                "BALE_POLL_SECONDS", 60, min_val=10, max_val=86400
             ),
             "max_chats": _env_int(
                 "BALE_MAX_CHATS", 0, min_val=0, max_val=1000
             ),
             "chat_open_delay": _env_float(
-                "BALE_CHAT_DELAY", 1.5, min_val=0.1, max_val=60.0
+                "BALE_CHAT_DELAY", 3.0, min_val=0.1, max_val=60.0
             ),
             "messages_per_chat": _env_int(
-                "BALE_MESSAGES_PER_CHAT", 30, min_val=5, max_val=1000
+                "BALE_MESSAGES_PER_CHAT", 300, min_val=5, max_val=1000
             ),
             "backfill_scrolls": _env_int(
                 "BALE_BACKFILL_SCROLLS", 6, min_val=0, max_val=100
@@ -535,62 +557,59 @@ def _build_plugins_config() -> dict[str, Any]:
             "enabled": _env_bool("BALE_ENABLED", True),
         },
 
-        # ═══ روبیکا ═══
+        # روبیکا
         "rubikacollector": {
             "phone": _env_str("RUBIKA_PHONE"),
             "password": _env_str("RUBIKA_PASSWORD"),
-            "session_path": os.path.join(
-                SESSIONS_DIR, "rubika_session"
-            ),
+            "session_path": os.path.join(SESSIONS_DIR, "rubika_session"),
             "media_dir": os.path.join(MEDIA_DIR, "rubika"),
-            "enabled": _env_bool("RUBIKA_ENABLED", False),
+            "enabled": _env_bool("RUBIKA_ENABLED", True),
             "poll_seconds": _env_int(
-                "RUBIKA_POLL_SECONDS", 60, min_val=5, max_val=3600
+                "RUBIKA_POLL_SECONDS", 90, min_val=5, max_val=3600
             ),
             "history_limit": _env_int(
                 "RUBIKA_HISTORY_LIMIT", 200, min_val=10, max_val=10000
             ),
+            "max_chats": _env_int(
+                "RUBIKA_MAX_CHATS", 50, min_val=0, max_val=1000
+            ),
         },
 
-        # ═══ ایتا ═══
+        # ایتا
         "eitaacollector": {
             "phone": _env_str("EITAA_PHONE"),
             "password": _env_str("EITAA_PASSWORD"),
-            "session_path": os.path.join(
-                SESSIONS_DIR, "eitaa_web"
-            ),
+            "session_path": os.path.join(SESSIONS_DIR, "eitaa_web"),
             "media_dir": os.path.join(MEDIA_DIR, "eitaa"),
-            "enabled": _env_bool("EITAA_ENABLED", False),
+            "enabled": _env_bool("EITAA_ENABLED", True),
             "poll_seconds": _env_int(
-                "EITAA_POLL_SECONDS", 300, min_val=10, max_val=86400
+                "EITAA_POLL_SECONDS", 90, min_val=10, max_val=86400
             ),
             "max_chats": _env_int(
-                "EITAA_MAX_CHATS", 15, min_val=0, max_val=1000
+                "EITAA_MAX_CHATS", 0, min_val=0, max_val=1000
             ),
             "chat_open_delay": _env_float(
-                "EITAA_CHAT_DELAY", 1.5, min_val=0.1, max_val=60.0
+                "EITAA_CHAT_DELAY", 3.0, min_val=0.1, max_val=60.0
             ),
             "messages_per_chat": _env_int_fallback(
                 "EITAA_MESSAGES_PER_CHAT",
                 "EITAA_MSGS_PER_CHAT",
-                30, min_val=5, max_val=1000,
+                10, min_val=5, max_val=1000,
             ),
             "backfill_scrolls": _env_int(
-                "EITAA_BACKFILL_SCROLLS", 6, min_val=0, max_val=100
+                "EITAA_BACKFILL_SCROLLS", 3, min_val=0, max_val=100
             ),
             "headless": _env_bool("BROWSER_HEADLESS", True),
         },
 
-        # ═══ تلگرام ═══
+        # تلگرام
         "telegramcollector": {
             "api_id": _env_str("TELEGRAM_API_ID"),
             "api_hash": _env_str("TELEGRAM_API_HASH"),
             "phone": _env_str("TELEGRAM_PHONE"),
-            "session_path": os.path.join(
-                SESSIONS_DIR, "telegram_session"
-            ),
+            "session_path": os.path.join(SESSIONS_DIR, "telegram_session"),
             "media_dir": os.path.join(MEDIA_DIR, "telegram"),
-            "enabled": _env_bool("TELEGRAM_ENABLED", False),
+            "enabled": _env_bool("TELEGRAM_ENABLED", True),
             "poll_seconds": _env_int(
                 "TELEGRAM_POLL_SECONDS", 30, min_val=1, max_val=3600
             ),
@@ -599,14 +618,12 @@ def _build_plugins_config() -> dict[str, Any]:
             ),
         },
 
-        # ═══ واتساپ ═══
+        # واتساپ
         "whatsappcollector": {
             "phone": _env_str("WHATSAPP_PHONE"),
-            "session_path": os.path.join(
-                SESSIONS_DIR, "whatsapp"
-            ),
+            "session_path": os.path.join(SESSIONS_DIR, "whatsapp"),
             "media_dir": os.path.join(MEDIA_DIR, "whatsapp"),
-            "enabled": _env_bool("WHATSAPP_ENABLED", False),
+            "enabled": _env_bool("WHATSAPP_ENABLED", True),
             "poll_seconds": _env_int(
                 "WHATSAPP_POLL_SECONDS", 300, min_val=10, max_val=86400
             ),
@@ -614,7 +631,7 @@ def _build_plugins_config() -> dict[str, Any]:
                 "WHATSAPP_MAX_CHATS", 15, min_val=0, max_val=1000
             ),
             "chat_open_delay": _env_float(
-                "WHATSAPP_CHAT_DELAY", 1.5, min_val=0.1, max_val=60.0
+                "WHATSAPP_CHAT_DELAY", 3.0, min_val=0.1, max_val=60.0
             ),
             "messages_per_chat": _env_int_fallback(
                 "WHATSAPP_MESSAGES_PER_CHAT",
@@ -627,16 +644,14 @@ def _build_plugins_config() -> dict[str, Any]:
             "headless": _env_bool("BROWSER_HEADLESS", True),
         },
 
-        # ═══ لینکدین ═══
+        # لینکدین
         "linkedincollector": {
             "email": _env_str("LINKEDIN_EMAIL"),
             "password": _env_str("LINKEDIN_PASSWORD"),
-            "session_path": os.path.join(
-                SESSIONS_DIR, "linkedin_v2"
-            ),
+            "session_path": os.path.join(SESSIONS_DIR, "linkedin_v2"),
             "searches_file": str(data_paths.LINKEDIN_SEARCHES),
             "poll_seconds": _env_int(
-                "LINKEDIN_POLL_SECONDS", 900,
+                "LINKEDIN_POLL_SECONDS", 600,
                 min_val=60, max_val=86400,
             ),
             "max_results": _env_int(
@@ -653,7 +668,7 @@ def _build_plugins_config() -> dict[str, Any]:
             "max_feed_posts": _env_int(
                 "LINKEDIN_MAX_FEED_POSTS", 30, min_val=1, max_val=500
             ),
-            "enabled": _env_bool("LINKEDIN_ENABLED", False),
+            "enabled": _env_bool("LINKEDIN_ENABLED", True),
             "headless": _env_bool("BROWSER_HEADLESS", True),
             "add_query_to_keywords": _env_bool(
                 "LINKEDIN_ADD_QUERY_TO_KEYWORDS", True
@@ -676,11 +691,9 @@ def _build_plugins_config() -> dict[str, Any]:
             ),
         },
 
-        # ═══ اینستاگرام (فقط فالوورها — پست + استوری) ═══
+        # اینستاگرام
         "instagramcollector": {
-            "session_path": os.path.join(
-                SESSIONS_DIR, "instagram"
-            ),
+            "session_path": os.path.join(SESSIONS_DIR, "instagram"),
             "media_dir": os.path.join(MEDIA_DIR, "instagram"),
             "enabled": _env_bool("INSTAGRAM_ENABLED", False),
             "headless": _env_bool("BROWSER_HEADLESS", True),
@@ -706,7 +719,7 @@ def _build_plugins_config() -> dict[str, Any]:
             "read_posts": _env_bool("INSTAGRAM_READ_POSTS", True),
         },
 
-        # ═══ وب ═══
+        # وب
         "webcollector": {
             "sources_file": str(data_paths.WEB_SOURCES),
             "max_pages": _env_int(
@@ -716,34 +729,28 @@ def _build_plugins_config() -> dict[str, Any]:
                 "WEB_TIMEOUT", 20, min_val=5, max_val=300
             ),
             "translate": _env_bool("WEB_TRANSLATE", False),
-            "enabled": _env_bool("WEB_ENABLED", False),
+            "enabled": _env_bool("WEB_ENABLED", True),
         },
 
-        # ═══ کلیدواژه‌یاب ═══
+        # کلیدواژه‌یاب
         "keywordsfinder": {
-            "brand_token_enabled": _env_bool(
-                "BRAND_TOKEN_ENABLED", False
-            ),
-            "brand_token_min_len": _env_int(
-                "BRAND_TOKEN_MIN_LEN", 4, min_val=1, max_val=30
-            ),
+            "brand_token_enabled": BRAND_TOKEN_ENABLED,
+            "brand_token_min_len": BRAND_TOKEN_MIN_LEN,
         },
 
-        # ═══ هندلرها ═══
+        # هندلرها
         "storagehandler": {
             "enabled": _env_bool("STORAGE_ENABLED", True),
             "keywords_only": _env_bool("KEYWORDS_ONLY", True),
             "require_t1": _env_bool("STORAGE_REQUIRE_T1", True),
             "allowed_tiers": [
                 t.upper()
-                for t in _env_list(
-                    "STORAGE_ALLOWED_TIERS", ["T1"]
-                )
+                for t in _env_list("STORAGE_ALLOWED_TIERS", ["T1"])
             ],
             "save_leads": True,
             "save_media": True,
             "save_self_messages": _env_bool(
-                "STORAGE_SAVE_SELF_MESSAGES", False
+                "STORAGE_SAVE_SELF_MESSAGES", True
             ),
         },
         "scoringhandler": {
@@ -758,35 +765,21 @@ def _build_plugins_config() -> dict[str, Any]:
             "telegram_chat_id": _env_str("NOTIFY_TELEGRAM_CHAT_ID"),
         },
 
-        # ═══ ChatOps — غیرفعال کامل ═══
+        # ChatOps
         "adminhandler": {
-            "admin_ids": [
-                x.strip()
-                for x in _env_str("ADMIN_IDS", "").split(",")
-                if x.strip()
-            ],
-            "platform": _env_str("ADMIN_PLATFORM", "bale"),
-            "enabled": _env_bool("ADMIN_ENABLED", False),   # ← از .env بخون
-    
+            "admin_ids": list(ADMIN_IDS),
+            "platform": ADMIN_PLATFORM,
+            "enabled": ADMIN_ENABLED,
             "admin_phone": "",
             "admin_chat": "",
         },
 
-        # ═══ پایشگر خودکار ═══
+        # پایشگر خودکار
         "selfmonitor": {
-            "enabled": _env_bool("SELF_MONITOR_ENABLED", True),
-            "interval_seconds": _env_int(
-                "SELF_MONITOR_INTERVAL", 600,
-                min_val=60, max_val=86400,
-            ),
-            "error_threshold": _env_int(
-                "SELF_MONITOR_ERROR_THRESHOLD", 5,
-                min_val=1, max_val=1000,
-            ),
-            "stale_minutes": _env_int(
-                "SELF_MONITOR_STALE_MINUTES", 60,
-                min_val=5, max_val=10080,
-            ),
+            "enabled": SELF_MONITOR_ENABLED,
+            "interval_seconds": SELF_MONITOR_INTERVAL,
+            "error_threshold": SELF_MONITOR_ERROR_THRESHOLD,
+            "stale_minutes": SELF_MONITOR_STALE_MINUTES,
         },
     }
 
@@ -795,7 +788,7 @@ PLUGINS_CONFIG: dict[str, Any] = _build_plugins_config()
 
 
 # ══════════════════════════════════════════════════════════
-# هوش محلی (Ollama / DeepSeek)
+# AI (Ollama / DeepSeek)
 # ══════════════════════════════════════════════════════════
 AI: dict[str, Any] = {
     "enabled": (
@@ -805,24 +798,29 @@ AI: dict[str, Any] = {
     "url": _env_str(
         "OLLAMA_URL", "http://127.0.0.1:11434"
     ).rstrip("/"),
-    "model": _env_str("OLLAMA_MODEL", "gemma3:1b") or "gemma3:1b",
-    "keep_alive": _env_str("OLLAMA_KEEP_ALIVE", "60s") or "60s",
+    "model": _env_str("OLLAMA_MODEL", "qwen2.5:3b") or "qwen2.5:3b",
+    "keep_alive": _env_str("OLLAMA_KEEP_ALIVE", "5s") or "5s",
     "timeout": _env_int("AI_TIMEOUT", 120, min_val=10, max_val=600),
     "deepseek_api_key": _env_str("DEEPSEEK_API_KEY"),
     "available_cache_s": _env_float(
-        "AI_AVAILABLE_CACHE_S", 30.0, min_val=0.0, max_val=600.0
+        "AI_AVAILABLE_CACHE_S", 300.0, min_val=0.0, max_val=600.0
     ),
 }
 
 
 # ══════════════════════════════════════════════════════════
-# مغز هوشمند (Brain)
+# Brain — 🎯 top-level export برای FULL_ACCESS
 # ══════════════════════════════════════════════════════════
+FULL_ACCESS: bool = _env_bool("FULL_ACCESS", False)
+USE_API_MEMORY: bool = _env_bool("USE_API_MEMORY", False)
+MEMORY_API_URL: str = _env_str("MEMORY_API_URL")
+MEMORY_API_KEY: str = _env_secret("MEMORY_API_KEY")
+
 BRAIN_CONFIG: dict[str, Any] = {
-    "full_access": _env_bool("FULL_ACCESS", False),
-    "use_api_memory": _env_bool("USE_API_MEMORY", False),
-    "memory_api_url": _env_str("MEMORY_API_URL"),
-    "memory_api_key": _env_str("MEMORY_API_KEY"),
+    "full_access": FULL_ACCESS,
+    "use_api_memory": USE_API_MEMORY,
+    "memory_api_url": MEMORY_API_URL,
+    "memory_api_key": MEMORY_API_KEY,
     "ai_priority": AI_PRIORITY,
 }
 
@@ -831,12 +829,11 @@ BRAIN_CONFIG: dict[str, Any] = {
 # هشدار زنده سرنخ
 # ══════════════════════════════════════════════════════════
 def _parse_tiers(raw: str, default: list[str]) -> list[str]:
-    """parse لیست tier از env (T1,T2,T3)."""
     if not raw:
         return list(default)
     valid = {"T1", "T2", "T3", "T0"}
     out: list[str] = []
-    seen = set()
+    seen: set[str] = set()
     for t in str(raw).split(","):
         t_up = t.strip().upper()
         if not t_up:
@@ -855,14 +852,18 @@ def _parse_tiers(raw: str, default: list[str]) -> list[str]:
 
 
 LEAD_ALERTS: dict[str, Any] = {
-    "enabled": False,
-    "min_score": 0,
-    "tiers": ["T1"],
+    "enabled": _env_bool("LEAD_ALERTS_ENABLED", False),
+    "min_score": _env_int(
+        "LEAD_ALERT_MIN_SCORE", 0, min_val=0, max_val=100
+    ),
+    "tiers": _parse_tiers(
+        _env_str("LEAD_ALERT_TIERS", "T1"), ["T1"]
+    ),
 }
 
 
 # ══════════════════════════════════════════════════════════
-# توابع کمکی (سازگاری عقب‌رو)
+# توابع کمکی — دسترسی به config پلتفرم‌ها
 # ══════════════════════════════════════════════════════════
 def get_bale_config() -> dict[str, Any]:
     return PLUGINS_CONFIG.get("balecollector", {})
@@ -896,7 +897,7 @@ def get_web_config() -> dict[str, Any]:
     return PLUGINS_CONFIG.get("webcollector", {})
 
 
-_PLATFORM_KEY_MAP = (
+_PLATFORM_KEY_MAP: tuple[tuple[str, str], ...] = (
     ("eitaa", "eitaacollector"),
     ("bale", "balecollector"),
     ("rubika", "rubikacollector"),
@@ -909,7 +910,7 @@ _PLATFORM_KEY_MAP = (
 
 
 def get_active_platforms() -> list[str]:
-    """لیست کدهای پلتفرم‌های فعال — ترتیب ثابت."""
+    """پلتفرم‌های فعال — به ترتیب PLATFORMS_ORDER."""
     return [
         name
         for name, key in _PLATFORM_KEY_MAP
@@ -917,10 +918,7 @@ def get_active_platforms() -> list[str]:
     ]
 
 
-# ─── محاسبه یک‌بار (نه هر import) ───
 PLATFORMS_ACTIVE: list[str] = get_active_platforms()
-
-# ─── سازگاری عقب‌رو ───
 COLLECTORS_CONFIG: dict[str, Any] = PLUGINS_CONFIG
 
 
@@ -928,7 +926,7 @@ COLLECTORS_CONFIG: dict[str, Any] = PLUGINS_CONFIG
 # Config summary logger
 # ══════════════════════════════════════════════════════════
 def log_config_summary() -> None:
-    """خلاصهٔ تنظیمات را در لاگ ثبت می‌کنه."""
+    """لاگ خلاصهٔ تنظیمات — بعد از setup logger صدا بزن."""
     try:
         from core.kernel.logger import log_info
     except Exception:
@@ -936,18 +934,15 @@ def log_config_summary() -> None:
 
     try:
         ai_state = "✅" if AI_ENABLED else "❌"
-        admin_state = (
-            "✅"
-            if PLUGINS_CONFIG.get("adminhandler", {}).get("enabled")
-            else "❌"
-        )
+        admin_state = "✅" if ADMIN_ENABLED else "❌"
         obs_state = "✅" if OBS_CONFIG.get("enabled") else "❌"
 
         log_info(
             f"⚙️ [config] سیستم | "
             f"db={DATABASE_TYPE} | "
             f"ai={ai_state} ({AI_PRIORITY}) | "
-            f"admin={admin_state} | "
+            f"admin={admin_state} ({ADMIN_PLATFORM}, "
+            f"{len(ADMIN_IDS)} ids) | "
             f"obs={obs_state} "
             f"({OBS_CONFIG['host']}:{OBS_CONFIG['port']})"
         )
@@ -958,8 +953,6 @@ def log_config_summary() -> None:
         else:
             log_info("⚠️ [config] هیچ پلتفرمی فعال نیست")
 
-        log_info("⚙️ [config] admin=غیرفعال (پایشگر فقط‌خواندنی)")
-
         log_info(
             f"⚙️ [config] retention | "
             f"media={RETENTION['media_days']}d | "
@@ -968,7 +961,13 @@ def log_config_summary() -> None:
             f"{'∞' if RETENTION['messages_days'] == 0 else str(RETENTION['messages_days'])+'d'}"
         )
 
-        log_info("⚙️ [config] lead_alerts خاموش (پایشگر فقط‌خواندنی)")
+        la_state = "✅" if LEAD_ALERTS["enabled"] else "❌"
+        log_info(
+            f"⚙️ [config] lead_alerts | "
+            f"enabled={la_state} | "
+            f"min_score={LEAD_ALERTS['min_score']} | "
+            f"tiers={LEAD_ALERTS['tiers']}"
+        )
 
         if REPORT["enabled"]:
             log_info(
@@ -1012,21 +1011,32 @@ def log_config_summary() -> None:
             f"⚙️ [config] paths | "
             f"base={BASE_DIR} | storage={STORAGE_DIR}"
         )
-    except Exception:
-        pass
+    except Exception as e:
+        _warn(
+            f"log_config_summary failed | "
+            f"{type(e).__name__}: {e}"
+        )
 
 
 # ══════════════════════════════════════════════════════════
 # reload (hot-reload)
 # ══════════════════════════════════════════════════════════
 def reload() -> None:
-    """بارگذاری مجدد config از .env — برای تست."""
+    """بارگذاری مجدد همهٔ تنظیمات از .env — برای hot-reload."""
     load_dotenv(override=False)
 
     global AI_ENABLED, EVENT_LOG, AI_PRIORITY
     global DATABASE_TYPE, CHROME_PATH
     global PLATFORMS_ACTIVE
+    global ADMIN_ENABLED, ADMIN_PLATFORM, ADMIN_IDS
+    global BRAND_TOKEN_ENABLED, BRAND_TOKEN_MIN_LEN
+    global MONITOR_ENABLED, MONITOR_INTERVAL_SECONDS
+    global SELF_MONITOR_ENABLED, SELF_MONITOR_INTERVAL
+    global SELF_MONITOR_ERROR_THRESHOLD, SELF_MONITOR_STALE_MINUTES
+    global MAIN_BALE_WAIT_S, LOGIN_INPUT_TIMEOUT_S, MAIN_SKIP_VENV_CHECK
+    global FULL_ACCESS, USE_API_MEMORY, MEMORY_API_URL, MEMORY_API_KEY
 
+    # ─── سوییچ‌های اصلی ───
     AI_ENABLED = _env_bool("AI_ENABLED", True)
     EVENT_LOG = _env_bool("EVENT_LOG", False)
 
@@ -1044,12 +1054,44 @@ def reload() -> None:
 
     CHROME_PATH = _env_str("CHROME_PATH") or None
 
+    # ─── Admin (top-level) ───
+    ADMIN_ENABLED = _env_bool("ADMIN_ENABLED", True)
+    ADMIN_PLATFORM = _env_str("ADMIN_PLATFORM", "bale") or "bale"
+    ADMIN_IDS = [
+        x.strip()
+        for x in _env_str("ADMIN_IDS", "").split(",")
+        if x.strip()
+    ]
+
+    # ─── Brand tokens ───
+    BRAND_TOKEN_ENABLED = _env_bool("BRAND_TOKEN_ENABLED", False)
+    BRAND_TOKEN_MIN_LEN = _env_int(
+        "BRAND_TOKEN_MIN_LEN", 4, min_val=1, max_val=30
+    )
+
+    # ─── Brain (top-level) ───
+    FULL_ACCESS = _env_bool("FULL_ACCESS", False)
+    USE_API_MEMORY = _env_bool("USE_API_MEMORY", False)
+    MEMORY_API_URL = _env_str("MEMORY_API_URL")
+    MEMORY_API_KEY = _env_secret("MEMORY_API_KEY")
+
+    # ─── main/login ───
+    MAIN_BALE_WAIT_S = _env_int(
+        "MAIN_BALE_WAIT_S", 10, min_val=10, max_val=300
+    )
+    LOGIN_INPUT_TIMEOUT_S = _env_int(
+        "LOGIN_INPUT_TIMEOUT_S", 600, min_val=30, max_val=3600
+    )
+    MAIN_SKIP_VENV_CHECK = _env_bool("MAIN_SKIP_VENV_CHECK", False)
+
+    # ─── CRM ───
     CRM_CONFIG.update({
         "sql_timeout_s": _env_float(
             "CRM_SQL_TIMEOUT_S", 5.0, min_val=0.5, max_val=120.0
         ),
     })
 
+    # ─── سیستم ───
     SYSTEM_CONFIG.update({
         "poll_interval_hours": _env_int(
             "SYSTEM_POLL_HOURS", 24, min_val=1, max_val=720
@@ -1058,6 +1100,7 @@ def reload() -> None:
         "log_to_file": _env_bool("LOG_TO_FILE", True),
     })
 
+    # ─── Retention ───
     RETENTION.update({
         "media_days": max(0, _env_int("KEEP_MEDIA_DAYS", 7)),
         "reports_days": max(0, _env_int("KEEP_REPORTS_DAYS", 30)),
@@ -1073,10 +1116,11 @@ def reload() -> None:
         ),
     })
 
+    # ─── Monitor ───
     MONITOR.update({
         "enabled": _env_bool("MONITOR_ENABLED", True),
         "interval_seconds": _env_int(
-            "MONITOR_INTERVAL_SECONDS", 120, min_val=5, max_val=3600
+            "MONITOR_INTERVAL_SECONDS", 1800, min_val=5, max_val=86400
         ),
         "cpu_alert": _env_float(
             "MONITOR_CPU_ALERT", 90.0, min_val=1.0, max_val=100.0
@@ -1088,13 +1132,39 @@ def reload() -> None:
             "MONITOR_DISK_ALERT", 70.0, min_val=1.0, max_val=100.0
         ),
     })
+    MONITOR_ENABLED = MONITOR["enabled"]
+    MONITOR_INTERVAL_SECONDS = MONITOR["interval_seconds"]
 
+    # ─── Self-Monitor ───
+    SELF_MONITOR.update({
+        "enabled": _env_bool("SELF_MONITOR_ENABLED", True),
+        "interval_seconds": _env_int(
+            "SELF_MONITOR_INTERVAL", 600,
+            min_val=60, max_val=86400,
+        ),
+        "error_threshold": _env_int(
+            "SELF_MONITOR_ERROR_THRESHOLD", 5,
+            min_val=1, max_val=1000,
+        ),
+        "stale_minutes": _env_int(
+            "SELF_MONITOR_STALE_MINUTES", 60,
+            min_val=5, max_val=10080,
+        ),
+    })
+    SELF_MONITOR_ENABLED = SELF_MONITOR["enabled"]
+    SELF_MONITOR_INTERVAL = SELF_MONITOR["interval_seconds"]
+    SELF_MONITOR_ERROR_THRESHOLD = SELF_MONITOR["error_threshold"]
+    SELF_MONITOR_STALE_MINUTES = SELF_MONITOR["stale_minutes"]
+
+    # ─── Keywords ───
     KEYWORDS_CONFIG.update({
         "reload_seconds": _env_float(
-            "KEYWORDS_RELOAD_SECONDS", 5.0, min_val=1.0, max_val=3600.0
+            "KEYWORDS_RELOAD_SECONDS", 120.0,
+            min_val=1.0, max_val=3600.0,
         ),
     })
 
+    # ─── Log ───
     LOG_CONFIG.update({
         "level": _env_str("LOG_LEVEL", "INFO").upper() or "INFO",
         "json": _env_bool("LOG_JSON", True),
@@ -1104,6 +1174,7 @@ def reload() -> None:
         "backups": _env_int("LOG_BACKUPS", 30, min_val=0, max_val=1000),
     })
 
+    # ─── Backup ───
     BACKUP_CONFIG.update({
         "daily_hours": _env_int(
             "DAILY_BACKUP_HOURS", 24, min_val=1, max_val=720
@@ -1122,6 +1193,7 @@ def reload() -> None:
         ),
     })
 
+    # ─── Report ───
     REPORT.update({
         "enabled": _env_bool("REPORT_ENABLED", True),
         "daily_time": (
@@ -1141,6 +1213,7 @@ def reload() -> None:
         ),
     })
 
+    # ─── OBS ───
     OBS_CONFIG.update({
         "enabled": _env_bool("OBS_ENABLED", True),
         "host": _env_str("OBS_HOST", "0.0.0.0") or "0.0.0.0",
@@ -1173,26 +1246,25 @@ def reload() -> None:
         ),
     })
 
+    # ─── main ───
     MAIN_CONFIG.update({
-        "bale_wait_s": _env_int(
-            "MAIN_BALE_WAIT_S", 60, min_val=10, max_val=300
-        ),
-        "login_input_timeout_s": _env_int(
-            "LOGIN_INPUT_TIMEOUT_S", 600, min_val=30, max_val=3600
-        ),
-        "skip_venv_check": _env_bool("MAIN_SKIP_VENV_CHECK", False),
+        "bale_wait_s": MAIN_BALE_WAIT_S,
+        "login_input_timeout_s": LOGIN_INPUT_TIMEOUT_S,
+        "skip_venv_check": MAIN_SKIP_VENV_CHECK,
     })
 
+    # ─── SafeBrain ───
     SAFE_BRAIN_CONFIG.update({
         "max_api_hour": max(
-            0, _env_int("SAFE_BRAIN_MAX_API_HOUR", 20)
+            0, _env_int("SAFE_BRAIN_MAX_API_HOUR", 0)
         ),
         "ai_timeout_s": _env_float(
-            "SAFE_BRAIN_AI_TIMEOUT_S", 30.0,
+            "SAFE_BRAIN_AI_TIMEOUT_S", 45.0,
             min_val=5.0, max_val=300.0,
         ),
     })
 
+    # ─── AI ───
     AI.update({
         "enabled": (
             AI_ENABLED and _env_bool("AI_ASSISTANT_ENABLED", True)
@@ -1202,36 +1274,89 @@ def reload() -> None:
             "OLLAMA_URL", "http://127.0.0.1:11434"
         ).rstrip("/"),
         "model": (
-            _env_str("OLLAMA_MODEL", "gemma3:1b") or "gemma3:1b"
+            _env_str("OLLAMA_MODEL", "qwen2.5:3b") or "qwen2.5:3b"
         ),
         "keep_alive": (
-            _env_str("OLLAMA_KEEP_ALIVE", "60s") or "60s"
+            _env_str("OLLAMA_KEEP_ALIVE", "5s") or "5s"
         ),
         "timeout": _env_int(
             "AI_TIMEOUT", 120, min_val=10, max_val=600
         ),
         "deepseek_api_key": _env_str("DEEPSEEK_API_KEY"),
         "available_cache_s": _env_float(
-            "AI_AVAILABLE_CACHE_S", 30.0, min_val=0.0, max_val=600.0
+            "AI_AVAILABLE_CACHE_S", 300.0,
+            min_val=0.0, max_val=600.0,
         ),
     })
 
+    # ─── Brain ───
     BRAIN_CONFIG.update({
-        "full_access": _env_bool("FULL_ACCESS", False),
-        "use_api_memory": _env_bool("USE_API_MEMORY", False),
-        "memory_api_url": _env_str("MEMORY_API_URL"),
-        "memory_api_key": _env_str("MEMORY_API_KEY"),
+        "full_access": FULL_ACCESS,
+        "use_api_memory": USE_API_MEMORY,
+        "memory_api_url": MEMORY_API_URL,
+        "memory_api_key": MEMORY_API_KEY,
         "ai_priority": AI_PRIORITY,
     })
 
+    # ─── Lead alerts ───
     LEAD_ALERTS.update({
-        "enabled": False,
-        "min_score": 0,
-        "tiers": ["T1"],
+        "enabled": _env_bool("LEAD_ALERTS_ENABLED", False),
+        "min_score": _env_int(
+            "LEAD_ALERT_MIN_SCORE", 0, min_val=0, max_val=100
+        ),
+        "tiers": _parse_tiers(
+            _env_str("LEAD_ALERT_TIERS", "T1"), ["T1"]
+        ),
     })
 
+    # ─── Plugins ───
     new_plugins = _build_plugins_config()
     PLUGINS_CONFIG.clear()
     PLUGINS_CONFIG.update(new_plugins)
 
     PLATFORMS_ACTIVE = get_active_platforms()
+
+
+# ══════════════════════════════════════════════════════════
+# Public API (برای Health Check، IDE، ابزارهای تحلیل)
+# ══════════════════════════════════════════════════════════
+__all__ = [
+    # ─── مسیرها ───
+    "BASE_DIR", "CHROME_PATH", "STORAGE_DIR",
+    "DB_DIR", "SESSIONS_DIR", "LOGS_DIR", "PYCACHE_DIR",
+    "MEDIA_DIR", "REPORTS_DIR", "BACKUPS_DIR",
+    # ─── ثابت‌های سراسری ───
+    "PLATFORMS_ORDER", "ALL_PLATFORMS", "PLATFORMS_ACTIVE",
+    # ─── سوییچ‌های اصلی ───
+    "AI_ENABLED", "AI_PRIORITY", "EVENT_LOG", "DATABASE_TYPE",
+    # ─── Admin ───
+    "ADMIN_ENABLED", "ADMIN_PLATFORM", "ADMIN_IDS",
+    "ADMIN_MEMORY_MAX", "MEMORY_MAX",    
+    # ─── Brand token ───
+    "BRAND_TOKEN_ENABLED", "BRAND_TOKEN_MIN_LEN",
+    # ─── Monitor ───
+    "MONITOR_ENABLED", "MONITOR_INTERVAL_SECONDS",
+    "SELF_MONITOR_ENABLED", "SELF_MONITOR_INTERVAL",
+    "SELF_MONITOR_ERROR_THRESHOLD", "SELF_MONITOR_STALE_MINUTES",
+    # ─── main/login ───
+    "MAIN_BALE_WAIT_S", "LOGIN_INPUT_TIMEOUT_S", "MAIN_SKIP_VENV_CHECK",
+    # ─── Brain ───
+    "FULL_ACCESS", "USE_API_MEMORY",
+    "MEMORY_API_URL", "MEMORY_API_KEY",
+    # ─── Config dicts ───
+    "SQLITE_CONFIG", "POSTGRES_CONFIG", "CRM_CONFIG",
+    "SYSTEM_CONFIG", "RETENTION",
+    "MONITOR", "SELF_MONITOR",
+    "KEYWORDS_CONFIG", "LOG_CONFIG", "BACKUP_CONFIG",
+    "REPORT", "OBS_CONFIG", "MAIN_CONFIG", "SAFE_BRAIN_CONFIG",
+    "PLUGINS_CONFIG", "COLLECTORS_CONFIG",
+    "AI", "BRAIN_CONFIG", "LEAD_ALERTS",
+    # ─── توابع کمکی ───
+    "get_proxy", "get_browser_proxy",
+    "get_admin_ids",
+    "get_bale_config", "get_rubika_config", "get_eitaa_config",
+    "get_telegram_config", "get_whatsapp_config",
+    "get_linkedin_config", "get_instagram_config", "get_web_config",
+    "get_active_platforms",
+    "log_config_summary", "reload",
+]

@@ -1,6 +1,4 @@
-# core/models.py
-"""
-مدل‌های داده — قالب یکسان برای پیام و سرنخ.
+"""مدل‌های داده — قالب یکسان برای پیام و سرنخ.
 
 سه مدل:
   - Message         → قالب خام پیام از هر پلتفرمی
@@ -9,36 +7,106 @@
 
 هر سه dataclass هستند و متدهای to_dict/from_dict دارند.
 
-نسخهٔ ۲ (این نسخه):
-  - 🎯 to_dict() / from_dict() برای JSON round-trip
-  - 🎯 from_lead_dict() برای سازگاری با storage_handler (که keywords
-    رو به‌صورت string پاس می‌ده)
-  - 🐛 FIX: raw_data: Dict[str, Any] (به‌جای Dict بدون type args)
-  - 🐛 FIX: score: Optional[float] (نه فقط int — سازگار با LeadScorer)
-  - 🎯 default_timezone helper (datetime.now بدون TZ → ok، ولی مستند)
-  - 🧹 from __future__ import annotations
-  - 🧹 type hints در همه‌جا
-  - 🧹 مستندسازی platform_id (storage از id استفاده می‌کنه)
-  - 🧹 Lead.status حالا با Enum (LeadStatus) برای type-safety
+نسخهٔ ۳ (این نسخه):
+  - 🐛 FIX: `Lead.score` حالا `float` است (سازگار با `LeadScorer`).
+  - 🐛 FIX: `Lead` حالا فیلدهای اضافی `opportunity_type`,
+    `priority_tier`, `matched_products`, `brands` دارد (سازگاری
+    کامل با `storage_handler._save_lead`).
+  - 🐛 FIX: `Message.from_dict` / `AnalyzedMessage.from_dict` /
+    `Lead.from_dict` حالا `None`-safe هستند و از helperهای
+    مشترک استفاده می‌کنند (DRY).
+  - 🐛 FIX: `_parse_datetime` و `_parse_keywords` helperها.
+  - 🐛 FIX: `to_dict()` حالا deep-copy از `raw_data` / `metadata`
+    می‌دهد (جلوگیری از mutation ناخواسته).
+  - 🐛 FIX: `Message` حالا فیلدهای `chat_username`, `chat_link`,
+    `chat_type` دارد (سازگار با storage).
+  - 🐛 FIX: `Lead` حالا فیلدهای `is_important`, `my_note` دارد.
+  - 🎯 `Lead.to_storage_dict()` متد جدید — برای ذخیره در DB.
+  - 🎯 `Lead.is_hot()`, `Lead.is_warm()` helperها.
+  - 🎯 `LeadStatus` حالا `FOLLOW_UP` هم دارد.
+  - 🎯 `__repr__` برای همهٔ مدل‌ها.
+  - 🎯 `__all__` export.
+  - ✅ حفظ همهٔ رفتار نسخهٔ ۲.
 """
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import StrEnum
+from enum import Enum
 from typing import Any
+
+
+# ═══════════════════════════════════════════
+# helpers
+# ═══════════════════════════════════════════
+def _parse_datetime(value: Any) -> datetime:
+    """🎯 FIX: parse امن datetime از str/datetime/None."""
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(
+                value.replace("Z", "+00:00")
+            ).replace(tzinfo=None)
+        except Exception:
+            pass
+    return datetime.now()
+
+
+def _parse_keywords(value: Any) -> list[str]:
+    """🎯 FIX: parse امن keywords از str/list/None."""
+    if isinstance(value, (list, tuple, set)):
+        return [
+            str(k).strip() for k in value if k and str(k).strip()
+        ]
+    if isinstance(value, str):
+        return [
+            k.strip()
+            for k in value.split(",")
+            if k.strip()
+        ]
+    return []
+
+
+def _safe_dict(value: Any) -> dict[str, Any]:
+    """🎯 FIX: deep-copy dict امن."""
+    if not isinstance(value, dict):
+        return {}
+    try:
+        return copy.deepcopy(value)
+    except Exception:
+        return dict(value)
+
+
+def _safe_str(value: Any, default: str = "") -> str:
+    """تبدیل امن به str."""
+    if value is None:
+        return default
+    try:
+        return str(value)
+    except Exception:
+        return default
 
 
 # ═══════════════════════════════════════════
 # Enum وضعیت سرنخ
 # ═══════════════════════════════════════════
-class LeadStatus(StrEnum):
-    """وضعیت سرنخ در قیف فروش."""
+class LeadStatus(str, Enum):
+    """وضعیت سرنخ در قیف فروش.
+
+    ⚠️ از `str, Enum` استفاده می‌کنیم (نه `StrEnum`) تا در
+    Python 3.10 هم کار کند.
+    """
 
     NEW = "new"
     CONTACTED = "contacted"
+    FOLLOW_UP = "follow_up"
     CONVERTED = "converted"
     LOST = "lost"
+
+    def __str__(self) -> str:
+        return self.value
 
 
 # ═══════════════════════════════════════════
@@ -46,65 +114,72 @@ class LeadStatus(StrEnum):
 # ═══════════════════════════════════════════
 @dataclass
 class Message:
-    """قالب یکسان پیام از هر پلتفرمی.
+    """قالب یکسان پیام از هر پلتفرمی."""
 
-    فیلدها:
-        platform:      نام پلتفرم (bale/eitaa/telegram/...)
-        platform_id:   شناسه پیام در پلتفرم مبدأ
-                       (⚠️ storage_handler از `id` استفاده می‌کند که
-                        با `platform_{id}` یکتا می‌شود. این نام legacy است.)
-        chat_id:       شناسه چت در پلتفرم مبدأ
-        chat_name:     نام نمایشی چت
-        sender_name:   نام فرستنده
-        text:          متن پیام
-        time:          زمان پیام (naive، local timezone)
-        raw_data:      آبجکت خام از SDK پلتفرم (dict/obj)
-    """
-
-    platform: str
-    platform_id: str
-    chat_id: str
-    chat_name: str
-    sender_name: str
-    text: str
+    platform: str = ""
+    platform_id: str = ""
+    chat_id: str = ""
+    chat_name: str = "Unknown"
+    sender_name: str = ""
+    text: str = ""
     time: datetime = field(default_factory=datetime.now)
     raw_data: dict[str, Any] = field(default_factory=dict)
 
+    # 🎯 فیلدهای اضافی (سازگار با storage)
+    chat_username: str | None = None
+    chat_link: str | None = None
+    chat_type: str | None = None
+
     def to_dict(self) -> dict[str, Any]:
-        """تبدیل به dict — مناسب JSON (datetime → ISO)."""
+        """تبدیل به dict — مناسب JSON."""
         return {
             "platform": self.platform,
             "platform_id": self.platform_id,
             "chat_id": self.chat_id,
             "chat_name": self.chat_name,
+            "chat_username": self.chat_username,
+            "chat_link": self.chat_link,
+            "chat_type": self.chat_type,
             "sender_name": self.sender_name,
             "text": self.text,
             "time": (
                 self.time.isoformat()
                 if isinstance(self.time, datetime)
-                else self.time
+                else _safe_str(self.time)
             ),
-            "raw_data": self.raw_data,
+            # 🎯 FIX: deep-copy
+            "raw_data": _safe_dict(self.raw_data),
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> Message:
-        """بازسازی از dict."""
-        t = data.get("time")
-        if isinstance(t, str):
-            try:
-                t = datetime.fromisoformat(t)
-            except Exception:
-                t = datetime.now()
+    def from_dict(
+        cls, data: dict[str, Any] | None
+    ) -> "Message":
+        """بازسازی از dict — None-safe."""
+        if not isinstance(data, dict):
+            return cls()
+
         return cls(
-            platform=str(data.get("platform", "")),
-            platform_id=str(data.get("platform_id", "")),
-            chat_id=str(data.get("chat_id", "")),
-            chat_name=str(data.get("chat_name", "Unknown")),
-            sender_name=str(data.get("sender_name", "")),
-            text=str(data.get("text", "")),
-            time=t or datetime.now(),
-            raw_data=data.get("raw_data") or {},
+            platform=_safe_str(data.get("platform", "")),
+            platform_id=_safe_str(data.get("platform_id", "")),
+            chat_id=_safe_str(data.get("chat_id", "")),
+            chat_name=_safe_str(
+                data.get("chat_name", "Unknown")
+            ) or "Unknown",
+            sender_name=_safe_str(data.get("sender_name", "")),
+            text=_safe_str(data.get("text", "")),
+            time=_parse_datetime(data.get("time")),
+            raw_data=_safe_dict(data.get("raw_data")),
+            chat_username=data.get("chat_username"),
+            chat_link=data.get("chat_link"),
+            chat_type=data.get("chat_type"),
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"Message(platform={self.platform!r}, "
+            f"chat={self.chat_name!r}, "
+            f"len(text)={len(self.text)})"
         )
 
 
@@ -117,7 +192,7 @@ class AnalyzedMessage(Message):
 
     keywords: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
-    score: float | None = None         # ← FIX: int → float
+    score: float | None = None
     category: str | None = None
     sentiment: str | None = None
     urgency: str | None = None
@@ -128,7 +203,8 @@ class AnalyzedMessage(Message):
         base = super().to_dict()
         base.update({
             "keywords": list(self.keywords or []),
-            "metadata": dict(self.metadata or {}),
+            # 🎯 FIX: deep-copy
+            "metadata": _safe_dict(self.metadata),
             "score": self.score,
             "category": self.category,
             "sentiment": self.sentiment,
@@ -138,30 +214,51 @@ class AnalyzedMessage(Message):
         return base
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> AnalyzedMessage:
-        """بازسازی از dict."""
-        t = data.get("time")
-        if isinstance(t, str):
+    def from_dict(
+        cls, data: dict[str, Any] | None
+    ) -> "AnalyzedMessage":
+        """بازسازی از dict — None-safe."""
+        if not isinstance(data, dict):
+            return cls()
+
+        # 🐛 FIX: استفاده از helperهای مشترک
+        score_raw = data.get("score")
+        score: float | None = None
+        if score_raw is not None:
             try:
-                t = datetime.fromisoformat(t)
-            except Exception:
-                t = datetime.now()
+                score = float(score_raw)
+            except (TypeError, ValueError):
+                score = None
+
         return cls(
-            platform=str(data.get("platform", "")),
-            platform_id=str(data.get("platform_id", "")),
-            chat_id=str(data.get("chat_id", "")),
-            chat_name=str(data.get("chat_name", "Unknown")),
-            sender_name=str(data.get("sender_name", "")),
-            text=str(data.get("text", "")),
-            time=t or datetime.now(),
-            raw_data=data.get("raw_data") or {},
-            keywords=list(data.get("keywords") or []),
-            metadata=dict(data.get("metadata") or {}),
-            score=data.get("score"),
+            platform=_safe_str(data.get("platform", "")),
+            platform_id=_safe_str(data.get("platform_id", "")),
+            chat_id=_safe_str(data.get("chat_id", "")),
+            chat_name=_safe_str(
+                data.get("chat_name", "Unknown")
+            ) or "Unknown",
+            sender_name=_safe_str(data.get("sender_name", "")),
+            text=_safe_str(data.get("text", "")),
+            time=_parse_datetime(data.get("time")),
+            raw_data=_safe_dict(data.get("raw_data")),
+            chat_username=data.get("chat_username"),
+            chat_link=data.get("chat_link"),
+            chat_type=data.get("chat_type"),
+            keywords=_parse_keywords(data.get("keywords")),
+            metadata=_safe_dict(data.get("metadata")),
+            score=score,
             category=data.get("category"),
             sentiment=data.get("sentiment"),
             urgency=data.get("urgency"),
             location=data.get("location"),
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"AnalyzedMessage(platform={self.platform!r}, "
+            f"chat={self.chat_name!r}, "
+            f"kw={len(self.keywords)}, "
+            f"score={self.score})"
         )
 
 
@@ -172,27 +269,51 @@ class AnalyzedMessage(Message):
 class Lead:
     """مدل سرنخ فروش.
 
-    ⚠️ نکته مهم: در `storage_handler._save_lead`، سرنخ به‌صورت **dict** ساخته
-    می‌شود (نه با این dataclass) و `keywords` به‌صورت **string** (با کاما)
-    پاس داده می‌شود. برای سازگاری، از `Lead.from_lead_dict()` استفاده کن.
+    ⚠️ در `storage_handler._save_lead`، سرنخ به‌صورت **dict** ساخته
+    می‌شود. برای سازگاری کامل، از `Lead.from_lead_dict()` و
+    `Lead.to_storage_dict()` استفاده کن.
     """
 
-    id: str
-    message_id: str
-    platform: str
-    text: str
-    chat_id: str
-    chat_name: str
-    user_id: str
-    timestamp: datetime
+    id: str = ""
+    message_id: str = ""
+    platform: str = ""
+    text: str = ""
+    chat_id: str = ""
+    chat_name: str = "Unknown"
+    user_id: str = ""
+    timestamp: datetime = field(default_factory=datetime.now)
     keywords: list[str] = field(default_factory=list)
-    score: int = 0
+    # 🐛 FIX: score از int به float
+    score: float = 0.0
     category: str = ""
     status: LeadStatus = LeadStatus.NEW
     note: str = ""
 
+    # 🐛 FIX: فیلدهای اضافی storage
+    opportunity_type: str | None = None
+    priority_tier: str = "T0"
+    matched_products: str = ""
+    brands: str = ""
+    media_type: str = "text"
+    file_id: str | None = None
+    is_important: bool = False
+    my_note: str | None = None
+
+    # ─── helpers ───
+    def is_hot(self) -> bool:
+        """🎯 آیا این سرنخ داغ است؟"""
+        return self.score >= 60
+
+    def is_warm(self) -> bool:
+        """🎯 آیا این سرنخ گرم است؟"""
+        return 30 <= self.score < 60
+
+    def is_cold(self) -> bool:
+        """🎯 آیا این سرنخ سرد است؟"""
+        return self.score < 30
+
     def to_dict(self) -> dict[str, Any]:
-        """تبدیل به dict — keywords به string با کاما (مثل storage)."""
+        """تبدیل به dict — keywords به string با کاما."""
         return {
             "id": self.id,
             "message_id": self.message_id,
@@ -204,7 +325,7 @@ class Lead:
             "timestamp": (
                 self.timestamp.isoformat()
                 if isinstance(self.timestamp, datetime)
-                else self.timestamp
+                else _safe_str(self.timestamp)
             ),
             "keywords": ",".join(self.keywords or []),
             "score": self.score,
@@ -212,110 +333,216 @@ class Lead:
             "status": (
                 self.status.value
                 if isinstance(self.status, LeadStatus)
-                else str(self.status)
+                else _safe_str(self.status)
             ),
             "note": self.note,
+            # 🎯 فیلدهای اضافی
+            "opportunity_type": self.opportunity_type,
+            "priority_tier": self.priority_tier,
+            "matched_products": self.matched_products,
+            "brands": self.brands,
+            "media_type": self.media_type,
+            "file_id": self.file_id,
+            "is_important": self.is_important,
+            "my_note": self.my_note,
+        }
+
+    def to_storage_dict(self) -> dict[str, Any]:
+        """🎯 dict سازگار با `storage_handler` و DB.
+
+        کلیدها: id, message_id, platform, text, chat_id, chat_name,
+        user_id, timestamp, keywords (str), opportunity_score,
+        opportunity_type, priority_tier, matched_products, brands,
+        media_type, file_id, is_important, my_note.
+        """
+        return {
+            "id": self.id,
+            "message_id": self.message_id,
+            "platform": self.platform,
+            "text": self.text,
+            "chat_id": self.chat_id,
+            "chat_name": self.chat_name,
+            "user_id": self.user_id,
+            "timestamp": self.timestamp,
+            "keywords": ",".join(self.keywords or []),
+            "opportunity_score": int(self.score or 0),
+            "opportunity_type": self.opportunity_type,
+            "priority_tier": self.priority_tier,
+            "matched_products": self.matched_products,
+            "brands": self.brands,
+            "media_type": self.media_type,
+            "file_id": self.file_id,
+            "is_important": 1 if self.is_important else 0,
+            "my_note": self.my_note,
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> Lead:
+    def from_dict(
+        cls, data: dict[str, Any] | None
+    ) -> "Lead":
         """بازسازی از dict (چکیده از دیتابیس)."""
-        # keywords ممکنه str یا list باشه
-        kw_raw = data.get("keywords", "")
-        if isinstance(kw_raw, list):
-            keywords = [str(k).strip() for k in kw_raw if k]
-        else:
-            keywords = [
-                k.strip() for k in str(kw_raw or "").split(",") if k.strip()
-            ]
+        if not isinstance(data, dict):
+            return cls()
 
-        # timestamp
-        ts = data.get("timestamp")
-        if isinstance(ts, str):
-            try:
-                ts = datetime.fromisoformat(ts)
-            except Exception:
-                ts = datetime.now()
-        elif not isinstance(ts, datetime):
-            ts = datetime.now()
+        # ─── keywords ───
+        keywords = _parse_keywords(data.get("keywords"))
 
-        # status
+        # ─── timestamp ───
+        timestamp = _parse_datetime(
+            data.get("timestamp") or data.get("time")
+        )
+
+        # ─── status ───
         status_raw = data.get("status", "new")
         try:
             status = LeadStatus(status_raw)
         except (ValueError, TypeError):
             status = LeadStatus.NEW
 
+        # ─── score ───
+        score_raw = data.get(
+            "opportunity_score", data.get("score", 0)
+        )
+        try:
+            score = float(score_raw or 0)
+        except (TypeError, ValueError):
+            score = 0.0
+
+        # ─── is_important ───
+        is_imp_raw = data.get("is_important", False)
+        is_important = bool(is_imp_raw)
+
         return cls(
-            id=str(data.get("id", "")),
-            message_id=str(data.get("message_id", "")),
-            platform=str(data.get("platform", "")),
-            text=str(data.get("text", "")),
-            chat_id=str(data.get("chat_id", "")),
-            chat_name=str(data.get("chat_name", "Unknown")),
-            user_id=str(data.get("user_id", "")),
-            timestamp=ts,
+            id=_safe_str(data.get("id", "")),
+            message_id=_safe_str(
+                data.get("message_id") or data.get("id", "")
+            ),
+            platform=_safe_str(data.get("platform", "")),
+            text=_safe_str(data.get("text", "")),
+            chat_id=_safe_str(data.get("chat_id", "")),
+            chat_name=_safe_str(
+                data.get("chat_name", "Unknown")
+            ) or "Unknown",
+            user_id=_safe_str(data.get("user_id", "")),
+            timestamp=timestamp,
             keywords=keywords,
-            score=int(data.get("score", 0) or 0),
-            category=str(data.get("category", "")),
+            score=score,
+            category=_safe_str(data.get("category", "")),
             status=status,
-            note=str(data.get("note", "")),
+            note=_safe_str(data.get("note", "")),
+            opportunity_type=data.get("opportunity_type"),
+            priority_tier=_safe_str(
+                data.get("priority_tier", "T0")
+            ) or "T0",
+            matched_products=_safe_str(
+                data.get("matched_products", "")
+            ),
+            brands=_safe_str(data.get("brands", "")),
+            media_type=_safe_str(
+                data.get("media_type", "text")
+            ) or "text",
+            file_id=data.get("file_id"),
+            is_important=is_important,
+            my_note=data.get("my_note"),
         )
 
     @classmethod
-    def from_lead_dict(cls, data: dict[str, Any]) -> Lead:
-        """سازگاری با `storage_handler._save_lead` که کلیدهای متفاوتی
-        پاس می‌دهد (opportunity_score, opportunity_type, priority_tier, ...).
+    def from_lead_dict(
+        cls, data: dict[str, Any] | None
+    ) -> "Lead":
+        """🎯 سازگاری با `storage_handler._save_lead`.
 
         کلیدهای پشتیبانی‌شده:
-          - id, message_id, platform, text, chat_id, chat_name, user_id
+          - id, message_id, platform, text, chat_id, chat_name,
+            user_id
           - keywords (str با کاما یا list)
           - opportunity_score یا score → self.score
-          - opportunity_type → self.note (پیش‌فرض)
-          - timestamp یا time
+          - opportunity_type → self.opportunity_type
+          - priority_tier → self.priority_tier
+          - matched_products, brands → self.*
+          - timestamp یا time یا created_at
         """
-        # keywords
-        kw_raw = data.get("keywords", "")
-        if isinstance(kw_raw, list):
-            keywords = [str(k).strip() for k in kw_raw if k]
-        else:
-            keywords = [
-                k.strip()
-                for k in str(kw_raw or "").split(",")
-                if k.strip()
-            ]
+        if not isinstance(data, dict):
+            return cls()
 
-        # score از opportunity_score یا score
-        score = data.get("opportunity_score", data.get("score", 0))
+        # ─── keywords ───
+        keywords = _parse_keywords(data.get("keywords"))
 
-        # timestamp
-        ts = data.get("timestamp") or data.get("time")
-        if isinstance(ts, str):
-            try:
-                ts = datetime.fromisoformat(ts)
-            except Exception:
-                ts = datetime.now()
-        elif not isinstance(ts, datetime):
-            ts = datetime.now()
+        # ─── score ───
+        score_raw = data.get(
+            "opportunity_score", data.get("score", 0)
+        )
+        try:
+            score = float(score_raw or 0)
+        except (TypeError, ValueError):
+            score = 0.0
 
-        # note از opportunity_type (با پیشوند)
+        # ─── timestamp ───
+        timestamp = _parse_datetime(
+            data.get("timestamp")
+            or data.get("time")
+            or data.get("created_at")
+        )
+
+        # ─── note ───
         opp_type = data.get("opportunity_type")
-        note = str(data.get("note", ""))
-        if opp_type and not note:
+        note = _safe_str(data.get("note", ""))
+        if not note and opp_type:
             note = f"نوع: {opp_type}"
 
+        # ─── is_important ───
+        is_important = bool(data.get("is_important", False))
+
         return cls(
-            id=str(data.get("id", "")),
-            message_id=str(data.get("message_id") or data.get("id", "")),
-            platform=str(data.get("platform", "")),
-            text=str(data.get("text", "")),
-            chat_id=str(data.get("chat_id", "")),
-            chat_name=str(data.get("chat_name", "Unknown")),
-            user_id=str(data.get("user_id", "")),
-            timestamp=ts,
+            id=_safe_str(data.get("id", "")),
+            message_id=_safe_str(
+                data.get("message_id") or data.get("id", "")
+            ),
+            platform=_safe_str(data.get("platform", "")),
+            text=_safe_str(data.get("text", "")),
+            chat_id=_safe_str(data.get("chat_id", "")),
+            chat_name=_safe_str(
+                data.get("chat_name", "Unknown")
+            ) or "Unknown",
+            user_id=_safe_str(data.get("user_id", "")),
+            timestamp=timestamp,
             keywords=keywords,
-            score=int(score or 0),
-            category=str(data.get("category", "")),
+            score=score,
+            category=_safe_str(data.get("category", "")),
             status=LeadStatus.NEW,
             note=note,
+            opportunity_type=opp_type,
+            priority_tier=_safe_str(
+                data.get("priority_tier", "T0")
+            ) or "T0",
+            matched_products=_safe_str(
+                data.get("matched_products", "")
+            ),
+            brands=_safe_str(data.get("brands", "")),
+            media_type=_safe_str(
+                data.get("media_type", "text")
+            ) or "text",
+            file_id=data.get("file_id"),
+            is_important=is_important,
+            my_note=data.get("my_note"),
         )
+
+    def __repr__(self) -> str:
+        return (
+            f"Lead(id={self.id!r}, "
+            f"platform={self.platform!r}, "
+            f"kw={len(self.keywords)}, "
+            f"score={self.score}, "
+            f"status={self.status.value})"
+        )
+
+
+# ═══════════════════════════════════════════
+# __all__
+# ═══════════════════════════════════════════
+__all__ = [
+    "Message",
+    "AnalyzedMessage",
+    "Lead",
+    "LeadStatus",
+]

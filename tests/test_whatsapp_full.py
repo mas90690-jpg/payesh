@@ -5,9 +5,10 @@
 Pipeline:
   Collector → EventBus → StorageHandler → DB (isolated)
 
-نسخهٔ ۱ (این نسخه):
+نسخهٔ ۱.۱ (این نسخه):
   - هم‌راستا با test_bale_full.py و test_eitaa_full.py
   - ⏭️ skip منطقی: اگر هیچ پیام کلیدواژه‌داری نبود → skip (نه fail)
+  - ⏭️ skip منطقی: اگر پلتفرم خاموش بود → skip (نه fail) ← v1.1
   - 🎯 چک data-id جدید (فرمت ۲۰۲۶-۰۴-۳۰): فقط msgId خالی
   - 🎯 چک chat_id از header
 
@@ -43,15 +44,17 @@ async def main(headless: bool = False, max_chats: int = 0):
 
     report.add(
         "env.enabled",
-        "ok" if env_info["enabled"] else "fail",
+        "ok" if env_info["enabled"] else "skip",
         f"WHATSAPP_ENABLED={env_info['enabled']}",
     )
     if not env_info["enabled"]:
-        print(f"{C.FAIL}❌ واتساپ غیرفعال — تست لغو{C.END}")
-        print(f"   💡 در .env بذار: WHATSAPP_ENABLED=true")
+        print(
+            f"{C.INFO}⏭️ واتساپ غیرفعال (skip) — "
+            f"برای اجرا: WHATSAPP_ENABLED=true{C.END}"
+        )
         report.print_summary()
         report.save()
-        return False
+        return True
 
     report.add(
         "env.session_path",

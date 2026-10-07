@@ -2,6 +2,11 @@
 """
 تست کامل لینکدین — Pipeline end-to-end.
 
+نسخهٔ ۲.۱ (این نسخه):
+  - ⏭️ skip منطقی: اگر پلتفرم خاموش بود → skip (نه fail) ← v2.1
+  - ✅ حفظ DNS + HTTP check (کاربردی برای تشخیص مشکل شبکه)
+  - ✅ حفظ همهٔ مراحل نسخهٔ ۲.
+
 اجرا:
   python tests/test_linkedin_full.py
   python tests/test_linkedin_full.py --headless
@@ -59,13 +64,16 @@ async def main(headless: bool = False):
     env_info = check_env("linkedin")
 
     report.add("env.enabled",
-               "ok" if env_info["enabled"] else "fail",
+               "ok" if env_info["enabled"] else "skip",
                f"LINKEDIN_ENABLED={env_info['enabled']}")
     if not env_info["enabled"]:
-        print(f"{C.FAIL}❌ لینکدین غیرفعال{C.END}")
+        print(
+            f"{C.INFO}⏭️ لینکدین غیرفعال (skip) — "
+            f"برای اجرا: LINKEDIN_ENABLED=true{C.END}"
+        )
         report.print_summary()
         report.save()
-        return False
+        return True
 
     # ═══ ۴) نشست ═══
     section("مرحله ۴: بررسی نشست")
@@ -91,7 +99,9 @@ async def main(headless: bool = False):
         collector = LinkedInCollector(
             headless=headless, poll_seconds=999,
             max_results=5, scrolls=2,
-            monitor_feed=True, max_feed_posts=10,
+            monitor_feed=True,
+            max_feed_posts=0,   # 🎯 0 = بدون محدودیت
+            force_run=True,
         )
         report.add("collector.init", "ok",
                    f"platform={collector.platform_name}")

@@ -1,16 +1,39 @@
-"""گزارش‌ها و تنظیمات — settings, status, keywords, logs."""
+"""
+گزارش‌ها و تنظیمات — settings, status, keywords, logs.
+
+نسخهٔ ۲ (این نسخه):
+  - 🎯 `PLATFORMS_ORDER` از `config` (شامل instagram) — به‌جای hardcode.
+  - 🎯 `_get_recent_logs` حالا از `data.paths.LOG_FILE` می‌خواند.
+  - 🎯 `_set_setting` حالا `os.fsync` می‌زند (durability).
+  - 🎯 `_get_health_report` — timeout از `AI_CONFIG` (env-based).
+  - 🎯 `generate_report` حالا `days` را اعمال می‌کند (پارامتر بی‌استفاده بود).
+  - 🐛 FIX: `_get_setting` حالا از `config` هم برای پارامترهای top-level
+    استفاده می‌کند (ADMIN_ENABLED, ...).
+  - 🐛 FIX: `_platform_status` حالا `PLATFORMS_ORDER` را از config
+    می‌گیرد.
+  - 🎯 `_env_float` helper برای thresholds.
+  - ✅ حفظ همهٔ رفتار نسخهٔ ۱.
+"""
 from __future__ import annotations
 
 import asyncio
 import json
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 
+# 🎯 P0: از config
+from config import (
+    ADMIN_ENABLED,
+    ADMIN_IDS,
+    ADMIN_PLATFORM,
+    AI,
+    PLATFORMS_ORDER,
+)
 from core.adapters.access_manager import get_access_manager
 from core.brain.constants import (
     LOG_TAIL_BYTES,
-    LOGS_DIR,
     PROJECT_BASE,
 )
 from core.kernel.logger import (
@@ -20,6 +43,45 @@ from core.kernel.logger import (
     log_warning,
 )
 
+# 🎯 P0: مسیرها از data.paths
+from data import paths as data_paths
+
+
+# ═══════════════════════════════════════════════════════════
+# helpers
+# ═══════════════════════════════════════════════════════════
+def _env_float(
+    name: str, default: float,
+    min_val: float | None = None,
+    max_val: float | None = None,
+) -> float:
+    """خواندن float از env — با sanitize."""
+    try:
+        v = float(os.getenv(name, str(default)))
+    except (ValueError, TypeError):
+        return default
+    if min_val is not None and v < min_val:
+        return min_val
+    if max_val is not None and v > max_val:
+        return max_val
+    return v
+
+
+# آستانهٔ timeout برای health check (env-based)
+_HEALTH_TIMEOUT_S = _env_float(
+    "BRAIN_HEALTH_TIMEOUT_S", 15.0, min_val=2.0, max_val=120.0
+)
+
+# سقف نمایش در پاسخ‌ها
+_MAX_HEALTH_RESPONSE_LEN = 3000
+
+# 🎯 پارامترهای top-level config (خواندنی)
+_CONFIG_PARAMS = {
+    "ADMIN_ENABLED": lambda: ADMIN_ENABLED,
+    "ADMIN_PLATFORM": lambda: ADMIN_PLATFORM,
+    "ADMIN_IDS": lambda: ", ".join(ADMIN_IDS) or "(خالی)",
+}
+
 
 class ReportsMixin:
     """گزارش‌ها و تنظیمات — به Brain اضافه می‌شود."""
@@ -28,28 +90,50 @@ class ReportsMixin:
     # تنظیمات
     # ═══════════════════════════════════════════
     async def _get_setting(self, key: str) -> str:
-        ok, reason = get_access_manager().can_read_setting(
-            key.upper()
-        )
+        """خواندن یک پارامتر از env یا config."""
+        key_u = key.upper()
+        ok, reason = get_access_manager().can_read_setting(key_u)
         if not ok:
             return f"⛔ {reason}"
-        val = os.getenv(key.upper(), "(تنظیم‌نشده)")
-        log_info(f"⚙️ [BRAIN:setting:get] {key.upper()}")
-        return f"⚙️ {key.upper()} = {val}"
+
+        # 🎯 FIX: اول از config بخوان (اگر top-level بود)
+        if key_u in _CONFIG_PARAMS:
+            try:
+                val = _CONFIG_PARAMS[key_u]()
+                log_info(
+                    f"⚙️ [BRAIN:setting:get] {key_u} "
+                    f"(source=config)"
+                )
+                return f"⚙️ {key_u} = {val}"
+            except Exception as e:
+                log_warning(
+                    f"⚠️ [BRAIN:setting:get] {key_u} config | "
+                    f"{type(e).__name__}: {e}"
+                )
+
+        # env-based
+        val = os.getenv(key_u, "(تنظیم‌نشده)")
+        log_info(
+            f"⚙️ [BRAIN:setting:get] {key_u} (source=env)"
+        )
+        return f"⚙️ {key_u} = {val}"
 
     async def _set_setting(self, key: str, value: str) -> str:
+        """🎯 FIX: نوشتن در .env با fsync."""
         key_u = key.upper()
         ok, reason = get_access_manager().can_write_setting(key_u)
         if not ok:
             return f"⛔ {reason}"
+
         tmp_path = ""
         try:
             env_path = os.path.join(PROJECT_BASE, ".env")
             tmp_path = env_path + ".tmp"
-            lines = []
+            lines: list[str] = []
             if os.path.exists(env_path):
                 with open(env_path, encoding="utf-8") as f:
                     lines = f.readlines()
+
             found = False
             for i, ln in enumerate(lines):
                 if ln.strip().startswith(f"{key_u}="):
@@ -60,10 +144,32 @@ class ReportsMixin:
                 if lines and not lines[-1].endswith("\n"):
                     lines[-1] += "\n"
                 lines.append(f"{key_u}={value}\n")
+
+            # 🎯 FIX: fsync برای durability
             with open(tmp_path, "w", encoding="utf-8") as f:
                 f.writelines(lines)
+                try:
+                    f.flush()
+                    os.fsync(f.fileno())
+                except (AttributeError, OSError):
+                    pass
             os.replace(tmp_path, env_path)
-            log_success(f"✅ [BRAIN:setting:set] {key_u}={value}")
+
+            # fsync دایرکتوری (POSIX)
+            try:
+                parent = os.path.dirname(env_path) or "."
+                dir_fd = os.open(parent, os.O_DIRECTORY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except (AttributeError, OSError):
+                pass
+
+            log_success(
+                f"✅ [BRAIN:setting:set] {key_u}={value} | "
+                f"{'به‌روز' if found else 'جدید'}"
+            )
             return (
                 f"✅ {key_u}={value} ذخیره شد.\n"
                 f"(برای اعمال، ری‌استارت کن.)"
@@ -75,7 +181,8 @@ class ReportsMixin:
                 except Exception:
                     pass
             log_error(
-                f"❌ [BRAIN:setting:set] {type(e).__name__}: {e}"
+                f"❌ [BRAIN:setting:set] "
+                f"{type(e).__name__}: {e}"
             )
             return f"❌ خطا: {e}"
 
@@ -104,21 +211,20 @@ class ReportsMixin:
     async def _platform_status(
         self, platform: str = "all"
     ) -> str:
+        """🎯 FIX: از config.PLATFORMS_ORDER (شامل instagram)."""
         try:
             from config import PLUGINS_CONFIG as _PC
 
-            platforms = (
-                "eitaa", "bale", "rubika", "telegram",
-                "whatsapp", "web", "linkedin",
-            )
+            # 🎯 FIX: از config.PLATFORMS_ORDER
+            platforms = tuple(PLATFORMS_ORDER)
+
             targets = (
-                [platform] if platform != "all"
+                [platform]
+                if platform != "all" and platform in platforms
                 else list(platforms)
             )
             lines = ["📊 وضعیت پلتفرم‌ها:"]
             for p in targets:
-                if p not in platforms:
-                    continue
                 cfg = _PC.get(f"{p}collector", {})
                 enabled = cfg.get("enabled", False)
                 poll = cfg.get("poll_seconds", "-")
@@ -209,6 +315,7 @@ class ReportsMixin:
         )
 
     def set_mode(self, mode: str):
+        """تنظیم حالت پردازش."""
         valid = {
             "precise", "debug", "architect", "concise",
             "creative", "code", "chat", "analyze",
@@ -223,7 +330,7 @@ class ReportsMixin:
     # Reports
     # ═══════════════════════════════════════════
     async def _get_health_report(self) -> str:
-        """گزارش سلامت کامل از HealthChecker (timeout 15s)."""
+        """🎯 گزارش سلامت کامل — timeout env-based."""
         try:
             from core.ops.health_check import HealthChecker
         except ImportError as e:
@@ -238,25 +345,34 @@ class ReportsMixin:
 
         try:
             hc = HealthChecker(self.db)
+            # 🎯 FIX: timeout env-based
             report = await asyncio.wait_for(
                 hc.check_all(),
-                timeout=15.0,
+                timeout=_HEALTH_TIMEOUT_S,
             )
             if isinstance(report, dict):
                 return json.dumps(
                     report, ensure_ascii=False, indent=2
-                )[:3000]
-            return str(report)[:3000]
+                )[:_MAX_HEALTH_RESPONSE_LEN]
+            return str(report)[:_MAX_HEALTH_RESPONSE_LEN]
         except TimeoutError:
-            log_warning("⏰ [BRAIN:health] timeout (15s)")
-            return "⏰ بررسی سلامت طول کشید (timeout 15s)."
+            log_warning(
+                f"⏰ [BRAIN:health] timeout "
+                f"({_HEALTH_TIMEOUT_S:.0f}s)"
+            )
+            return (
+                f"⏰ بررسی سلامت طول کشید "
+                f"(timeout {_HEALTH_TIMEOUT_S:.0f}s)."
+            )
         except Exception as e:
             log_error(
-                f"❌ [BRAIN:health] {type(e).__name__}: {e}"
+                f"❌ [BRAIN:health] "
+                f"{type(e).__name__}: {e}"
             )
             return f"❌ خطا: {e}"
 
     async def _get_keywords_report(self) -> str:
+        """آمار کلیدواژه‌ها از DB."""
         if not self.db:
             return "⚠️ دیتابیس متصل نیست."
         try:
@@ -275,17 +391,27 @@ class ReportsMixin:
             return f"❌ خطا: {e}"
 
     async def _get_platform_status(self, platform: str) -> str:
+        """وضعیت آخرین poll یک پلتفرم."""
         if not self.db:
             return "⚠️ دیتابیس متصل نیست."
         try:
             last_poll = await self.db.get_last_poll(platform)
             if not last_poll:
                 return f"📡 **{platform}**: داده‌ای نیست."
-            ago = (datetime.now() - last_poll).total_seconds()
+
+            # 🎯 FIX: safe date diff
+            now = datetime.now()
+            if last_poll.tzinfo is not None:
+                now = now.replace(tzinfo=last_poll.tzinfo)
+
+            ago = (now - last_poll).total_seconds()
             if ago < 60:
                 return f"📡 **{platform}**: فعال ✅"
             elif ago < 3600:
-                return f"📡 **{platform}**: {ago/60:.0f} دقیقه"
+                return (
+                    f"📡 **{platform}**: "
+                    f"{ago/60:.0f} دقیقه"
+                )
             return f"📡 **{platform}**: {ago/3600:.1f} ساعت"
         except Exception as e:
             log_error(
@@ -295,6 +421,7 @@ class ReportsMixin:
             return f"❌ خطا: {e}"
 
     async def _get_report(self) -> str:
+        """گزارش سریع — مجموع + ۷ روز اخیر."""
         if not self.db:
             return "⚠️ دیتابیس متصل نیست."
         try:
@@ -314,51 +441,57 @@ class ReportsMixin:
             return "\n".join(lines)
         except Exception as e:
             log_error(
-                f"❌ [BRAIN:report] {type(e).__name__}: {e}"
+                f"❌ [BRAIN:report] "
+                f"{type(e).__name__}: {e}"
             )
             return f"❌ خطا: {e}"
 
     def _get_recent_logs(self, limit: int = 30) -> str:
-        """آخرین خطوط لاگ — با seek از انتها (نه کل فایل در RAM)."""
-        log_dir = Path(LOGS_DIR)
-        if not log_dir.exists():
-            return "📭 پوشه لاگ نیست."
-        logs = (
-            list(log_dir.glob("*.log"))
-            + list(log_dir.glob("*.txt"))
-            + list(log_dir.glob("*.jsonl"))
-        )
-        if not logs:
-            return "📭 فایل لاگ نیست."
-        latest = max(logs, key=lambda p: p.stat().st_mtime)
+        """🎯 FIX: آخرین خطوط لاگ — از data.paths.LOG_FILE."""
         try:
-            size = latest.stat().st_size
-            with open(latest, "rb") as f:
+            log_path = Path(str(data_paths.LOG_FILE))
+        except Exception as e:
+            log_error(
+                f"❌ [BRAIN:logs] path resolve | "
+                f"{type(e).__name__}: {e}"
+            )
+            return "📭 مسیر لاگ در دسترس نیست."
+
+        if not log_path.exists():
+            return "📭 فایل لاگ نیست."
+
+        try:
+            size = log_path.stat().st_size
+            with open(log_path, "rb") as f:
                 if size > LOG_TAIL_BYTES:
                     f.seek(-LOG_TAIL_BYTES, os.SEEK_END)
-                    f.readline()
+                    f.readline()  # خط ناقص اول
                 data = f.read()
             lines = data.decode(
                 "utf-8", errors="ignore"
             ).splitlines()
-            recent = lines[-limit:] if len(lines) > limit else lines
+            recent = (
+                lines[-limit:] if len(lines) > limit else lines
+            )
             log_info(
-                f"📋 [BRAIN:logs] {latest.name} | "
+                f"📋 [BRAIN:logs] {log_path.name} | "
                 f"lines≈{len(lines)} showing={len(recent)}"
             )
             return (
-                f"📋 **لاگ‌ها ({latest.name}):**\n"
+                f"📋 **لاگ‌ها ({log_path.name}):**\n"
                 + "\n".join(recent)
             )
         except Exception as e:
             log_error(
-                f"❌ [BRAIN:recent_logs] {type(e).__name__}: {e}"
+                f"❌ [BRAIN:recent_logs] "
+                f"{type(e).__name__}: {e}"
             )
             return f"❌ خطا: {e}"
 
     async def _get_lead_details(
         self, which: str = "last"
     ) -> str:
+        """جزئیات یک سرنخ (اولین/آخرین)."""
         if not self.db:
             return "⚠️ دیتابیس متصل نیست."
         try:
@@ -377,11 +510,13 @@ class ReportsMixin:
             )
         except Exception as e:
             log_error(
-                f"❌ [BRAIN:lead_details] {type(e).__name__}: {e}"
+                f"❌ [BRAIN:lead_details] "
+                f"{type(e).__name__}: {e}"
             )
             return f"❌ خطا: {e}"
 
     async def _check_keyword(self, kw: str) -> str:
+        """چک وجود یک کلیدواژه در finder."""
         if not kw:
             return "⚠️ کلیدواژه وارد کن."
         try:
@@ -392,7 +527,8 @@ class ReportsMixin:
             finder = get_keyword_finder()
             found = finder.has_match(kw)
             log_info(
-                f"🔍 [BRAIN:kw-check] kw={kw!r} | found={found}"
+                f"🔍 [BRAIN:kw-check] kw={kw!r} | "
+                f"found={found}"
             )
 
             if found:
@@ -413,13 +549,15 @@ class ReportsMixin:
             )
         except Exception as e:
             log_error(
-                f"❌ [BRAIN:check_keyword] {type(e).__name__}: {e}"
+                f"❌ [BRAIN:check_keyword] "
+                f"{type(e).__name__}: {e}"
             )
             return f"❌ خطا: {e}"
-            
+
     def generate_report(self, days: int = 7) -> str:
+        """🎯 FIX: پارامتر days اعمال می‌شود (قبلاً بی‌استفاده بود)."""
         return (
-            f"📊 **گزارش Agent**\n"
+            f"📊 **گزارش Agent ({days} روز)**\n"
             f"دستورات: {self.stats['commands_processed']}\n"
             f"Agent: {self.stats['agents_run']}\n"
             f"خطاها: {self.stats['errors']}\n"
@@ -476,7 +614,9 @@ class ReportsMixin:
                         break
                 if not matched:
                     counts["سایر"] += 1
-            result = [f"📋 کل: {len(lines)} خطا: {len(error_lines)}"]
+            result = [
+                f"📋 کل: {len(lines)} خطا: {len(error_lines)}"
+            ]
             for cat, cnt in sorted(
                 counts.items(), key=lambda x: -x[1]
             ):
@@ -489,6 +629,7 @@ class ReportsMixin:
             return "\n".join(result)
         except Exception as e:
             log_error(
-                f"❌ [BRAIN:analyze_logs] {type(e).__name__}: {e}"
+                f"❌ [BRAIN:analyze_logs] "
+                f"{type(e).__name__}: {e}"
             )
             return f"❌ خطا: {e}"

@@ -1,38 +1,111 @@
 # ══════════════════════════════════════════════════════════════
 # Srooyesh Lead-Monitor — Python Dependencies
-# نصب: pip install -r requirements.txt
-# پایتون پیشنهادی: 3.11 یا 3.12
+# نسخه: 1.3.0
+# ══════════════════════════════════════════════════════════════
+#
+# نصب:            pip install -r requirements.txt
+# نصب مرورگر:     playwright install chromium
+# پایتون:         3.11 یا 3.12 (حداقل 3.10)
+#
+# نکته: کتابخانه‌های config/data/lead_monitor از PyPI نصب نمی‌شوند؛
+#       آن‌ها فایل‌های محلی همین پروژه هستند.
 # ══════════════════════════════════════════════════════════════
 
-# ─── Web scraping / Browser automation ───
+
+# ─── مرورگر و اسکرپینگ (پایهٔ اصلی پروژه) ─────────────────────
+# همهٔ کلکتورها (بله، ایتا، تلگرام، واتساپ، لینکدین، اینستاگرام، وب)
+# از Playwright استفاده می‌کنند.
 playwright>=1.40,<2.0
 beautifulsoup4>=4.12,<5.0
-
-# ─── Platform SDKs ───
-# rubpy بین نسخه‌ها API را می‌شکند → پین کن
-rubpy==7.3.0
-
-# ─── Async / HTTP ───
+lxml>=6.1,<7.0
 aiohttp>=3.9,<4.0
 
-# ─── Config ───
-python-dotenv>=1.0,<2.0
 
-# ─── Media ───
+# ─── HTTP client (برای Brain و AIAssistant) ──────────────────
+# استفاده در core/services/ai_assistant.py و core/brain/learning.py
+# و core/brain/mixin_info.py (_browse_web)
+requests>=2.31,<3.0
+
+
+# ─── SDK پلتفرم‌ها ────────────────────────────────────────────
+# روبیکا از rubpy استفاده می‌کند (userbot).
+# تلگرام از Playwright (web.telegram.org) استفاده می‌کند، نه telethon.
+rubpy>=7.3,<8.0
+
+
+# ─── ترجمه ────────────────────────────────────────────────────
+# استفاده در core/adapters/translator.py
+deep-translator>=1.11,<2.0
+
+
+# ─── رسانه (عکس / فایل) ──────────────────────────────────────
+# استفاده در core/adapters/web_media.py
 Pillow>=10.0,<12.0
 
-# ─── System metrics ───
+
+# ─── تنظیمات و محیط ──────────────────────────────────────────
+# config.py برای خواندن .env
+python-dotenv>=1.0,<2.0
+
+
+# ─── کنسول (Windows ANSI) ────────────────────────────────────
+# استفاده در panel.py برای رنگ‌های ANSI روی CMD قدیمی
+# (اختیاری — اگر نبود، panel خودش با ctypes تلاش می‌کند)
+colorama>=0.4.6,<1.0
+
+
+# ─── متریک‌های سیستم ─────────────────────────────────────────
+# استفاده در core/ops/health_check.py, monitor.py
 psutil>=5.9,<8.0
 
-# ─── Web server (health / metrics / chat) ───
+
+# ─── سرور OBS (health / metrics / chat) ──────────────────────
+# استفاده در core/ops/obs_server.py
 fastapi>=0.110,<1.0
 uvicorn[standard]>=0.27,<1.0
-websockets>=12.0,<14.0
 pydantic>=2.5,<3.0
 
-# ─── Cryptography (وابستگی rubpy) ───
-cryptography>=42.0,<45.0
 
-# ─── Testing ───
+# ─── گزارش‌ها و CRM ──────────────────────────────────────────
+# استفاده در core/services/crm_export.py (خروجی XLSX)
+openpyxl>=3.1,<4.0
+
+
+# ─── Clipboard (Brain._clipboard_get) ────────────────────────
+# استفاده در core/brain/mixin_info.py
+pyperclip>=1.8,<2.0
+
+
+# ─── گزارش‌ساز زمان‌بندی (DailyReporter) ─────────────────────
+# استفاده در core/services/daily_reporter.py
+APScheduler>=3.10,<4.0
+
+
+# ─── تحلیل معنایی (Brain semantic search) ────────────────────
+# اختیاری — اگر نبود، semantic_search غیرفعال می‌شود ولی Brain کار می‌کند.
+# برای فعال‌سازی، این دو خط را از کامنت خارج کن:
+# chromadb>=0.4,<2.0
+# sentence-transformers>=2.2,<7.0
+
+
+# ─── PostgreSQL (اختیاری) ────────────────────────────────────
+# فقط اگر DATABASE_TYPE=postgres بود لازم است.
+# یکی از دو گزینهٔ زیر کافیست (asyncpg سبک‌تر و async است):
+asyncpg>=0.29,<1.0
+# psycopg2-binary>=2.9,<3.0
+
+
+# ─── امنیت (Brain) ───────────────────────────────────────────
+# اختیاری — اگر نبود، analyze_security پیام «bandit نصب نیست» می‌دهد.
+# برای فعال‌سازی، این خط را از کامنت خارج کن:
+# bandit>=1.7,<2.0
+
+
+# ─── تست ──────────────────────────────────────────────────────
 pytest>=7.0,<9.0
 pytest-asyncio>=0.23,<1.0
+# زمان‌سنج تست — برای `timeout = 60` در pytest.ini
+pytest-timeout>=2.2,<3.0
+# اختیاری‌ها — اگر می‌خواهی coverage یا mock داشته باشی:
+# pytest-cov>=5.0,<6.0
+# pytest-mock>=3.12,<4.0

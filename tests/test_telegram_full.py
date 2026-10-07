@@ -5,12 +5,13 @@
 Pipeline:
   Collector → EventBus → StorageHandler → DB (isolated)
 
-نسخهٔ ۲ (این نسخه — TelegramWeb):
+نسخهٔ ۲.۱ (این نسخه — TelegramWeb):
   - 🎯 استفاده از TelegramWebCollector (مرورگر، مثل بله/ایتا)
   - ❌ حذف نیاز به api_id/api_hash (دیگه از my.telegram.org نمی‌خواد)
   - ✅ فقط نیاز به نشست ذخیره‌شده (python login.py → گزینه تلگرام وب)
   - ✅ سازگار با ساختار test_bale_full.py و test_eitaa_full.py
   - ⏭️ skip منطقی: اگر هیچ پیام کلیدواژه‌داری نبود → skip (نه fail)
+  - ⏭️ skip منطقی: اگر پلتفرم خاموش بود → skip (نه fail) ← v2.1
 
 پیش‌نیازها:
   - TELEGRAM_ENABLED=true
@@ -86,15 +87,17 @@ async def main(headless: bool = False, max_chats: int = 0):
 
     report.add(
         "env.enabled",
-        "ok" if env_info["enabled"] else "fail",
+        "ok" if env_info["enabled"] else "skip",
         f"TELEGRAM_ENABLED={env_info['enabled']}",
     )
     if not env_info["enabled"]:
-        print(f"{C.FAIL}❌ تلگرام غیرفعال — تست لغو{C.END}")
-        print(f"   💡 در .env بذار: TELEGRAM_ENABLED=true")
+        print(
+            f"{C.INFO}⏭️ تلگرام غیرفعال (skip) — "
+            f"برای اجرا: TELEGRAM_ENABLED=true{C.END}"
+        )
         report.print_summary()
         report.save()
-        return False
+        return True
 
     # ─── توضیح نسخهٔ جدید ───
     phone = (raw.get("phone") or "").strip()

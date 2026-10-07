@@ -8,11 +8,14 @@
   - چک محتوای ذخیره‌شده (کلیدواژه، tier، text)
   - گزارش دقیق
 
-نسخهٔ ۲ (این نسخه):
-  - 🐛 FIX: db_schema_version حالا اسم جدول واقعی را کشف می‌کند
-  - 🐛 FIX: check_ids_in_db حالا هر دو فرم id را چک می‌کند
-  - 🎯 NEW: db_list_tables برای debug
-  - 🎯 NEW: db_table_columns برای debug
+نسخهٔ ۳ (این نسخه):
+  - 🐛 FIX: Connection leak در ۹ تابع — همهٔ توابع حالا try/finally دارند
+    (قبلاً اگر بین connect_db و conn.close خطا رخ می‌داد، conn بسته نمی‌شد).
+  - 🐛 FIX: db_available() حالا isfile() استفاده می‌کند (نه exists()).
+  - 🐛 FIX: find_message_by_text حالا LIKE wildcards را escape می‌کند.
+  - 🎯 NEW: _safe_close(conn) helper برای کاهش تکرار.
+  - 🎯 NEW: _escape_like(s) helper.
+  - ✅ حفظ همهٔ API نسخهٔ ۲ (تمام توابع و امضاها یکسان).
 """
 from __future__ import annotations
 
@@ -31,11 +34,34 @@ DB_PATH = os.path.join(ROOT, "storage", "database", "messages.db")
 
 
 # ═════════════════════════════════════════════════════════
+# helpers داخلی
+# ═════════════════════════════════════════════════════════
+def _safe_close(conn: sqlite3.Connection | None) -> None:
+    """بستن امن یک connection — بدون raise."""
+    if conn is None:
+        return
+    try:
+        conn.close()
+    except Exception:
+        pass
+
+
+def _escape_like(s: str) -> str:
+    """Escape کردن wildcards در LIKE (برای امنیت کوئری)."""
+    return (
+        str(s or "")
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+
+
+# ═════════════════════════════════════════════════════════
 # اتصال
 # ═════════════════════════════════════════════════════════
 def db_available() -> bool:
     """آیا DB موجود است؟"""
-    return os.path.exists(DB_PATH)
+    return os.path.isfile(DB_PATH)
 
 
 def connect_db() -> sqlite3.Connection:
@@ -51,7 +77,10 @@ def db_size_kb() -> float:
     """حجم DB به کیلوبایت."""
     if not db_available():
         return 0.0
-    return os.path.getsize(DB_PATH) / 1024
+    try:
+        return os.path.getsize(DB_PATH) / 1024
+    except OSError:
+        return 0.0
 
 
 # ═════════════════════════════════════════════════════════
@@ -59,6 +88,7 @@ def db_size_kb() -> float:
 # ═════════════════════════════════════════════════════════
 def db_list_tables() -> list[str]:
     """لیست همهٔ جدول‌های DB (برای debug)."""
+    conn = None
     try:
         conn = connect_db()
         cur = conn.cursor()
@@ -66,24 +96,28 @@ def db_list_tables() -> list[str]:
             "SELECT name FROM sqlite_master "
             "WHERE type='table' ORDER BY name"
         )
-        tables = [r[0] for r in cur.fetchall()]
-        conn.close()
-        return tables
+        return [r[0] for r in cur.fetchall()]
     except Exception:
         return []
+    finally:
+        _safe_close(conn)
 
 
 def db_table_columns(table: str) -> list[str]:
     """لیست ستون‌های یک جدول (برای debug)."""
+    conn = None
     try:
         conn = connect_db()
         cur = conn.cursor()
+        # PRAGMA table_info با پارامتر bind نمی‌شود → whitelist
+        if not str(table).replace("_", "").isalnum():
+            return []
         cur.execute(f"PRAGMA table_info({table})")
-        cols = [r[1] for r in cur.fetchall()]
-        conn.close()
-        return cols
+        return [r[1] for r in cur.fetchall()]
     except Exception:
         return []
+    finally:
+        _safe_close(conn)
 
 
 # ═════════════════════════════════════════════════════════
@@ -96,6 +130,7 @@ def db_schema_version() -> str:
     جدول‌های واقعی: messages, leads, last_poll, chat_offsets,
                     daily_stats, sqlite_sequence, migrations
     """
+    conn = None
     try:
         conn = connect_db()
         cur = conn.cursor()
@@ -116,7 +151,6 @@ def db_schema_version() -> str:
                 cur.execute(f"SELECT COUNT(*) FROM {table}")
                 r = cur.fetchone()
                 if r and r[0]:
-                    conn.close()
                     return f"migrations={r[0]}"
 
             if "version" in cols:
@@ -126,7 +160,6 @@ def db_schema_version() -> str:
                 )
                 r = cur.fetchone()
                 if r and r[0] is not None:
-                    conn.close()
                     return f"v{r[0]}"
 
         # ─── ۲) PRAGMA user_version ───
@@ -134,15 +167,15 @@ def db_schema_version() -> str:
             cur.execute("PRAGMA user_version")
             r = cur.fetchone()
             if r and r[0]:
-                conn.close()
                 return f"v{r[0]}"
         except Exception:
             pass
 
-        conn.close()
         return "no_table"
     except Exception as e:
         return f"error:{type(e).__name__}"
+    finally:
+        _safe_close(conn)
 
 
 # ═════════════════════════════════════════════════════════
@@ -153,6 +186,7 @@ def count_messages(
     since: datetime | None = None,
 ) -> int:
     """تعداد پیام‌ها (اختیاری: فقط یک پلتفرم، اختیاری: از یک زمان)."""
+    conn = None
     try:
         conn = connect_db()
         cur = conn.cursor()
@@ -166,14 +200,16 @@ def count_messages(
             params.append(since.strftime("%Y-%m-%d %H:%M:%S"))
         cur.execute(sql, params)
         row = cur.fetchone()
-        conn.close()
         return int(row[0]) if row else 0
     except Exception:
         return 0
+    finally:
+        _safe_close(conn)
 
 
 def count_leads(platform: str | None = None) -> int:
     """تعداد سرنخ‌ها (پیام‌های دارای کلیدواژه)."""
+    conn = None
     try:
         conn = connect_db()
         cur = conn.cursor()
@@ -187,10 +223,11 @@ def count_leads(platform: str | None = None) -> int:
             params.append(platform)
         cur.execute(sql, params)
         row = cur.fetchone()
-        conn.close()
         return int(row[0]) if row else 0
     except Exception:
         return 0
+    finally:
+        _safe_close(conn)
 
 
 # ═════════════════════════════════════════════════════════
@@ -201,19 +238,20 @@ def find_message_by_text(
     text_fragment: str,
 ) -> dict[str, Any] | None:
     """جستجوی یک پیام با fragment متن."""
+    conn = None
     try:
         conn = connect_db()
         cur = conn.cursor()
+        safe = _escape_like(text_fragment)
         cur.execute(
             "SELECT id, platform, chat_name, text, keywords, "
             "       opportunity_type, timestamp, media_type "
             "FROM messages "
-            "WHERE platform=? AND text LIKE ? "
+            "WHERE platform=? AND text LIKE ? ESCAPE '\\' "
             "ORDER BY timestamp DESC LIMIT 1",
-            (platform, f"%{text_fragment}%"),
+            (platform, f"%{safe}%"),
         )
         row = cur.fetchone()
-        conn.close()
         if not row:
             return None
         return {
@@ -228,6 +266,8 @@ def find_message_by_text(
         }
     except Exception:
         return None
+    finally:
+        _safe_close(conn)
 
 
 def find_by_ids(
@@ -238,6 +278,7 @@ def find_by_ids(
     if not ids:
         return {}
     result: dict[str, dict[str, Any]] = {}
+    conn = None
     try:
         conn = connect_db()
         cur = conn.cursor()
@@ -263,9 +304,10 @@ def find_by_ids(
                     "timestamp": row[6],
                     "media_type": row[7],
                 }
-        conn.close()
     except Exception:
         pass
+    finally:
+        _safe_close(conn)
     return result
 
 
@@ -274,16 +316,23 @@ def get_recent_messages(
     limit: int = 5,
 ) -> list[dict[str, Any]]:
     """آخرین پیام‌های یک پلتفرم."""
+    conn = None
     try:
+        # کلیپ limit
+        try:
+            limit_int = max(1, min(int(limit), 1000))
+        except (TypeError, ValueError):
+            limit_int = 5
+
         conn = connect_db()
         cur = conn.cursor()
         cur.execute(
             "SELECT id, chat_name, text, keywords, timestamp "
             "FROM messages WHERE platform=? "
             "ORDER BY timestamp DESC LIMIT ?",
-            (platform, limit),
+            (platform, limit_int),
         )
-        rows = [
+        return [
             {
                 "id": r[0],
                 "chat_name": r[1],
@@ -293,20 +342,22 @@ def get_recent_messages(
             }
             for r in cur.fetchall()
         ]
-        conn.close()
-        return rows
     except Exception:
         return []
+    finally:
+        _safe_close(conn)
 
 
 def get_platforms_stats() -> dict[str, dict[str, int]]:
     """آمار همهٔ پلتفرم‌ها: تعداد کل + تعداد سرنخ."""
+    conn = None
     try:
         conn = connect_db()
         cur = conn.cursor()
 
         cur.execute(
-            "SELECT platform, COUNT(*) FROM messages GROUP BY platform"
+            "SELECT platform, COUNT(*) FROM messages "
+            "GROUP BY platform"
         )
         total = {r[0]: r[1] for r in cur.fetchall()}
 
@@ -317,8 +368,6 @@ def get_platforms_stats() -> dict[str, dict[str, int]]:
         )
         leads = {r[0]: r[1] for r in cur.fetchall()}
 
-        conn.close()
-
         all_platforms = set(total) | set(leads)
         return {
             p: {"total": total.get(p, 0), "leads": leads.get(p, 0)}
@@ -326,6 +375,8 @@ def get_platforms_stats() -> dict[str, dict[str, int]]:
         }
     except Exception:
         return {}
+    finally:
+        _safe_close(conn)
 
 
 # ═════════════════════════════════════════════════════════

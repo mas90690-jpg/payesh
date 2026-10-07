@@ -1,8 +1,8 @@
 {
   "status_simple": {
-    "success": 35,
+    "success": 37,
     "fail": 0,
-    "last_used": "2026-09-29T14:44:18.379712"
+    "last_used": "2026-10-04T09:32:08.847126"
   },
   "today_count": {
     "success": 48,
@@ -10,9 +10,9 @@
     "last_used": "2026-09-29T14:43:10.646728"
   },
   "last_lead": {
-    "success": 59,
+    "success": 60,
     "fail": 0,
-    "last_used": "2026-09-28T16:12:41.646910"
+    "last_used": "2026-10-05T12:28:44.054152"
   },
   "error_count": {
     "success": 5,
@@ -25,9 +25,9 @@
     "last_used": "2026-09-19T11:09:00.829594"
   },
   "keyword_list": {
-    "success": 8,
+    "success": 9,
     "fail": 0,
-    "last_used": "2026-09-20T10:51:40.757616"
+    "last_used": "2026-10-05T12:29:54.576364"
   },
   "by_platform": {
     "success": 6,
@@ -85,19 +85,19 @@
     "last_used": "2026-09-19T12:33:38.102683"
   },
   "user_learned_1789808744": {
-    "success": 5,
-    "fail": 0,
-    "last_used": "2026-09-20T13:10:04.444891"
-  },
-  "user_learned_1789808719": {
-    "success": 19,
-    "fail": 0,
-    "last_used": "2026-09-29T12:19:59.418354"
-  },
-  "total_count": {
     "success": 6,
     "fail": 0,
-    "last_used": "2026-09-29T14:43:02.943415"
+    "last_used": "2026-10-06T16:14:12.595083"
+  },
+  "user_learned_1789808719": {
+    "success": 23,
+    "fail": 0,
+    "last_used": "2026-10-07T07:54:32.941293"
+  },
+  "total_count": {
+    "success": 8,
+    "fail": 0,
+    "last_used": "2026-10-05T12:29:41.208991"
   },
   "keyword_count": {
     "success": 2,
@@ -135,8 +135,8 @@
     "last_used": "2026-09-26T08:04:09.430379"
   },
   "hot_recent": {
-    "success": 2,
+    "success": 3,
     "fail": 0,
-    "last_used": "2026-09-26T12:25:23.010260"
+    "last_used": "2026-10-05T12:28:55.988958"
   }
 }

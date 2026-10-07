@@ -2,12 +2,13 @@
 """
 کلکتور لینکدین (LinkedIn) — کاربر عادی با Playwright + رفتار انسانی.
 
-استراتژی (نسخهٔ ۲):
+استراتژی (نسخهٔ ۴ — این نسخه):
   - نشست واقعی مرورگر (login.py → گزینهٔ ۶)
-  - فقط فید فالوورها (/feed/following/)
-  - توقف وقتی به پست غیرفالوور رسید
-  - روزی یک بار (نه ساعت مشخص — هر ساعتی که ربات روشن شد)
-  - جستجوی کلیدواژه به‌صورت پیش‌فرض خاموش (قابل روشن‌کردن)
+  - فید کلی (/feed/) با Sort روی "Most recent first"
+  - فقط پست فالوورها پردازش می‌شود (غیرفالوور skip)
+  - توقف فقط بعد از ۲۰ پست غیرفالوور پشت‌سرهم (عملاً هرگز)
+  - روزی یک بار (با force_run در تست غیرفعال می‌شود)
+  - لاگ دقیق لحظه‌به‌لحظه برای هر پست
 
 فایل‌های ورودی:
   - data/sources/linkedin_searches.txt
@@ -24,10 +25,11 @@ from urllib.parse import quote
 from analyzers.keyword_finder import get_keyword_finder
 from core.contracts.base_collector import BaseCollector, ConnectionStatus
 from core.kernel.logger import (
-    log_debug, log_error, log_info, log_success, log_warning,
+    log_error, log_info, log_success, log_warning,
 )
 
-# پیش‌فرض: فید فالوورها
+# 🎯 FIX: فید کلی (چون /feed/following/ خودکار redirect می‌شود
+#          به صفحهٔ لیست افراد که پست ندارد)
 LINKEDIN_FEED_URL = "https://www.linkedin.com/feed/"
 LINKEDIN_SEARCH_URL = (
     "https://www.linkedin.com/search/results/content/"
@@ -48,9 +50,9 @@ LOGGEDIN_MARKERS = [
 
 _MAX_SEEN = 100000
 
-# 🎯 FIX #11: توقف بعد از N پست غیرفالوور پشت سر هم
-# (لینکدین ترتیب فید را تضمین نمی‌کند — فالور/غیرفالوور قاطی هستند)
-_MAX_CONSECUTIVE_NON_FOLLOWERS = 3
+# 🎯 FIX: آستانهٔ بالا چون فید Recent قاطی فالوور/غیرفالوور است
+#          یعنی فقط بعد از ۲۰ پست غیرفالوور پشت‌سرهم توقف می‌کنیم
+_MAX_CONSECUTIVE_NON_FOLLOWERS = 20
 
 
 class LinkedInCollector(BaseCollector):
@@ -67,12 +69,12 @@ class LinkedInCollector(BaseCollector):
         monitor_feed: bool = True,
         max_feed_posts: int = 30,
         add_query_to_keywords: bool = True,
-        # 🆕 تنظیمات جدید (با پیش‌فرض امن)
         feed_url: str = None,
         following_only: bool = True,
         stop_on_non_follower: bool = True,
         once_per_day: bool = True,
         search_enabled: bool = False,
+        force_run: bool = False,
         **kwargs,
     ):
         super().__init__()
@@ -87,15 +89,13 @@ class LinkedInCollector(BaseCollector):
         self._max_feed_posts = int(max_feed_posts)
         self._add_query_to_keywords = bool(add_query_to_keywords)
 
-        # 🆕 تنظیمات جدید
-        self._feed_url = (
-            feed_url
-            or "https://www.linkedin.com/feed/"
-        )
+        # 🎯 استفاده از LINKEDIN_FEED_URL (که = /feed/)
+        self._feed_url = feed_url or LINKEDIN_FEED_URL
         self._following_only = bool(following_only)
         self._stop_on_non_follower = bool(stop_on_non_follower)
         self._once_per_day = bool(once_per_day)
         self._search_enabled = bool(search_enabled)
+        self._force_run = bool(force_run)
 
         self._pw = None
         self._context = None
@@ -105,7 +105,7 @@ class LinkedInCollector(BaseCollector):
         self._seen_ids = set()
         self._kw = get_keyword_finder()
 
-        # 🎯 قفل سراسری connect — جلوگیری از race
+        # 🎯 قفل سراسری connect
         if not hasattr(LinkedInCollector, "_connect_lock"):
             LinkedInCollector._connect_lock = asyncio.Lock()
 
@@ -133,7 +133,6 @@ class LinkedInCollector(BaseCollector):
         )
         self._load_seen()
 
-        # 🆕 فایل last_run برای «روزی یک بار»
         self._last_run_path = os.path.join(
             STORAGE_DIR, "offset", "linkedin_last_run.json"
         )
@@ -170,11 +169,9 @@ class LinkedInCollector(BaseCollector):
         min_s: float = 0.5,
         max_s: float = 2.5,
     ):
-        """تأخیر تصادفی مثل کاربر."""
         await asyncio.sleep(random.uniform(min_s, max_s))
 
     async def _human_scroll(self, amount: int = 800):
-        """اسکرول انسانی — چند قدم کوچک."""
         sign = 1 if amount > 0 else -1
         remaining = abs(amount)
         while remaining > 0:
@@ -185,18 +182,13 @@ class LinkedInCollector(BaseCollector):
             await self._human_delay(0.15, 0.45)
 
     async def _human_click(self, element) -> bool:
-        """کلیک انسانی با حرکت mouse."""
         try:
             box = await element.bounding_box()
             if not box:
                 await element.click()
                 return True
-            x = box["x"] + box["width"] * random.uniform(
-                0.35, 0.65
-            )
-            y = box["y"] + box["height"] * random.uniform(
-                0.35, 0.65
-            )
+            x = box["x"] + box["width"] * random.uniform(0.35, 0.65)
+            y = box["y"] + box["height"] * random.uniform(0.35, 0.65)
             steps = random.randint(8, 20)
             await self._page.mouse.move(x, y, steps=steps)
             await self._human_delay(0.1, 0.3)
@@ -238,30 +230,22 @@ class LinkedInCollector(BaseCollector):
             log_warning(f"ذخیرهٔ ضدتکراری ناموفق: {e}")
 
     # ═══════════════════════════════════════════════════
-    # last_run (روزی یک بار)
+    # last_run
     # ═══════════════════════════════════════════════════
     def _load_last_run(self):
-        """تاریخ آخرین اجرا رو از دیسک می‌خونه."""
         self._last_run_date = ""
         try:
             if os.path.exists(self._last_run_path):
-                with open(
-                    self._last_run_path, encoding="utf-8"
-                ) as f:
+                with open(self._last_run_path, encoding="utf-8") as f:
                     d = json.load(f)
-                self._last_run_date = (
-                    d.get("last_date", "") or ""
-                )
+                self._last_run_date = d.get("last_date", "") or ""
         except Exception:
             self._last_run_date = ""
 
     def _save_last_run(self):
-        """تاریخ امروز رو ذخیره می‌کنه."""
         try:
             today = datetime.now().strftime("%Y-%m-%d")
-            with open(
-                self._last_run_path, "w", encoding="utf-8"
-            ) as f:
+            with open(self._last_run_path, "w", encoding="utf-8") as f:
                 json.dump(
                     {"last_date": today},
                     f, ensure_ascii=False, indent=2,
@@ -271,7 +255,6 @@ class LinkedInCollector(BaseCollector):
             log_warning(f"ذخیرهٔ last_run ناموفق: {e}")
 
     def _already_ran_today(self) -> bool:
-        """آیا امروز قبلاً اجرا شده؟"""
         today = datetime.now().strftime("%Y-%m-%d")
         return self._last_run_date == today
 
@@ -297,26 +280,17 @@ class LinkedInCollector(BaseCollector):
     async def _connect_locked(
         self, headless: bool | None = None
     ) -> bool:
-        # 🎯 idempotent: اگر از قبل وصل، رد کن
         if self._connected and self._context:
-            log_info(
-                "ℹ️ [linkedin:connect] از قبل متصل — رد"
-            )
+            log_info("ℹ️ [linkedin:connect] از قبل متصل — رد")
             return True
 
         async with LinkedInCollector._connect_lock:
-            # چک دوباره داخل قفل
             if self._connected and self._context:
-                log_info(
-                    "ℹ️ [linkedin:connect] توی قفل — از قبل متصل"
-                )
+                log_info("ℹ️ [linkedin:connect] توی قفل — از قبل متصل")
                 return True
 
-            # اگر context قدیمی مرده، پاکش کن
             if self._context:
-                log_warning(
-                    "⚠️ [linkedin:connect] context قدیمی باز — بستن"
-                )
+                log_warning("⚠️ [linkedin:connect] context قدیمی باز — بستن")
                 try:
                     await self._context.close()
                 except Exception:
@@ -326,22 +300,16 @@ class LinkedInCollector(BaseCollector):
 
             try:
                 try:
-                    from playwright.async_api import (
-                        async_playwright,
-                    )
+                    from playwright.async_api import async_playwright
                 except ImportError:
                     log_error("playwright نصب نیست")
                     return False
 
                 use_headless = (
-                    self.headless
-                    if headless is None
-                    else headless
+                    self.headless if headless is None else headless
                 )
                 self._pw = await async_playwright().start()
-                self._context = await self._launch_context(
-                    use_headless
-                )
+                self._context = await self._launch_context(use_headless)
                 self._page = (
                     self._context.pages[0]
                     if self._context.pages
@@ -385,7 +353,7 @@ class LinkedInCollector(BaseCollector):
                 self._set_error(str(e))
                 await self.disconnect()
                 return False
-                
+
     async def _auto_login(self) -> bool:
         try:
             await self._page.goto(
@@ -393,17 +361,11 @@ class LinkedInCollector(BaseCollector):
                 wait_until="domcontentloaded",
             )
             await asyncio.sleep(2)
-            if not await self._page.query_selector(
-                "input#username"
-            ):
+            if not await self._page.query_selector("input#username"):
                 log_warning("صفحهٔ ورود پیدا نشد")
                 return False
-            await self._page.fill(
-                "input#username", self.email
-            )
-            await self._page.fill(
-                "input#password", self.password
-            )
+            await self._page.fill("input#username", self.email)
+            await self._page.fill("input#password", self.password)
             await asyncio.sleep(0.5)
             try:
                 await self._page.click('button[type="submit"]')
@@ -413,9 +375,7 @@ class LinkedInCollector(BaseCollector):
                 await asyncio.sleep(2)
                 if await self._is_logged_in():
                     self._connected = True
-                    self._set_status(
-                        ConnectionStatus.CONNECTED
-                    )
+                    self._set_status(ConnectionStatus.CONNECTED)
                     log_success("✅ ورود خودکار موفق")
                     return True
                 if "/checkpoint" in (self._page.url or ""):
@@ -438,9 +398,7 @@ class LinkedInCollector(BaseCollector):
 
     async def _export_state(self):
         try:
-            await self._context.storage_state(
-                path=self._state_path
-            )
+            await self._context.storage_state(path=self._state_path)
         except Exception as e:
             log_warning(f"ذخیرهٔ نشست ناموفق: {e}")
 
@@ -448,9 +406,7 @@ class LinkedInCollector(BaseCollector):
         try:
             if not os.path.exists(self._state_path):
                 return False
-            with open(
-                self._state_path, encoding="utf-8"
-            ) as f:
+            with open(self._state_path, encoding="utf-8") as f:
                 state = json.load(f)
             cookies = state.get("cookies") or []
             if cookies:
@@ -497,16 +453,12 @@ class LinkedInCollector(BaseCollector):
                 ctx = await self._pw.chromium.launch_persistent_context(
                     **kwargs
                 )
-                log_info(
-                    f"مرورگر با {channel or 'chromium'}"
-                )
+                log_info(f"مرورگر با {channel or 'chromium'}")
                 return ctx
             except Exception as e:
                 last_err = e
                 continue
-        raise RuntimeError(
-            f"هیچ مرورگری باز نشد: {last_err}"
-        )
+        raise RuntimeError(f"هیچ مرورگری باز نشد: {last_err}")
 
     async def _is_logged_in(self) -> bool:
         try:
@@ -533,19 +485,12 @@ class LinkedInCollector(BaseCollector):
         except Exception:
             return False
 
-    # ═══════════════════════════════════════════════════
-    # check session
-    # ═══════════════════════════════════════════════════
     async def _check_session_alive(self) -> bool:
         try:
             url = (self._page.url or "").lower()
             if any(
                 p in url
-                for p in (
-                    "/login",
-                    "/authwall",
-                    "/checkpoint",
-                )
+                for p in ("/login", "/authwall", "/checkpoint")
             ):
                 self._connected = False
                 self._set_status(ConnectionStatus.ERROR)
@@ -567,22 +512,23 @@ class LinkedInCollector(BaseCollector):
         if not self._connected or not self._page:
             return []
 
-        # 🎯 روزی یک بار — هر ساعتی که ربات روشن شد
-        if self._once_per_day and self._already_ran_today():
+        if (
+            self._once_per_day
+            and not self._force_run
+            and self._already_ran_today()
+        ):
             log_info(
                 "⏭️ [linkedin] امروز قبلاً چک شده — "
-                "رد تا فردا"
+                "رد تا فردا (force_run=False)"
             )
             return []
 
-        # فید فالوورها
         if self._monitor_feed:
             try:
                 await self._scrape_feed()
             except Exception as e:
                 log_warning(f"خطا در فید: {e}")
 
-        # جستجوها — فقط اگه روشن باشه
         if self._search_enabled:
             searches = self._load_searches()
             for q in searches:
@@ -603,21 +549,17 @@ class LinkedInCollector(BaseCollector):
         self._save_seen()
         await self._export_state()
 
-        # ✅ بعد از موفقیت، تاریخ امروز ثبت می‌شه
-        if self._once_per_day:
+        if self._once_per_day and not self._force_run:
             self._save_last_run()
 
         if new_msgs:
-            log_success(
-                f"📥 {len(new_msgs)} پست از لینکدین"
-            )
+            log_success(f"📥 {len(new_msgs)} پست از لینکدین")
         return new_msgs
 
     # ═══════════════════════════════════════════════════
     # scrape فید
     # ═══════════════════════════════════════════════════
     async def _scrape_feed(self):
-        """فید فالوورها با کلیک روی 'Recent' + scroll انسانی."""
         page = self._page
 
         log_info(
@@ -633,19 +575,29 @@ class LinkedInCollector(BaseCollector):
             log_warning(f"خطا در باز کردن feed: {e}")
             return
 
-        await self._human_delay(4, 7)
+        await self._human_delay(5, 8)
 
         if not await self._check_session_alive():
             return
 
+        # 🎯 اول Recent را بزن تا فید روی جدیدترین پست‌ها برود
         log_info("🔍 پیدا کردن دکمهٔ 'Recent'...")
         clicked = await self._click_sort_recent()
 
         if clicked:
             log_success("✅ Sort → Recent")
-            await self._human_delay(3, 5)
+            await self._human_delay(5, 8)
+            try:
+                await self._page.wait_for_selector(
+                    "div[role='listitem']", timeout=20000
+                )
+                log_info("   ✅ پست‌ها لود شدند")
+            except Exception:
+                log_warning("   ⚠️ پست‌ها لود نشدند")
         else:
-            log_info("ℹ️ دکمهٔ Recent نبود")
+            log_warning(
+                "⚠️ دکمهٔ Recent پیدا نشد — ادامه بدون sort"
+            )
 
         log_info("🖱️ scroll آهسته...")
         total = self._scrolls + 3
@@ -658,9 +610,7 @@ class LinkedInCollector(BaseCollector):
                 )
             except Exception:
                 pass
-            await self._human_scroll(
-                random.randint(800, 1400)
-            )
+            await self._human_scroll(random.randint(800, 1400))
             await self._human_delay(2, 4)
             if (i + 1) % 2 == 0:
                 log_info(f"   ↕️ {i+1}/{total}")
@@ -673,8 +623,20 @@ class LinkedInCollector(BaseCollector):
             return
 
         log_info(f"📄 {len(posts)} پست پیدا شد")
+        # 🎯 اگر max_feed_posts <= 0 بود، همه پست‌ها بررسی شوند
+        if self._max_feed_posts <= 0:
+            selected = posts
+            log_info(
+                f"   🔬 حالت بدون محدودیت — همه {len(posts)} پست"
+            )
+        else:
+            selected = posts[: self._max_feed_posts]
+            log_info(
+                f"   🔬 حالت محدود — {len(selected)} پست از "
+                f"{len(posts)}"
+            )
         count = await self._harvest_posts(
-            posts[: self._max_feed_posts],
+            selected,
             source="فید",
             human=True,
         )
@@ -699,9 +661,7 @@ class LinkedInCollector(BaseCollector):
             return
 
         for _ in range(self._scrolls):
-            await self._human_scroll(
-                random.randint(900, 1400)
-            )
+            await self._human_scroll(random.randint(900, 1400))
             await self._human_delay(2, 4)
 
         await asyncio.sleep(3)
@@ -723,114 +683,112 @@ class LinkedInCollector(BaseCollector):
     # کلیک Recent
     # ═══════════════════════════════════════════════════
     async def _click_sort_recent(self) -> bool:
-        """دکمهٔ 'Sort by: Recent' رو پیدا و کلیک می‌کنه."""
+        """دکمهٔ 'Most recent first' رو با JavaScript پیدا و کلیک می‌کنه."""
         await asyncio.sleep(2)
 
-        # ═══════════════════════════════════════════
-        # ۱) چک کن از قبل روی Recent هستیم؟
-        # ═══════════════════════════════════════════
+        # ─── ۱) چک کن از قبل Recent هستیم؟ ───
         try:
-            current_text = await self._page.evaluate(
-                """
+            current = await self._page.evaluate("""
                 () => {
                     const all = document.querySelectorAll(
-                        'strong, p, span'
+                        'p, span, strong, button'
                     );
                     for (const el of all) {
                         const t = (el.innerText || '').trim();
+                        const lower = t.toLowerCase();
                         if (
-                            t.toLowerCase().startsWith('sort by')
+                            lower.startsWith('select feed view') ||
+                            lower.startsWith('sort by')
                         ) {
                             return t;
                         }
                     }
                     return '';
                 }
-                """
-            )
-            if current_text and "recent" in current_text.lower():
-                log_info(
-                    f"✅ LinkedIn از قبل Recent | {current_text}"
-                )
-                return True
-            elif current_text:
-                log_info(f"   current: {current_text}")
+            """)
+            if current:
+                log_info(f"   current sort: {current}")
+                if "recent" in current.lower():
+                    log_success(
+                        f"✅ LinkedIn از قبل Recent | {current}"
+                    )
+                    return True
         except Exception as e:
             log_warning(f"   chk current: {e}")
 
-        # ═══════════════════════════════════════════
-        # ۲) کلیک روی dropdown (Sort by: ...)
-        # ═══════════════════════════════════════════
-        dropdown_selectors = [
-            "strong:has-text('Sort by')",
-            "strong:has-text('Sort by:')",
-            "p:has-text('Sort by')",
-            "span:has-text('Sort by')",
-        ]
+        # ─── ۲) باز کردن dropdown ───
+        log_info("   🔽 باز کردن dropdown...")
+        try:
+            opened = await self._page.evaluate("""
+                () => {
+                    const all = document.querySelectorAll(
+                        'p, span, strong, button'
+                    );
+                    for (const el of all) {
+                        const t = (el.innerText || '').trim();
+                        const lower = t.toLowerCase();
+                        if (
+                            lower.startsWith('select feed view') ||
+                            lower.startsWith('sort by')
+                        ) {
+                            const rect = el.getBoundingClientRect();
+                            if (rect.width > 0 && rect.height > 0) {
+                                el.click();
+                                return true;
+                            }
+                        }
+                    }
+                    return false;
+                }
+            """)
+            if opened:
+                log_success("   ✅ dropdown باز شد")
+            else:
+                log_warning("   ⚠️ dropdown پیدا نشد")
+                return False
+        except Exception as e:
+            log_warning(f"   ⚠️ خطا در باز کردن dropdown: {e}")
+            return False
 
-        clicked_dd = False
-        for sel in dropdown_selectors:
-            try:
-                els = await self._page.query_selector_all(sel)
-                for el in els:
-                    try:
-                        if not await el.is_visible():
-                            continue
-                        text = (
-                            await el.inner_text() or ""
-                        ).strip()
-                        if "sort" not in text.lower():
-                            continue
-                        log_info(f"   🔽 dropdown: {sel}")
-                        if await self._human_click(el):
-                            clicked_dd = True
-                            await self._human_delay(0.8, 1.5)
-                            break
-                    except Exception:
-                        continue
-                if clicked_dd:
-                    break
-            except Exception:
-                continue
+        await self._human_delay(1.0, 1.5)
 
-        if not clicked_dd:
-            log_info("   ℹ️ dropdown پیدا نشد")
+        # ─── ۳) کلیک روی "Most recent first" ───
+        log_info("   🎯 کلیک روی 'Most recent first'...")
+        try:
+            clicked = await self._page.evaluate("""
+                () => {
+                    const targets = [
+                        'most recent first',
+                        'most recent',
+                    ];
+                    const all = document.querySelectorAll(
+                        'p, span, div[role="option"], ' +
+                        'div[role="menuitem"], button, li'
+                    );
+                    for (const el of all) {
+                        const t = (el.innerText || '')
+                            .trim()
+                            .toLowerCase();
+                        if (targets.includes(t)) {
+                            const rect = el.getBoundingClientRect();
+                            if (rect.width > 0 && rect.height > 0) {
+                                el.click();
+                                return 'clicked:' + el.tagName;
+                            }
+                        }
+                    }
+                    return 'not_found';
+                }
+            """)
+            log_info(f"   result: {clicked}")
+            if clicked and clicked.startswith("clicked"):
+                log_success("✅ Sort → Most recent first")
+                await self._human_delay(2, 3)
+                return True
+        except Exception as e:
+            log_warning(f"   ⚠️ خطا در کلیک Recent: {e}")
 
-        # ═══════════════════════════════════════════
-        # ۳) کلیک روی گزینهٔ "Recent" تو dropdown
-        # ═══════════════════════════════════════════
-        recent_selectors = [
-            "div[role='option']:has-text('Recent')",
-            "li:has-text('Recent')",
-            "[role='menuitem']:has-text('Recent')",
-            "button:has-text('Recent')",
-            "span:has-text('Recent')",
-            "strong span:has-text('Recent')",
-        ]
-
-        for sel in recent_selectors:
-            try:
-                els = await self._page.query_selector_all(sel)
-                for el in els:
-                    try:
-                        if not await el.is_visible():
-                            continue
-                        text = (
-                            await el.inner_text() or ""
-                        ).strip().lower()
-                        if text == "recent":
-                            log_info(
-                                f"   ✅ Recent: {sel}"
-                            )
-                            if await self._human_click(el):
-                                await self._human_delay(1.5, 3)
-                                return True
-                    except Exception:
-                        continue
-            except Exception:
-                continue
-
-        log_warning("⚠️ Recent پیدا نشد")
+        log_warning("⚠️ 'Most recent first' پیدا نشد")
         return False
 
     # ═══════════════════════════════════════════════════
@@ -843,13 +801,10 @@ class LinkedInCollector(BaseCollector):
                 "main ul li",
             ):
                 try:
-                    posts = (
-                        await self._page.query_selector_all(sel)
-                    )
+                    posts = await self._page.query_selector_all(sel)
                     if posts:
                         log_info(
-                            f"لینکدین: {len(posts)} پست "
-                            f"با `{sel}`"
+                            f"لینکدین: {len(posts)} پست با `{sel}`"
                         )
                         return posts
                 except Exception:
@@ -864,48 +819,35 @@ class LinkedInCollector(BaseCollector):
         """
         آیا این پست از کسی هست که دنبالش می‌کنیم؟
 
-        True  = فالوور (دکمهٔ Following داره)
-        False = غیرفالوور (دکمهٔ Follow داره)
-        None  = نامعلوم (تشخیص نشد → ادامه بده)
+        True  = فالوور (کلمهٔ «Following» در هدر پست)
+        False = غیرفالوور (کلمهٔ «Follow» در هدر پست)
+        None  = نامعلوم
+
+        روش: از ۳۰۰ کاراکتر اول متن پست استفاده می‌کند
+        (هدر نویسنده همیشه در ابتدای پست است).
         """
         try:
-            result = await post.evaluate("""
-            (el) => {
-                const header = el.querySelector(
-                    '.feed-shared-header, ' +
-                    '.update-components-actor, ' +
-                    'header, .feed-shared-actor'
-                ) || el;
-                const buttons = header.querySelectorAll(
-                    'button, [role="button"], span'
-                );
-                let hasFollow = false;
-                let hasFollowing = false;
-                for (const b of buttons) {
-                    const t = (b.innerText || '').trim();
-                    if (
-                        t === 'Following' ||
-                        t === 'following'
-                    ) {
-                        hasFollowing = true;
-                    }
-                    if (t === 'Follow' || t === 'follow') {
-                        hasFollow = true;
-                    }
-                }
-                if (hasFollowing) return 'following';
-                if (hasFollow) return 'follow';
-                return 'unknown';
-            }
+            # 🎯 FIX: فقط ابتدای پست (هدر نویسنده)
+            header_text = await post.evaluate("""
+                (el) => (el.innerText || '').slice(0, 300)
             """)
-            if result == "following":
+            if not header_text:
+                return None
+
+            # 🎯 FIX: جستجوی word-boundary
+            # `\bfollowing\b` فقط کلمهٔ «Following» را می‌گیرد
+            # و نه «Following this page» را در متن
+            import re
+            lower = header_text.lower()
+
+            if re.search(r"\bfollowing\b", lower):
                 return True
-            if result == "follow":
+            if re.search(r"\bfollow\b", lower):
                 return False
             return None
         except Exception:
             return None
-
+            
     # ═══════════════════════════════════════════════════
     # harvest
     # ═══════════════════════════════════════════════════
@@ -917,10 +859,16 @@ class LinkedInCollector(BaseCollector):
         human: bool = False,
     ) -> int:
         count = 0
-        # 🎯 FIX #11: شمارندهٔ ناپیوستگی
         consecutive_non_followers = 0
-        for post in posts:
+        total_posts = len(posts)
+        log_info(
+            f"🔬 [linkedin:harvest] شروع پردازش {total_posts} پست..."
+        )
+
+        for idx, post in enumerate(posts, start=1):
             try:
+                log_info(f"   ▶️ [{idx}/{total_posts}] بررسی پست...")
+
                 if human:
                     try:
                         await post.scroll_into_view_if_needed()
@@ -928,121 +876,186 @@ class LinkedInCollector(BaseCollector):
                     except Exception:
                         pass
 
-                # 🎯 FIX #11: چک فالوور — توقف فقط بعد از N تای پشت‌سرهم
+                # 🎯 چک فالوور (فقط skip، توقف بعد از ۲۰ تای پشت‌سرهم)
                 if self._following_only and source == "فید":
-                    is_follower = await self._is_follower_post(
-                        post
-                    )
+                    is_follower = await self._is_follower_post(post)
                     if is_follower is False:
                         consecutive_non_followers += 1
-                        log_debug(
-                            f"⏭️ [linkedin] پست غیرفالوور "
-                            f"#{consecutive_non_followers}"
+                        log_info(
+                            f"       ⏭️ غیرفالوور "
+                            f"(#{consecutive_non_followers})"
                         )
                         if (
                             self._stop_on_non_follower
                             and consecutive_non_followers
                             >= _MAX_CONSECUTIVE_NON_FOLLOWERS
                         ):
-                            log_info(
+                            log_success(
                                 f"⏹️ [linkedin] "
-                                f"{consecutive_non_followers} "
-                                f"پست غیرفالوور پشت‌سرهم — توقف"
+                                f"{consecutive_non_followers} پست "
+                                f"غیرفالوور پشت‌سرهم — توقف"
                             )
                             break
-                        # 🎯 غیرفالوور منفرد → ادامه بده (skip)
                         continue
                     elif is_follower is True:
-                        # 🎯 فالوور → شمارنده صفر شود
                         consecutive_non_followers = 0
-                        
-                # ⭐ اول متن پیش‌نمایش
+                        log_info(f"       ✅ فالوور — ادامه")
+                    else:
+                        log_info(f"       ❓ فالوور نامشخص — ادامه")
+
+                # ⭐ استخراج author قبل از more/ترجمه
+                author = ""
+                try:
+                    a = await post.query_selector("a[href*='/in/']")
+                    if a:
+                        author = (await a.inner_text() or "").strip()[:100]
+                except Exception:
+                    pass
+
+                # ⭐ متن پیش‌نمایش
                 preview = (await post.inner_text() or "").strip()
                 if not preview or len(preview) < 20:
+                    log_info(f"       ⏭️ متن خیلی کوتاه — رد")
                     continue
 
-                # ⭐ اگه پیش‌نمایش کوتاه بود، more بزن
-                has_more = (
-                    "…" in preview
-                    or "..." in preview
-                    or "more" in preview.lower()
+                # 🎯 فیلتر پست‌های UI (نه پست واقعی)
+                ui_markers = (
+                    "start a post",
+                    "select feed view",
+                    "write article",
+                    "sort by",
                 )
+                preview_lower = preview.lower()
+                if any(m in preview_lower for m in ui_markers):
+                    log_info(f"       ⏭️ UI element — رد")
+                    continue
 
-                if has_more or len(preview) < 500:
-                    try:
-                        clicked = await post.evaluate("""
-                        (el) => {
-                            const all = el.querySelectorAll(
-                                'button, span, a, [role="button"]'
-                            );
-                            for (const x of all) {
-                                const t = (x.innerText || '').trim();
-                                if (
-                                    t === '…more' ||
-                                    t === '… more' ||
-                                    t === '...more' ||
-                                    t === '... more' ||
-                                    t === 'more' ||
-                                    t.toLowerCase() === 'see more'
-                                ) {
+                log_info(f"       📝 preview: {preview[:60]}...")
+
+                # ═══════════════════════════════════════
+                # ۱) کلیک "…more"
+                # ═══════════════════════════════════════
+                more_clicked = False
+                try:
+                    more_clicked = await post.evaluate("""
+                    (el) => {
+                        const all = el.querySelectorAll(
+                            'button, span, a, [role="button"]'
+                        );
+                        for (const x of all) {
+                            const t = (x.innerText || '').trim();
+                            const lower = t.toLowerCase();
+                            if (
+                                lower === '…more' ||
+                                lower === '… more' ||
+                                lower === '...more' ||
+                                lower === '... more' ||
+                                lower === 'more' ||
+                                lower === 'see more' ||
+                                lower === 'show more'
+                            ) {
+                                const rect = x.getBoundingClientRect();
+                                if (rect.width > 0 && rect.height > 0) {
                                     x.click();
                                     return true;
                                 }
                             }
-                            return false;
                         }
-                        """)
-                        if clicked:
-                            await asyncio.sleep(0.2)
-                    except Exception:
-                        pass
+                        return false;
+                    }
+                    """)
+                    if more_clicked:
+                        await asyncio.sleep(0.8)
+                except Exception:
+                    pass
 
-                    text = (await post.inner_text() or "").strip()
-                    if not text or len(text) < 20:
-                        text = preview
-                else:
+                # ═══════════════════════════════════════
+                # ۲) کلیک "Show translation"
+                # ═══════════════════════════════════════
+                tr_clicked = False
+                try:
+                    tr_clicked = await post.evaluate("""
+                    (el) => {
+                        const all = el.querySelectorAll(
+                            'button, a, span, [role="button"]'
+                        );
+                        for (const x of all) {
+                            const t = (x.innerText || '').trim();
+                            const lower = t.toLowerCase();
+                            if (
+                                lower === 'show translation' ||
+                                lower === 'see translation' ||
+                                lower === 'show original' ||
+                                lower.includes('show translation') ||
+                                lower.includes('see translation')
+                            ) {
+                                const rect = x.getBoundingClientRect();
+                                if (rect.width > 0 && rect.height > 0) {
+                                    x.click();
+                                    return true;
+                                }
+                            }
+                        }
+                        return false;
+                    }
+                    """)
+                    if tr_clicked:
+                        await asyncio.sleep(2.0)
+                except Exception:
+                    pass
+
+                # ═══════════════════════════════════════
+                # ۳) متن نهایی
+                # ═══════════════════════════════════════
+                text = (await post.inner_text() or "").strip()
+                if not text or len(text) < 20:
                     text = preview
 
+                more_status = (
+                    "✅ more" if more_clicked else "⏭️ no-more"
+                )
+                tr_status = (
+                    "✅ ترجمه" if tr_clicked else "⏭️ no-tr"
+                )
+                log_info(
+                    f"       {more_status} | {tr_status} | "
+                    f"len={len(text)}"
+                )
+
+                # ═══════════════════════════════════════
+                # ۴) کلیدواژه
+                # ═══════════════════════════════════════
                 matched = self._match_post(text, query)
                 if not matched:
+                    log_info(f"       ⏭️ بدون کلیدواژه")
                     continue
+                log_info(
+                    f"       🎯 کلیدواژه: "
+                    f"{', '.join(sorted(matched))}"
+                )
 
+                # ═══════════════════════════════════════
+                # ۵) ضدتکراری
+                # ═══════════════════════════════════════
                 urn = (
                     await post.get_attribute("data-urn")
                     or await post.get_attribute("data-id")
                 )
-                mid = urn or hashlib.md5(
+                mid = urn or hashlib.sha256(
                     text.encode("utf-8")
                 ).hexdigest()[:16]
                 if mid in self._seen_ids:
-                    log_debug(f"⏭️ [seen] تکراری | linkedin | {mid}")
+                    log_info(f"       ⏭️ تکراری (seen) | {mid[:20]}")
                     continue
                 self._seen_ids.add(mid)
-
-                author = ""
-                try:
-                    a = await post.query_selector(
-                        "a[href*='/in/']"
-                    )
-                    if a:
-                        author = (
-                            await a.inner_text() or ""
-                        ).strip()[:100]
-                except Exception:
-                    pass
 
                 permalink = await self._extract_link(post)
 
                 media_type, local_path = "text", None
                 try:
-                    from core.adapters.web_media import (
-                        download_dom_image,
-                    )
+                    from core.adapters.web_media import download_dom_image
                     mt, lp = await download_dom_image(
-                        self._page,
-                        post,
-                        self._media_dir,
-                        "linkedin",
+                        self._page, post, self._media_dir, "linkedin"
                     )
                     if mt:
                         media_type, local_path = mt, lp
@@ -1068,12 +1081,24 @@ class LinkedInCollector(BaseCollector):
                     "reply_to": None,
                 })
                 count += 1
+                log_success(
+                    f"       ✅ ذخیره شد | "
+                    f"author={author or '?'} | "
+                    f"kw={','.join(sorted(matched))}"
+                )
 
                 if human:
                     await self._human_delay(0.3, 1.0)
+
             except Exception as e:
-                log_warning(f"خطا در یک پست: {e}")
+                log_warning(f"       ❌ خطا در پست [{idx}]: {e}")
                 continue
+
+        log_info(
+            f"🔬 [linkedin:harvest] پایان | "
+            f"کل={total_posts} | ذخیره={count} | "
+            f"skip={total_posts - count}"
+        )
         return count
 
     # ═══════════════════════════════════════════════════

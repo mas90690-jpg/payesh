@@ -12,19 +12,16 @@ main.py — نقطهٔ ورود ربات پایش سرنخ.
   ۸) cleanup کامل
   ۹) چاپ گزارش نهایی
 
-نسخهٔ ۶ (این نسخه):
-  - 🐛 FIX: shutdown_cleanup حالا on_stop برای handlerها صدا می‌زند
-    (قبلاً storage_handler.on_stop اجرا نمی‌شد → taskهای هشدار
-    pending باقی می‌ماندند).
-  - 🐛 FIX: handlers فقط یک‌بار discover می‌شوند و در main() ذخیره
-    می‌شوند (نه در auto_subscribe دوباره).
-  - 🎯 لاگ دقیق‌تر برای handler stop.
-  - ✅ حفظ همهٔ FIXهای نسخهٔ ۵.
+نسخهٔ ۷ (این نسخه):
+  - 🐛 FIX مهم: `safe_brain` حالا با `api_key` از `config.AI` ساخته
+    می‌شود. این تضمین می‌کند که SafeBrain singleton با کلید کامل
+    DeepSeek ساخته شود، نه بعداً که admin_handler صدا می‌زند.
+  - 🐛 FIX: `_signal_handler` حالا idempotent است (دوبار اجرا نمی‌شود).
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۶.
 """
 from __future__ import annotations
 import sys, os
 if sys.platform == "win32":
-    os.system("chcp 65001 > nul 2>&1")
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -49,7 +46,7 @@ _BOOT_BANNER_WIDTH = 60
 _OBS_CLEANUP_TIMEOUT_S = 10.0
 _ORCH_CLEANUP_TIMEOUT_S = 10.0
 _HANDLER_STOP_TIMEOUT_S = 5.0
-# _MAX_REPORT_* حذف شد — پایشگر فقط‌خواندنی
+
 
 # ═══════════════════════════════════════════
 # venv check
@@ -61,16 +58,11 @@ def _is_venv() -> bool:
             os.environ.get("VIRTUAL_ENV") is not None
         )
     except Exception:
-        return True  # امن: فرض کن venv هست
+        return True
 
 
 def _should_skip_venv_check() -> bool:
-    """
-    آیا بررسی venv نادیده گرفته شود؟
-
-    🐛 FIX: حالا config.MAIN_CONFIG را چک می‌کند (hot-reload).
-    (با fallback به os.environ برای امنیت بیشتر.)
-    """
+    """آیا بررسی venv نادیده گرفته شود؟ (hot-reload از config)"""
     # ─── اول از config (hot-reload) ───
     try:
         from config import MAIN_CONFIG
@@ -89,7 +81,6 @@ def _enforce_venv() -> None:
     if _is_venv():
         return
 
-    # 🐛 FIX: از config می‌خوانیم (نه os.environ)
     if _should_skip_venv_check():
         print(
             "⚠️ [MAIN:venv] اجرا بدون venv "
@@ -98,7 +89,6 @@ def _enforce_venv() -> None:
         )
         return
 
-    # پیام cross-platform
     is_win = platform.system().lower() == "windows"
     activate_cmd = (
         "venv\\Scripts\\activate"
@@ -159,11 +149,10 @@ from core.kernel.logger import log_error, log_info, log_success, log_warning
 from core.ops.health_check import HealthChecker
 from core.ops.monitor import PerformanceMonitor, SystemMonitor
 
+
 # ═══════════════════════════════════════════
 # shutdown state
 # ═══════════════════════════════════════════
-# NOTE: shutdown_event در main() ساخته می‌شود (نه در import)
-# تا با loop فعلی هم‌خوان باشد.
 _shutdown_event: asyncio.Event | None = None
 _shutdown_triggered = False
 _kbd_interrupt_count = 0
@@ -209,7 +198,6 @@ def _signal_handler(signum=None, frame=None) -> None:
 
     _safe_log_warning(f"⚠️ [MAIN:signal] {sig_name} — شروع shutdown")
 
-    # 🐛 FIX: مطمئن شو event موجود است (حتی قبل از logger init)
     try:
         ev = _get_shutdown_event()
         ev.set()
@@ -220,11 +208,7 @@ def _signal_handler(signum=None, frame=None) -> None:
 
 
 def _safe_log_warning(msg: str) -> None:
-    """
-    🐛 FIX: لاگ warning با fallback به stderr.
-
-    اگر لاگر هنوز init نشده باشد (early init)، به stderr می‌نویسد.
-    """
+    """لاگ warning با fallback به stderr."""
     try:
         log_warning(msg)
     except Exception:
@@ -245,17 +229,23 @@ def _safe_log_error(msg: str) -> None:
             pass
 
 
+def _extract_sys_value(
+    system_dict: dict, key: str, default: float = 0.0
+) -> float:
+    """مقدار عددی رو از system_dict استخراج می‌کنه."""
+    m = system_dict.get(key)
+    if m and hasattr(m, "value"):
+        return float(m.value or 0)
+    if isinstance(m, dict) and "value" in m:
+        return float(m["value"] or 0)
+    return default
+
+
 # ═══════════════════════════════════════════
 # shutdown_cleanup
 # ═══════════════════════════════════════════
 async def _stop_handlers(handlers: list[Any]) -> None:
-    """
-    🐛 FIX: صدا زدن on_stop برای همهٔ handlerها.
-
-    چرا مهم است؟
-      storage_handler.on_stop برای cancel taskهای هشدار تعریف شده.
-      قبلاً صدا زده نمی‌شد → taskهای pending باقی می‌ماندند.
-    """
+    """صدا زدن on_stop برای همهٔ handlerها."""
     if not handlers:
         return
 
@@ -269,7 +259,6 @@ async def _stop_handlers(handlers: list[Any]) -> None:
             on_stop = getattr(handler, "on_stop", None)
             if on_stop is None:
                 continue
-            # on_stop ممکن است async یا sync باشد
             result = on_stop()
             if asyncio.iscoroutine(result):
                 await asyncio.wait_for(
@@ -311,7 +300,7 @@ async def shutdown_cleanup(
     t0 = time.monotonic()
     log_info("🛑 [MAIN:shutdown] شروع cleanup")
 
-    # ۱) system monitor — هم stop_monitoring هم cancel task
+    # ۱) system monitor
     if system_monitor:
         try:
             await system_monitor.stop_monitoring()
@@ -363,7 +352,7 @@ async def shutdown_cleanup(
             )
         log_info("   ✔ orchestrator task cancel شد")
 
-    # ۳) handlers — 🐛 FIX: صدا زدن on_stop
+    # ۳) handlers
     if handlers:
         try:
             await _stop_handlers(handlers)
@@ -414,13 +403,6 @@ async def shutdown_cleanup(
     )
 
 
-# _safe_read_report حذف شد — پایشگر فقط‌خواندنی
-
-# _wait_for_bale_sender حذف شد — پایشگر فقط‌خواندنی
-
-# _notify_restart_report حذف شد — پایشگر فقط‌خواندنی
-
-
 # ═══════════════════════════════════════════
 # main
 # ═══════════════════════════════════════════
@@ -439,7 +421,7 @@ async def main() -> None:
     obs_runner = None
     perf_monitor: PerformanceMonitor | None = None
     safe_brain = None
-    handlers: list[Any] = []  # 🐛 FIX: ذخیره برای on_stop
+    handlers: list[Any] = []
 
     try:
         # ─── ۱) DB ───
@@ -455,10 +437,30 @@ async def main() -> None:
         plugin_loader = PluginLoader()
         plugin_loader.set_dependencies(db=db, scorer=None)
 
-        # ─── ۳) SafeBrain ───
+        # ═══════════════════════════════════════════
+        # 🎯 FIX مهم نسخهٔ ۷: SafeBrain با api_key
+        # ═══════════════════════════════════════════
+        # قبلاً api_key پاس نمی‌شد → اگر SafeBrain.__init__
+        # از config.AI نمی‌خواند، singleton بدون کلید ساخته
+        # می‌شد و admin_handler که بعداً api_key می‌داد،
+        # بی‌اثر می‌شد (چون singleton از قبل ساخته شده).
+        #
+        # حالا: api_key از config.AI (منبع یکتا) خوانده می‌شود
+        # و صریحاً به get_safe_brain پاس داده می‌شود.
+        # ═══════════════════════════════════════════
         from core.safe_brain import get_safe_brain
+        from config import AI as _AI_CFG_MAIN
+
         t = time.monotonic()
+
+        _api_key_main: str = (
+            (_AI_CFG_MAIN or {}).get("deepseek_api_key")
+            or os.environ.get("DEEPSEEK_API_KEY", "")
+            or ""
+        )
+
         safe_brain = get_safe_brain(
+            api_key=_api_key_main,
             full_access=BRAIN_CONFIG.get("full_access", False),
             use_api_memory=BRAIN_CONFIG.get("use_api_memory", False),
             memory_api_url=BRAIN_CONFIG.get("memory_api_url", ""),
@@ -466,6 +468,7 @@ async def main() -> None:
         )
         log_success(
             f"✅ [MAIN:brain] SafeBrain آماده | "
+            f"api_key={'✅' if _api_key_main else '❌'} | "
             f"{time.monotonic() - t:.2f}s"
         )
 
@@ -525,27 +528,12 @@ async def main() -> None:
                 f"⚠️ [MAIN:self_monitor] {type(e).__name__}: {e}"
             )
 
-        # ─── ۸) handlers — 🐛 FIX: کش کردن نتیجه
+        # ─── ۸) handlers — استفاده از AutoSubscriber ───
         t = time.monotonic()
+        from handlers.auto_subscribe import AutoSubscriber
         handlers = plugin_loader.discover_handlers()
-        supported_events = [
-            "message.received", "lead.saved", "error.occurred",
-        ]
-        subscribed = 0
-        for handler in handlers:
-            for event_name in supported_events:
-                try:
-                    if handler.can_handle(event_name):
-                        event_bus.subscribe(
-                            event_name, handler.handle
-                        )
-                        subscribed += 1
-                except Exception as e:
-                    log_warning(
-                        f"⚠️ [MAIN:handlers] "
-                        f"{handler.handler_name} → {event_name} | "
-                        f"{type(e).__name__}: {e}"
-                    )
+        auto_sub = AutoSubscriber(event_bus, plugin_loader)
+        subscribed = await auto_sub.register_all()
         log_success(
             f"✅ [MAIN:handlers] {len(handlers)} هندلر | "
             f"subscribed={subscribed} | "
@@ -606,7 +594,7 @@ async def main() -> None:
                 orchestrator_task=orchestrator_task,
                 obs_runner=obs_runner,
                 safe_brain=safe_brain,
-                handlers=handlers,  # 🐛 FIX
+                handlers=handlers,
             )
         except Exception as e:
             log_error(
@@ -623,20 +611,13 @@ async def main() -> None:
                 sys_report = system_monitor.get_report()
                 system_dict = sys_report.get("system", {}) or {}
 
-                def _val(
-                    key: str, default: float = 0.0
-                ) -> float:
-                    m = system_dict.get(key)
-                    if m and hasattr(m, "value"):
-                        return float(m.value or 0)
-                    if isinstance(m, dict) and "value" in m:
-                        return float(m["value"] or 0)
-                    return default
-
                 log_info(
-                    f"   🖥️ CPU: {_val('cpu'):.1f}% | "
-                    f"RAM: {_val('ram'):.1f}% | "
-                    f"Disk: {_val('disk'):.1f}% | "
+                    f"   🖥️ CPU: "
+                    f"{_extract_sys_value(system_dict, 'cpu'):.1f}% | "
+                    f"RAM: "
+                    f"{_extract_sys_value(system_dict, 'ram'):.1f}% | "
+                    f"Disk: "
+                    f"{_extract_sys_value(system_dict, 'disk'):.1f}% | "
                     f"Uptime: "
                     f"{system_dict.get('uptime_str', '?')}"
                 )
@@ -699,8 +680,6 @@ def _run() -> None:
     global _kbd_interrupt_count
 
     if sys.platform == "win32":
-        # Windows: SIGTERM پشتیبانی نمی‌شود در asyncio.
-        # فقط Ctrl+C (KeyboardInterrupt) را می‌گیریم.
         try:
             asyncio.run(main())
         except KeyboardInterrupt:
@@ -712,10 +691,8 @@ def _run() -> None:
                 f"❌ [MAIN:win] {type(e).__name__}: {e}"
             )
         finally:
-            # 🎯 FIX: پاک‌سازی shutdown_event (مثل مسیر Linux)
             _reset_shutdown_event()
     else:
-        # Linux/macOS: SIGINT + SIGTERM
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
@@ -737,7 +714,6 @@ def _run() -> None:
             _kbd_interrupt_count += 1
             _signal_handler()
         finally:
-            # cancel همه taskهای باقی‌مانده
             try:
                 pending = [
                     t for t in asyncio.all_tasks(loop)
@@ -757,7 +733,6 @@ def _run() -> None:
                 loop.close()
             except Exception:
                 pass
-            # 🎯 FIX: پاک‌سازی shutdown_event
             _reset_shutdown_event()
 
 

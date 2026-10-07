@@ -44,7 +44,7 @@ async def main() -> None:
         full_access=BRAIN_CONFIG.get("full_access", False),
         use_api_memory=BRAIN_CONFIG.get("use_api_memory", False),
         memory_api_url=BRAIN_CONFIG.get("memory_api_url", ""),
-        memory_api_key=BRAIN_CONFIG.get("memory_api_key", ""),
+        memory_api_key=BRAIN_CONFIG.get("memory_api_key", ""),  # noqa: SEC-HARDCODED-SECRET
     )
 
     collectors = loader.discover_collectors()

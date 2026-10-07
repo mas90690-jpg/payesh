@@ -1,38 +1,31 @@
-"""
-Structured logging — built on Python's standard `logging`.
+"""Structured logging — built on Python's standard `logging`.
 
-- JSON lines to file (ISO-8601 UTC timestamp, level, logger, message, context,
-  exception) → ready for ELK / Loki / Datadog / CloudWatch.
-- Human-readable (optionally colored) console output.
-- Size-based rotation (RotatingFileHandler) + backups.
-- Backward-compatible API: log_info / log_success / log_error / log_warning /
-  log_debug / log_exception / get_logger / log_duration.
-- Configurable via .env:
-    LOG_LEVEL (DEBUG|INFO|SUCCESS|WARNING|ERROR), LOG_DIR, LOG_TO_FILE,
-    LOG_JSON (true=JSON file, false=plain), LOG_CONSOLE, LOG_MAX_MB, LOG_BACKUPS
+ویژگی‌ها:
+  - JSON lines to file (ISO-8601 UTC) → آماده برای ELK/Loki/Datadog
+  - Console output خوانا (با رنگ در TTY)
+  - Size-based rotation (RotatingFileHandler) + backups
+  - API سازگار با قبل: log_info / log_success / log_error / ...
+  - Configurable via .env یا config
 
-⚠️ این فایل خودش نمی‌تواند از log_info/log_success/... استفاده کند (recursion).
-از print() برای پیام‌های early-init و از self._logger.<level>(...) برای بعد از
-setup استفاده می‌کنیم.
+⚠️ این فایل نمی‌تواند از log_info/log_success/... استفاده کند
+(recursion). از print() برای پیام‌های early-init استفاده می‌شود.
 
-نسخهٔ ۳ (این نسخه):
-  - 🐛 FIX بحرانی: sys.stdout/sys.stderr در ابتدای ماژول به UTF-8 reconfigure
-    می‌شوند. روی ویندوز، console پیش‌فرض cp1256/cp1252 است و emoji/Persian
-    به mojibake تبدیل می‌شد (ðŸ—ï¸ به‌جای 🔧، Ø³Ø§Ø®Øª به‌جای ساخت).
-  - 🐛 FIX: StreamHandler صریحاً از _SafeUtf8Stream استفاده می‌کند
-    (اگر reconfigure شکست خورد، یک wrapper امن UTF-8 می‌سازیم).
-  - 🎯 init diagnostic حالا encoding هر stream را هم نشان می‌دهد.
-  - ✅ حفظ همهٔ رفتار نسخهٔ ۲.
-
-نسخهٔ ۲:
-  - 🎯 init diagnostics: چاپ خلاصه‌ای از تنظیمات اعمال‌شده.
-  - 🐛 FIX: _emit با try/except.
-  - 🐛 FIX: set_level سطح نامعتبر را لاگ می‌کند.
-  - 🐛 FIX: get_stats JSON-safe.
-  - 🐛 FIX: log_duration از time.monotonic.
-  - 🐛 FIX: flush خطاها لاگ می‌شود.
-  - 🐛 FIX: _env_bool yes/no/on/off/1/0.
-  - 🎯 ConsoleFormatter رنگ را در Windows Terminal می‌فهمد.
+نسخهٔ ۴ (این نسخه):
+  - 🐛 FIX: `_EXC_MAX_LEN`, `SUCCESS_LEVEL` حالا env-based.
+  - 🐛 FIX: `Logger.__new__` حالا thread-safe است.
+  - 🐛 FIX: `get_logger()` حالا thread-safe است.
+  - 🐛 FIX: `Logger._emit` حالا `message` را type-check می‌کند.
+  - 🐛 FIX: `log_dir`, `log_level`, `max_mb`, `backups` حالا از
+    `config.SYSTEM_CONFIG` و `config.LOG_CONFIG` می‌آیند
+    (با fallback به env).
+  - 🐛 FIX: `_ensure_utf8_streams()` حالا dict status برمی‌گرداند.
+  - 🐛 FIX: `RotatingFileHandler` حالا `delay=True` (جلوگیری از
+    قفل فایل در برخی سیستم‌ها).
+  - 🎯 `LogLevel` enum بهتر مستندسازی شد (backward-compat).
+  - 🎯 `reset_logger()` برای تست.
+  - 🎯 `get_stats()` کامل‌تر (version, json flag, console flag).
+  - 🎯 `__all__` export.
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۳.
 """
 from __future__ import annotations
 
@@ -42,6 +35,7 @@ import logging
 import logging.handlers
 import os
 import sys
+import threading
 import time
 import traceback
 from contextlib import contextmanager
@@ -49,30 +43,101 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
-from config import SYSTEM_CONFIG
+# ═══════════════════════════════════════════
+# helpers
+# ═══════════════════════════════════════════
+def _env_int(
+    name: str, default: int,
+    min_val: int | None = None,
+    max_val: int | None = None,
+) -> int:
+    """خواندن int از env — با sanitize."""
+    try:
+        v = int(os.getenv(name, str(default)))
+    except (ValueError, TypeError):
+        return default
+    if min_val is not None and v < min_val:
+        return min_val
+    if max_val is not None and v > max_val:
+        return max_val
+    return v
+
+
+def _env_float(
+    name: str, default: float,
+    min_val: float | None = None,
+    max_val: float | None = None,
+) -> float:
+    """خواندن float از env — با sanitize."""
+    try:
+        v = float(os.getenv(name, str(default)))
+    except (ValueError, TypeError):
+        return default
+    if min_val is not None and v < min_val:
+        return min_val
+    if max_val is not None and v > max_val:
+        return max_val
+    return v
+
+
+_TRUE_VALUES = frozenset({
+    "true", "1", "yes", "on", "y", "t",
+})
+_FALSE_VALUES = frozenset({
+    "false", "0", "no", "off", "n", "f",
+})
+
+
+def _env_bool(name: str, default: str = "true") -> bool:
+    """تشخیص bool از env — با پشتیبانی از yes/no/on/off/1/0."""
+    raw = os.getenv(name)
+    if raw is None:
+        raw = default
+    val = str(raw).strip().lower()
+    if val in _TRUE_VALUES:
+        return True
+    if val in _FALSE_VALUES:
+        return False
+    return str(default).strip().lower() in _TRUE_VALUES
+
+
+def _stream_encoding(stream: Any) -> str:
+    """encoding فعلی یک stream را با احتیاط برمی‌گرداند."""
+    try:
+        enc = getattr(stream, "encoding", None)
+        return str(enc) if enc else "?"
+    except Exception:
+        return "?"
 
 
 # ═══════════════════════════════════════════
-# 🐛 FIX #4: UTF-8 streams (قبل از هر چاپی)
+# UTF-8 streams (قبل از هر چاپی)
 # ═══════════════════════════════════════════
-def _ensure_utf8_streams() -> None:
+def _ensure_utf8_streams() -> dict[str, str]:
     """sys.stdout/stderr را روی UTF-8 تنظیم می‌کند.
 
-    روی ویندوز، console پیش‌فرض cp1256 یا cp1252 است و emoji/Persian
-    به mojibake تبدیل می‌شود. این تابع:
-      ۱) اگر stream.reconfigure موجود بود، آن را صدا می‌زند
-      ۲) وگرنه stream را با یک TextIOWrapper امن دور می‌زند
+    Returns:
+        dict با وضعیت هر stream (patched/skipped/error/no_stream).
     """
+    status: dict[str, str] = {}
+
     for name in ("stdout", "stderr"):
         stream = getattr(sys, name, None)
         if stream is None:
+            status[name] = "no_stream"
             continue
+
+        # ─── تلاش reconfigure ───
         try:
             if hasattr(stream, "reconfigure"):
-                stream.reconfigure(encoding="utf-8", errors="replace")
+                stream.reconfigure(
+                    encoding="utf-8", errors="replace"
+                )
+                status[name] = "patched"
                 continue
         except Exception:
             pass
+
         # ─── fallback: wrap با UTF-8 ───
         try:
             buf = getattr(stream, "buffer", None)
@@ -84,20 +149,32 @@ def _ensure_utf8_streams() -> None:
                     line_buffering=True,
                 )
                 setattr(sys, name, wrapper)
+                status[name] = "patched"
+            else:
+                status[name] = "skipped"
         except Exception:
-            pass
+            status[name] = "error"
+
+    return status
 
 
-_ensure_utf8_streams()
+_UTF8_STATUS = _ensure_utf8_streams()
 
 # Don't let a logging/encoding hiccup crash the app
 logging.raiseExceptions = False
 
-# Custom SUCCESS level between INFO(20) and WARNING(30)
-SUCCESS_LEVEL = 25
+
+# ═══════════════════════════════════════════
+# Levels + colors
+# ═══════════════════════════════════════════
+SUCCESS_LEVEL = _env_int(
+    "LOG_SUCCESS_LEVEL", 25,
+    min_val=logging.INFO + 1,
+    max_val=logging.WARNING - 1,
+)
 logging.addLevelName(SUCCESS_LEVEL, "SUCCESS")
 
-_LEVEL_NO = {
+_LEVEL_NO: dict[str, int] = {
     "DEBUG": logging.DEBUG,
     "INFO": logging.INFO,
     "SUCCESS": SUCCESS_LEVEL,
@@ -105,7 +182,8 @@ _LEVEL_NO = {
     "ERROR": logging.ERROR,
     "CRITICAL": logging.CRITICAL,
 }
-_EMOJI = {
+
+_EMOJI: dict[str, str] = {
     "DEBUG": "🐛",
     "INFO": "ℹ️",
     "SUCCESS": "✅",
@@ -113,7 +191,8 @@ _EMOJI = {
     "ERROR": "❌",
     "CRITICAL": "🔥",
 }
-_COLOR = {
+
+_COLOR: dict[str, str] = {
     "DEBUG": "\033[90m",
     "INFO": "\033[94m",
     "SUCCESS": "\033[92m",
@@ -124,11 +203,18 @@ _COLOR = {
 _RESET = "\033[0m"
 
 # حداکثر طول exception در JSON
-_EXC_MAX_LEN = 2000
+_EXC_MAX_LEN = _env_int(
+    "LOG_EXC_MAX_LEN", 2000,
+    min_val=200, max_val=100_000,
+)
 
-
+# ─── سازگاری عقب‌رو ───
 class LogLevel(Enum):
-    """Kept for backward compatibility with older call sites."""
+    """Enum قدیمی — حفظ‌شده برای سازگاری عقب‌رو.
+
+    ⚠️ استفاده از این enum توصیه نمی‌شود. جایگزین:
+    از `log_info`, `log_success`, ... استفاده کن.
+    """
 
     DEBUG = "🐛"
     INFO = "ℹ️"
@@ -165,7 +251,9 @@ class JsonFormatter(logging.Formatter):
             except Exception:
                 obj["exception"] = "(unable to format exception)"
         try:
-            return json.dumps(obj, ensure_ascii=False, default=str)
+            return json.dumps(
+                obj, ensure_ascii=False, default=str
+            )
         except Exception:
             return json.dumps(
                 {
@@ -183,7 +271,9 @@ class ConsoleFormatter(logging.Formatter):
     def __init__(self):
         super().__init__()
         try:
-            is_tty = sys.stdout.isatty() if sys.stdout else False
+            is_tty = (
+                sys.stdout.isatty() if sys.stdout else False
+            )
             is_win = sys.platform.startswith("win")
             has_ansi = bool(
                 os.getenv("WT_SESSION")
@@ -196,63 +286,46 @@ class ConsoleFormatter(logging.Formatter):
             self._color = False
 
     def format(self, record: logging.LogRecord) -> str:
-        ts = datetime.fromtimestamp(record.created).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
+        ts = datetime.fromtimestamp(
+            record.created
+        ).strftime("%Y-%m-%d %H:%M:%S")
         emoji = _EMOJI.get(record.levelname, "")
         line = f"[{ts}] {emoji} {record.getMessage()}"
+
         ctx = getattr(record, "context", None)
         if ctx:
             try:
-                line += f" | {json.dumps(ctx, ensure_ascii=False, default=str)}"
+                ctx_str = json.dumps(
+                    ctx, ensure_ascii=False, default=str
+                )
+                line += f" | {ctx_str}"
             except Exception:
                 line += f" | {ctx}"
+
         if self._color:
-            line = f"{_COLOR.get(record.levelname, '')}{line}{_RESET}"
+            line = (
+                f"{_COLOR.get(record.levelname, '')}"
+                f"{line}{_RESET}"
+            )
         return line
 
 
 # ═══════════════════════════════════════════
-# helpers
-# ═══════════════════════════════════════════
-_TRUE_VALUES = {"true", "1", "yes", "on", "y", "t"}
-_FALSE_VALUES = {"false", "0", "no", "off", "n", "f"}
-
-
-def _env_bool(name: str, default: str = "true") -> bool:
-    """تشخیص bool از env — با پشتیبانی از yes/no/on/off/1/0."""
-    raw = os.getenv(name)
-    if raw is None:
-        raw = default
-    val = str(raw).strip().lower()
-    if val in _TRUE_VALUES:
-        return True
-    if val in _FALSE_VALUES:
-        return False
-    return str(default).strip().lower() in _TRUE_VALUES
-
-
-def _stream_encoding(stream) -> str:
-    """encoding فعلی یک stream را با احتیاط برمی‌گرداند."""
-    try:
-        enc = getattr(stream, "encoding", None)
-        return str(enc) if enc else "?"
-    except Exception:
-        return "?"
-
-
-# ═══════════════════════════════════════════
-# Logger
+# Logger (singleton)
 # ═══════════════════════════════════════════
 class Logger:
     """Singleton wrapper around a stdlib logger named 'srooyesh'."""
 
-    _instance: Logger | None = None
+    _instance: "Logger | None" = None
+    _lock = threading.Lock()
 
     def __new__(cls):
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._initialized = False
+            with cls._lock:
+                if cls._instance is None:
+                    obj = super().__new__(cls)
+                    obj._initialized = False
+                    cls._instance = obj
         return cls._instance
 
     def __init__(self):
@@ -261,99 +334,50 @@ class Logger:
         self._initialized = True
 
         # ─── مسیر و سطح ───
-        self.log_dir = os.getenv(
-            "LOG_DIR", SYSTEM_CONFIG.get("log_directory", "storage/logs")
-        )
+        self.log_dir = self._resolve_log_dir()
         try:
             os.makedirs(self.log_dir, exist_ok=True)
         except Exception as e:
             print(
-                f"❌ [LOGGER:init] ساخت log_dir ناموفق | {e}",
+                f"❌ [LOGGER:init] ساخت log_dir ناموفق | "
+                f"{type(e).__name__}: {e}",
                 file=sys.stderr,
             )
 
-        self.log_level = os.getenv(
-            "LOG_LEVEL", SYSTEM_CONFIG.get("log_level", "INFO")
-        ).upper()
-        if self.log_level not in _LEVEL_NO:
-            print(
-                f"⚠️ [LOGGER:init] LOG_LEVEL نامعتبر «{self.log_level}» — "
-                f"استفاده از INFO",
-                file=sys.stderr,
-            )
-            self.log_level = "INFO"
+        self.log_level = self._resolve_log_level()
 
         # ─── logger اصلی ───
         self._logger = logging.getLogger("srooyesh")
-        self._logger.setLevel(_LEVEL_NO.get(self.log_level, logging.INFO))
+        self._logger.setLevel(
+            _LEVEL_NO.get(self.log_level, logging.INFO)
+        )
         self._logger.handlers.clear()
         self._logger.propagate = False
 
         # ─── Console handler ───
-        # 🐛 FIX #4: StreamHandler از sys.stdout که قبلاً reconfigure شده
-        # استفاده می‌کند. اگر هر دلیلی encoding خراب بود، اینجا هم صریحاً
-        # wrap می‌کنیم.
-        console_on = _env_bool("LOG_CONSOLE", "true")
-        if console_on:
-            try:
-                stream = sys.stdout
-                enc = _stream_encoding(stream)
-                if enc.lower() not in ("utf-8", "utf8"):
-                    # اگر باز هم UTF-8 نیست، یک wrapper امن می‌سازیم
-                    try:
-                        buf = getattr(stream, "buffer", None)
-                        if buf is not None:
-                            stream = io.TextIOWrapper(
-                                buf,
-                                encoding="utf-8",
-                                errors="replace",
-                                line_buffering=True,
-                            )
-                    except Exception:
-                        pass
-
-                ch = logging.StreamHandler(stream)
-                ch.setFormatter(ConsoleFormatter())
-                self._logger.addHandler(ch)
-            except Exception as e:
-                print(
-                    f"⚠️ [LOGGER:init] console handler | {e}",
-                    file=sys.stderr,
-                )
+        self._console_enabled = _env_bool(
+            "LOG_CONSOLE", "true"
+        )
+        if self._console_enabled:
+            self._setup_console_handler()
 
         # ─── File handler ───
-        file_on = (
-            SYSTEM_CONFIG.get("log_to_file", True)
+        try:
+            from config import SYSTEM_CONFIG
+            _sys_log_to_file = SYSTEM_CONFIG.get(
+                "log_to_file", True
+            )
+        except Exception:
+            _sys_log_to_file = True
+
+        self._file_enabled = (
+            bool(_sys_log_to_file)
             and _env_bool("LOG_TO_FILE", "true")
         )
-        file_path = ""
-        if file_on:
-            try:
-                max_mb = float(os.getenv("LOG_MAX_MB", "10"))
-                if max_mb <= 0:
-                    max_mb = 10.0
-                backups = int(os.getenv("LOG_BACKUPS", "30"))
-                if backups < 0:
-                    backups = 0
-                as_json = _env_bool("LOG_JSON", "true")
-                fname = "app.jsonl" if as_json else "app.log"
-                file_path = os.path.join(self.log_dir, fname)
-                fh = logging.handlers.RotatingFileHandler(
-                    file_path,
-                    maxBytes=int(max_mb * 1024 * 1024),
-                    backupCount=backups,
-                    encoding="utf-8",
-                )
-                fh.setFormatter(
-                    JsonFormatter() if as_json else ConsoleFormatter()
-                )
-                self._logger.addHandler(fh)
-            except Exception as e:
-                print(
-                    f"❌ [LOGGER:init] file handler ناموفق | {e}",
-                    file=sys.stderr,
-                )
-                file_on = False
+        
+        self._file_path = ""
+        if self._file_enabled:
+            self._setup_file_handler()
 
         # ─── آمار ───
         self._stats: dict[str, Any] = {
@@ -363,31 +387,188 @@ class Logger:
         }
 
         # ─── init diagnostic ───
-        handlers_info = []
-        for h in self._logger.handlers:
-            hname = type(h).__name__
-            if isinstance(h, logging.StreamHandler) and not isinstance(
-                h, logging.FileHandler
-            ):
-                handlers_info.append("console")
-            elif isinstance(h, logging.FileHandler):
-                handlers_info.append(
-                    f"file:{os.path.basename(h.baseFilename)}"
+        self._print_init_diagnostic()
+
+    # ═══════════════════════════════════════════
+    # helpers
+    # ═══════════════════════════════════════════
+
+    @staticmethod
+    def _resolve_log_dir() -> str:
+        """🎯 FIX: اولویت config → env → default."""
+        # ─── config ───
+        try:
+            from config import LOG_CONFIG
+            d = LOG_CONFIG.get("directory")
+            if d:
+                return str(d)
+        except Exception:
+            pass
+
+        # ─── SYSTEM_CONFIG (lazy) ───
+        try:
+            from config import SYSTEM_CONFIG
+            d = SYSTEM_CONFIG.get("log_directory")
+            if d:
+                return str(d)
+        except Exception:
+            pass
+
+        # ─── env ───
+        d = os.getenv("LOG_DIR")
+        if d and d.strip():
+            return d.strip()
+
+        return "storage/logs"
+        
+    @staticmethod
+    def _resolve_log_level() -> str:
+        """🎯 FIX: اولویت config → env → default."""
+        # ─── config ───
+        try:
+            from config import LOG_CONFIG
+            lv = LOG_CONFIG.get("level")
+            if lv:
+                lv_u = str(lv).upper()
+                if lv_u in _LEVEL_NO:
+                    return lv_u
+        except Exception:
+            pass
+
+        # ─── SYSTEM_CONFIG (lazy) ───
+        try:
+            from config import SYSTEM_CONFIG
+            lv = SYSTEM_CONFIG.get("log_level")
+            if lv:
+                lv_u = str(lv).upper()
+                if lv_u in _LEVEL_NO:
+                    return lv_u
+        except Exception:
+            pass
+
+        # ─── env ───
+        lv = os.getenv("LOG_LEVEL", "").strip().upper()
+        if lv in _LEVEL_NO:
+            return lv
+
+        return "INFO"
+        
+    def _setup_console_handler(self) -> None:
+        """🎯 FIX: setup console handler با UTF-8 امن."""
+        try:
+            stream = sys.stdout
+            enc = _stream_encoding(stream)
+            if enc.lower() not in ("utf-8", "utf8"):
+                try:
+                    buf = getattr(stream, "buffer", None)
+                    if buf is not None:
+                        stream = io.TextIOWrapper(
+                            buf,
+                            encoding="utf-8",
+                            errors="replace",
+                            line_buffering=True,
+                        )
+                except Exception:
+                    pass
+
+            ch = logging.StreamHandler(stream)
+            ch.setFormatter(ConsoleFormatter())
+            self._logger.addHandler(ch)
+        except Exception as e:
+            print(
+                f"⚠️ [LOGGER:init] console handler | "
+                f"{type(e).__name__}: {e}",
+                file=sys.stderr,
+            )
+
+    def _setup_file_handler(self) -> None:
+        """🎯 FIX: setup file handler با config/env."""
+        try:
+            # ─── config ───
+            max_mb = 10.0
+            backups = 30
+            as_json = True
+            try:
+                from config import LOG_CONFIG
+                max_mb = float(
+                    LOG_CONFIG.get("max_mb", 10)
                 )
-            else:
-                handlers_info.append(hname)
+                backups = int(
+                    LOG_CONFIG.get("backups", 30)
+                )
+                as_json = bool(
+                    LOG_CONFIG.get("json", True)
+                )
+            except Exception:
+                # env fallback
+                max_mb = _env_float(
+                    "LOG_MAX_MB", 10.0,
+                    min_val=0.1, max_val=10_000,
+                )
+                backups = _env_int(
+                    "LOG_BACKUPS", 30,
+                    min_val=0, max_val=10_000,
+                )
+                as_json = _env_bool("LOG_JSON", "true")
 
-        # 🎯 FIX #4: نمایش encoding streamها
-        stdout_enc = _stream_encoding(sys.stdout)
-        stderr_enc = _stream_encoding(sys.stderr)
+            if max_mb <= 0:
+                max_mb = 10.0
+            if backups < 0:
+                backups = 0
 
-        print(
-            f"🔧 [LOGGER:init] level={self.log_level} | "
-            f"handlers=[{', '.join(handlers_info) or '—'}] | "
-            f"dir={self.log_dir} | "
-            f"stdout_enc={stdout_enc} | stderr_enc={stderr_enc}",
-            file=sys.stderr,
-        )
+            fname = "app.jsonl" if as_json else "app.log"
+            file_path = os.path.join(self.log_dir, fname)
+            self._file_path = file_path
+
+            fh = logging.handlers.RotatingFileHandler(
+                file_path,
+                maxBytes=int(max_mb * 1024 * 1024),
+                backupCount=backups,
+                encoding="utf-8",
+                delay=True,  # 🎯 FIX
+            )
+            fh.setFormatter(
+                JsonFormatter() if as_json
+                else ConsoleFormatter()
+            )
+            self._logger.addHandler(fh)
+        except Exception as e:
+            print(
+                f"❌ [LOGGER:init] file handler ناموفق | "
+                f"{type(e).__name__}: {e}",
+                file=sys.stderr,
+            )
+            self._file_enabled = False
+
+    def _print_init_diagnostic(self) -> None:
+        """🎯 چاپ خلاصهٔ init روی stderr."""
+        try:
+            handlers_info: list[str] = []
+            for h in self._logger.handlers:
+                hname = type(h).__name__
+                if isinstance(h, logging.FileHandler):
+                    handlers_info.append(
+                        f"file:{os.path.basename(h.baseFilename)}"
+                    )
+                elif isinstance(h, logging.StreamHandler):
+                    handlers_info.append("console")
+                else:
+                    handlers_info.append(hname)
+
+            stdout_enc = _stream_encoding(sys.stdout)
+            stderr_enc = _stream_encoding(sys.stderr)
+
+            print(
+                f"🔧 [LOGGER:init] level={self.log_level} | "
+                f"handlers=[{', '.join(handlers_info) or '—'}] | "
+                f"dir={self.log_dir} | "
+                f"stdout_enc={stdout_enc} | "
+                f"stderr_enc={stderr_enc} | "
+                f"utf8={_UTF8_STATUS}",
+                file=sys.stderr,
+            )
+        except Exception:
+            pass
 
     # ═══════════════════════════════════════════
     # emit
@@ -395,10 +576,18 @@ class Logger:
     def _emit(
         self,
         levelname: str,
-        message: str,
+        message: Any,
         context: dict | None = None,
-        exc_info=None,
+        exc_info: Any = None,
     ) -> None:
+        # 🎯 FIX: type-check message
+        if not isinstance(message, str):
+            try:
+                message = str(message)
+            except Exception:
+                message = "(unprintable)"
+
+        # ─── آمار ───
         try:
             self._stats["total_logs"] += 1
             self._stats["by_level"][levelname] = (
@@ -410,13 +599,21 @@ class Logger:
 
         levelno = _LEVEL_NO.get(levelname, logging.INFO)
         extra = {"context": context} if context else None
+
         try:
-            self._logger.log(levelno, message, extra=extra, exc_info=exc_info)
+            self._logger.log(
+                levelno,
+                message,
+                extra=extra,
+                exc_info=exc_info,
+            )
         except Exception as e:
             try:
                 print(
-                    f"❌ [LOGGER:emit-fail] {type(e).__name__}: {e} | "
-                    f"orig_level={levelname} | msg={message[:200]!r}",
+                    f"❌ [LOGGER:emit-fail] "
+                    f"{type(e).__name__}: {e} | "
+                    f"orig_level={levelname} | "
+                    f"msg={message[:200]!r}",
                     file=sys.stderr,
                 )
             except Exception:
@@ -425,30 +622,42 @@ class Logger:
     # ═══════════════════════════════════════════
     # convenience
     # ═══════════════════════════════════════════
-    def debug(self, message: str, context: dict | None = None):
+    def debug(
+        self, message: Any, context: dict | None = None
+    ) -> None:
         self._emit("DEBUG", message, context)
 
-    def info(self, message: str, context: dict | None = None):
+    def info(
+        self, message: Any, context: dict | None = None
+    ) -> None:
         self._emit("INFO", message, context)
 
-    def success(self, message: str, context: dict | None = None):
+    def success(
+        self, message: Any, context: dict | None = None
+    ) -> None:
         self._emit("SUCCESS", message, context)
 
-    def warning(self, message: str, context: dict | None = None):
+    def warning(
+        self, message: Any, context: dict | None = None
+    ) -> None:
         self._emit("WARNING", message, context)
 
-    def error(self, message: str, context: dict | None = None):
+    def error(
+        self, message: Any, context: dict | None = None
+    ) -> None:
         self._emit("ERROR", message, context)
 
-    def critical(self, message: str, context: dict | None = None):
+    def critical(
+        self, message: Any, context: dict | None = None
+    ) -> None:
         self._emit("CRITICAL", message, context)
 
     def exception(
         self,
-        message: str,
+        message: Any,
         exc: Exception,
         context: dict | None = None,
-    ):
+    ) -> None:
         ctx = dict(context or {})
         ctx["exception_type"] = type(exc).__name__
         self._emit(
@@ -458,12 +667,21 @@ class Logger:
             exc_info=(type(exc), exc, exc.__traceback__),
         )
 
-    def log(self, level, message: str, context: dict | None = None):
-        """Accepts a LogLevel enum or a level name string (backward compatible)."""
+    def log(
+        self,
+        level: Any,
+        message: Any,
+        context: dict | None = None,
+    ) -> None:
+        """🎯 پشتیبانی از LogLevel enum یا نام string."""
         if isinstance(level, LogLevel):
             name = level.name
         else:
             name = str(level).upper()
+
+        if name not in _LEVEL_NO:
+            name = "INFO"
+
         self._emit(name, message, context)
 
     # ═══════════════════════════════════════════
@@ -474,91 +692,155 @@ class Logger:
         level_u = str(level).upper()
         if level_u not in _LEVEL_NO:
             self.warning(
-                f"⚠️ [LOGGER:set_level] سطح نامعتبر «{level}» | "
-                f"معتبرها: {list(_LEVEL_NO.keys())}"
+                f"⚠️ [LOGGER:set_level] سطح نامعتبر "
+                f"«{level}» | معتبرها: "
+                f"{list(_LEVEL_NO.keys())}"
             )
             return False
+
+        old = self.log_level
         self.log_level = level_u
         self._logger.setLevel(_LEVEL_NO[level_u])
-        self.success(f"✅ [LOGGER:set_level] سطح روی {level_u} تنظیم شد")
+        self.success(
+            f"✅ [LOGGER:set_level] سطح از {old} "
+            f"روی {level_u} تنظیم شد"
+        )
         return True
 
     def get_stats(self) -> dict[str, Any]:
         """آمار لاگر — JSON-safe."""
         last = self._stats.get("last_log_time")
+
+        with self._lock:
+            by_level = dict(
+                self._stats.get("by_level", {})
+            )
+
         return {
+            "version": "4",
             "total_logs": self._stats.get("total_logs", 0),
-            "by_level": dict(self._stats.get("by_level", {})),
+            "by_level": by_level,
             "last_log_time": (
-                last.isoformat() if isinstance(last, datetime) else last
+                last.isoformat()
+                if isinstance(last, datetime) else last
             ),
             "log_dir": self.log_dir,
             "log_level": self.log_level,
+            "console_enabled": self._console_enabled,
+            "file_enabled": self._file_enabled,
+            "file_path": self._file_path,
             "handlers": [
-                type(h).__name__ for h in self._logger.handlers
+                type(h).__name__
+                for h in self._logger.handlers
             ],
-            # 🎯 FIX #4: encoding هم گزارش شود
             "stdout_enc": _stream_encoding(sys.stdout),
             "stderr_enc": _stream_encoding(sys.stderr),
+            "utf8_status": dict(_UTF8_STATUS),
         }
 
-    def flush(self):
+    def flush(self) -> None:
+        """Flush همهٔ handlerها."""
         for h in self._logger.handlers:
             try:
                 h.flush()
             except Exception as e:
                 try:
                     print(
-                        f"⚠️ [LOGGER:flush] {type(h).__name__} | "
+                        f"⚠️ [LOGGER:flush] "
+                        f"{type(h).__name__} | "
                         f"{type(e).__name__}: {e}",
                         file=sys.stderr,
                     )
                 except Exception:
                     pass
 
+    def close(self) -> None:
+        """🎯 بستن همهٔ handlerها — برای تست/restart."""
+        for h in list(self._logger.handlers):
+            try:
+                h.close()
+            except Exception:
+                pass
+            try:
+                self._logger.removeHandler(h)
+            except Exception:
+                pass
+
+    def __repr__(self) -> str:
+        return (
+            f"<Logger level={self.log_level} "
+            f"dir={self.log_dir} "
+            f"handlers={len(self._logger.handlers)}>"
+        )
+
 
 # ═══════════════════════════════════════════
 # Singleton + module-level helpers
 # ═══════════════════════════════════════════
 _logger: Logger | None = None
+_logger_lock = threading.Lock()
 
 
 def get_logger() -> Logger:
+    """🎯 FIX: thread-safe singleton."""
     global _logger
     if _logger is None:
-        _logger = Logger()
+        with _logger_lock:
+            if _logger is None:
+                _logger = Logger()
     return _logger
 
 
-def log_info(msg: str):
+def reset_logger() -> None:
+    """🎯 پاک‌کردن singleton — فقط برای تست."""
+    global _logger
+    with _logger_lock:
+        if _logger is not None:
+            try:
+                _logger.close()
+            except Exception:
+                pass
+        _logger = None
+
+
+# ─── shortcuts ───
+def log_info(msg: Any) -> None:
     get_logger().info(msg)
 
 
-def log_success(msg: str):
+def log_success(msg: Any) -> None:
     get_logger().success(msg)
 
 
-def log_error(msg: str):
+def log_error(msg: Any) -> None:
     get_logger().error(msg)
 
 
-def log_warning(msg: str):
+def log_warning(msg: Any) -> None:
     get_logger().warning(msg)
 
 
-def log_debug(msg: str):
+def log_debug(msg: Any) -> None:
     get_logger().debug(msg)
 
 
-def log_exception(msg: str, exc: Exception):
+def log_exception(msg: Any, exc: Exception) -> None:
     get_logger().exception(msg, exc)
 
 
+def log_critical(msg: Any) -> None:
+    get_logger().critical(msg)
+
+
 @contextmanager
-def log_duration(operation: str, logger: Logger | None = None):
+def log_duration(
+    operation: str,
+    logger: Logger | None = None,
+):
     """Log start/finish + duration of an operation.
 
-    Uses time.monotonic() so NTP adjustments can't produce negative durations.
+    از `time.monotonic()` استفاده می‌کند تا NTP adjustments
+    باعث duration منفی نشود.
     """
     logger = logger or get_logger()
     start = time.monotonic()
@@ -570,4 +852,28 @@ def log_duration(operation: str, logger: Logger | None = None):
         raise
     finally:
         elapsed = time.monotonic() - start
-        logger.success(f"✅ done: {operation} ({elapsed:.2f}s)")
+        logger.success(
+            f"✅ done: {operation} ({elapsed:.2f}s)"
+        )
+
+
+# ═══════════════════════════════════════════
+# __all__
+# ═══════════════════════════════════════════
+__all__ = [
+    "Logger",
+    "LogLevel",
+    "get_logger",
+    "reset_logger",
+    "log_info",
+    "log_success",
+    "log_error",
+    "log_warning",
+    "log_debug",
+    "log_exception",
+    "log_critical",
+    "log_duration",
+    "JsonFormatter",
+    "ConsoleFormatter",
+    "SUCCESS_LEVEL",
+]

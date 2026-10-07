@@ -545,7 +545,7 @@ class EitaaCollector(BaseCollector):
                 # شناسهٔ پایدار با md5
                 if not mid and text:
                     # 🎯 FIX: chat_name را هم داخل hash بیاور
-                    mid = hashlib.md5(
+                    mid = hashlib.sha256(
                         f"{chat_name}:{text}".encode("utf-8")
                     ).hexdigest()[:16]
                 if not mid or not text:

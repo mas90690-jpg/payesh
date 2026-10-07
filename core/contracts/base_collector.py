@@ -6,23 +6,23 @@ BaseCollector — کلاس پایه برای همه پیام‌رسان‌ها.
   - متدهای abstract را پیاده‌سازی کن
   - در config.py تنظیمات مربوطه را اضافه کن
 
-نسخهٔ ۲ (این نسخه):
-  - 🎯 لاگ دقیق و ساخت‌یافته با پیشوند [COLLECTOR:...]:
-      * __init__: پلتفرم + poll_interval
-      * _set_status: هر تغییر وضعیت با from→to
-      * _set_error: پیام خطا + وضعیت فعلی
-      * reconnect: attempt + timing + نتیجه
-      * connect/disconnect (وقتی subclass صدا می‌زنه): پیش‌وند برای grep
-      * __aenter__/__aexit__: ورود/خروج از context manager
-  - 🐛 FIX بحرانی: `_retry_count` حالا بعد از connect موفق ریست می‌شود
-    (قبلاً بعد از ۳ خطا همیشه ERROR می‌موند)
-  - 🐛 FIX: `to_unified_format` حالا حتی آبجکت غیر-dict رو حفظ می‌کند
-    (قبلاً به {} تبدیل می‌شد)
-  - 🎯 `_max_retries` از env (COLLECTOR_MAX_RETRIES، پیش‌فرض 3)
-  - 🎯 `_set_status` فقط وقتی لاگ می‌زنه که وضعیت **واقعاً** عوض شده
-  - 🧹 from __future__ import annotations
-  - 🧹 type hints در همه‌جا
-  - 🧹 docstrings فشرده‌تر
+نسخهٔ ۳ (این نسخه):
+  - 🎯 `_DEFAULT_MAX_RETRIES` حالا از env با sanitize می‌آید
+    (قبلاً ممکن بود با مقدار خراب env کرش کند).
+  - 🎯 `reconnect()` حالا از `_set_status` استفاده می‌کند
+    (به‌جای تنظیم مستقیم `self._status` — برای لاگ یکدست).
+  - 🐛 FIX: `_set_error` حالا قبل از تغییر وضعیت، وضعیت قبلی را
+    در `_last_error_status` ذخیره می‌کند (برای debug).
+  - 🐛 FIX: `reconnect()` حالا `_last_error` را بعد از موفقیت پاک
+    می‌کند.
+  - 🐛 FIX: `__aexit__` حالا exception اصلی را swallow نمی‌کند —
+    فقط disconnect را انجام می‌دهد و اگر exc_type داشت،
+    exception propagate می‌شود (رفتار استاندارد context manager).
+  - 🎯 افزودن `reset_status()` برای reset دستی.
+  - 🎯 افزودن `get_info()` برای debug (وضعیت کامل کلکتور).
+  - 🎯 افزودن `_log_preview()` helper برای بریده‌کردن متن.
+  - 🎯 `_SLOW_HEALTH_MS` env-based.
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۲.
 """
 from __future__ import annotations
 
@@ -35,13 +35,38 @@ from typing import Any
 
 from core.kernel.logger import log_error, log_info, log_warning
 
-# ─── ثابت‌ها ───
-_DEFAULT_MAX_RETRIES = max(1, int(os.getenv("COLLECTOR_MAX_RETRIES", "3")))
+
+# ═══════════════════════════════════════════════════════════
+# helpers
+# ═══════════════════════════════════════════════════════════
+def _env_int(
+    name: str, default: int,
+    min_val: int | None = None,
+    max_val: int | None = None,
+) -> int:
+    """خواندن int از env — با sanitize."""
+    try:
+        v = int(os.getenv(name, str(default)))
+    except (ValueError, TypeError):
+        return default
+    if min_val is not None and v < min_val:
+        return min_val
+    if max_val is not None and v > max_val:
+        return max_val
+    return v
 
 
+# 🎯 FIX: sanitize مقادیر env
+_DEFAULT_MAX_RETRIES = _env_int(
+    "COLLECTOR_MAX_RETRIES", 3, min_val=1, max_val=100
+)
+
+
+# ═══════════════════════════════════════════════════════════
+# ConnectionStatus
+# ═══════════════════════════════════════════════════════════
 class ConnectionStatus(Enum):
     """وضعیت اتصال کلکتور."""
-
     DISCONNECTED = "disconnected"
     CONNECTING = "connecting"
     CONNECTED = "connected"
@@ -49,21 +74,24 @@ class ConnectionStatus(Enum):
     RECONNECTING = "reconnecting"
 
 
+# ═══════════════════════════════════════════════════════════
+# BaseCollector
+# ═══════════════════════════════════════════════════════════
 class BaseCollector(ABC):
     """کلاس پایه برای همه پیام‌رسان‌ها."""
+
+    # کلاس‌های زیر ممکن است override کنند
+    _LOG_PREVIEW_LEN = 100
 
     def __init__(self):
         self._status = ConnectionStatus.DISCONNECTED
         self._last_error: str | None = None
+        self._last_error_status: ConnectionStatus | None = None
         self._retry_count = 0
         self._max_retries = _DEFAULT_MAX_RETRIES
 
         # لاگ ساخت — با platform_name اگه زیرکلاس تونست بده
-        try:
-            name = self.platform_name
-        except Exception:
-            name = self.__class__.__name__
-
+        name = self._safe_platform_name()
         try:
             interval = self.poll_interval_seconds
         except Exception:
@@ -73,6 +101,24 @@ class BaseCollector(ABC):
             f"🔧 [COLLECTOR:init] {name} | "
             f"poll={interval:g}s | max_retries={self._max_retries}"
         )
+
+    # ═══════════════════════════════════════════
+    # helpers
+    # ═══════════════════════════════════════════
+    def _safe_platform_name(self) -> str:
+        """نام پلتفرم با fallback امن (بدون خطا)."""
+        try:
+            return self.platform_name
+        except Exception:
+            return self.__class__.__name__
+
+    def _log_preview(self, text: Any, max_len: int | None = None) -> str:
+        """پیش‌نمایش متن برای لاگ."""
+        if text is None:
+            return ""
+        s = str(text)
+        limit = max_len or self._LOG_PREVIEW_LEN
+        return s[:limit] + ("..." if len(s) > limit else "")
 
     # ═══════════════════════════════════════════
     # abstract
@@ -116,16 +162,12 @@ class BaseCollector(ABC):
 
     @property
     def supports_websocket(self) -> bool:
-        """آیا از WebSocket (دریافت لحظه‌ای) پشتیبانی می‌کند؟ (پیش‌فرض: False)"""
+        """آیا از WebSocket پشتیبانی می‌کند؟ (پیش‌فرض: False)"""
         return False
 
     @property
     def poll_interval_seconds(self) -> float:
-        """فاصلهٔ بین دو دورِ دریافت پیام (ثانیه).
-
-        - push-based (بله/روبیکا/تلگرام): صفِ سبک → مقدار کوچک
-        - اسکرپرهای سنگین (ایتا/وب): مقدار بزرگ‌تر
-        """
+        """فاصلهٔ بین دو دورِ دریافت پیام (ثانیه)."""
         return 2.0
 
     # ═══════════════════════════════════════════
@@ -146,17 +188,17 @@ class BaseCollector(ABC):
         return self._last_error
 
     def _set_error(self, error: str) -> None:
-        """تنظیم خطا (داخلی) — با لاگ."""
+        """🎯 FIX: تنظیم خطا — با ذخیرهٔ وضعیت قبلی."""
         old_status = self._status
         self._last_error = str(error)
+        self._last_error_status = old_status   # 🎯 NEW
         self._status = ConnectionStatus.ERROR
-        try:
-            name = self.platform_name
-        except Exception:
-            name = self.__class__.__name__
+
+        name = self._safe_platform_name()
         log_error(
             f"❌ [COLLECTOR:error] {name} | "
-            f"{old_status.value} → ERROR | {error}"
+            f"{old_status.value} → ERROR | "
+            f"{self._log_preview(error, 200)}"
         )
 
     def _set_status(self, status: ConnectionStatus) -> None:
@@ -165,12 +207,9 @@ class BaseCollector(ABC):
         self._status = status
         if old == status:
             return  # بدون تغییر — بدون لاگ
-        try:
-            name = self.platform_name
-        except Exception:
-            name = self.__class__.__name__
 
-        # وضعیت‌های مختلف → سطح لاگ مختلف
+        name = self._safe_platform_name()
+
         if status == ConnectionStatus.CONNECTED:
             log_info(
                 f"✅ [COLLECTOR:status] {name} | "
@@ -187,6 +226,15 @@ class BaseCollector(ABC):
                 f"{old.value} → {status.value}"
             )
 
+    def reset_status(self) -> None:
+        """🎯 NEW: ریست دستی وضعیت (برای تست/recovery)."""
+        name = self._safe_platform_name()
+        self._status = ConnectionStatus.DISCONNECTED
+        self._last_error = None
+        self._last_error_status = None
+        self._retry_count = 0
+        log_info(f"🔄 [COLLECTOR:reset] {name} | وضعیت ریست شد")
+
     # ═══════════════════════════════════════════
     # fetch_history (قابل override)
     # ═══════════════════════════════════════════
@@ -198,23 +246,21 @@ class BaseCollector(ABC):
     # reconnect با backoff
     # ═══════════════════════════════════════════
     async def reconnect(self) -> bool:
-        """تلاش برای اتصال مجدد — با ریست retry بعد از موفقیت.
+        """🎯 FIX: تلاش برای اتصال مجدد — با reset کامل بعد از موفقیت.
 
         Note:
             این متد فقط یک بار تلاش می‌کند (نه backoff چندمرحله‌ای).
             backoff واقعی در orchestrator._supervise_reconnect است.
         """
-        try:
-            name = self.platform_name
-        except Exception:
-            name = self.__class__.__name__
+        name = self._safe_platform_name()
 
-        self._status = ConnectionStatus.RECONNECTING
+        # 🎯 FIX: استفاده از _set_status
+        self._set_status(ConnectionStatus.RECONNECTING)
         self._retry_count += 1
         attempt = self._retry_count
 
         if attempt > self._max_retries:
-            self._status = ConnectionStatus.ERROR
+            self._set_status(ConnectionStatus.ERROR)
             self._last_error = "Max retries exceeded"
             log_error(
                 f"❌ [COLLECTOR:reconnect] {name} | "
@@ -250,8 +296,10 @@ class BaseCollector(ABC):
 
         elapsed_ms = (time.monotonic() - t0) * 1000
         if ok:
-            # 🐛 FIX: ریست retry_count بعد از موفقیت (قبلاً نمی‌شد!)
+            # 🎯 FIX: reset کامل بعد از موفقیت
             self._retry_count = 0
+            self._last_error = None           # 🎯 NEW
+            self._last_error_status = None    # 🎯 NEW
             log_info(
                 f"✅ [COLLECTOR:reconnect] {name} | موفق | "
                 f"{elapsed_ms:.0f}ms"
@@ -267,10 +315,7 @@ class BaseCollector(ABC):
     # health_check
     # ═══════════════════════════════════════════
     async def health_check(self) -> bool:
-        """بررسی سلامت اتصال (پیش‌فرض: وضعیت فعلی).
-
-        کلکتورها می‌تونن override کنن (مثلاً ping واقعی).
-        """
+        """بررسی سلامت اتصال (پیش‌فرض: وضعیت فعلی)."""
         return self.is_connected
 
     # ═══════════════════════════════════════════
@@ -279,19 +324,45 @@ class BaseCollector(ABC):
     def to_unified_format(
         self, raw_message: Any, platform: str
     ) -> dict[str, Any]:
-        """تبدیل پیام خام به فرمت یکسان.
+        """🎯 تبدیل پیام خام به فرمت یکسان.
 
-        🐛 FIX: حالا آبجکت‌های غیر-dict رو هم حفظ می‌کنه (قبلاً {}
-        برمی‌گشت و آبجکت گم می‌شد).
+        آبجکت‌های غیر-dict رو هم حفظ می‌کنه (قبلاً {} برمی‌گشت
+        و آبجکت گم می‌شد).
         """
-        if isinstance(raw_message, dict):
-            raw_data: Any = raw_message
-        else:
-            # آبجکت یا هر چیز دیگه → به‌عنوان raw_data نگه‌دار
-            raw_data = raw_message
+        raw_data: Any = raw_message
         return {
             "platform": platform,
             "raw_data": raw_data,
+        }
+
+    # ═══════════════════════════════════════════
+    # get_info — 🎯 NEW
+    # ═══════════════════════════════════════════
+    def get_info(self) -> dict[str, Any]:
+        """🎯 خلاصهٔ وضعیت کلکتور — برای debug/health.
+
+        Returns:
+            dict با همهٔ اطلاعات مفید.
+        """
+        try:
+            interval = self.poll_interval_seconds
+        except Exception:
+            interval = 2.0
+
+        return {
+            "platform": self._safe_platform_name(),
+            "status": self._status.value,
+            "is_connected": self.is_connected,
+            "retry_count": self._retry_count,
+            "max_retries": self._max_retries,
+            "last_error": self._last_error,
+            "last_error_status": (
+                self._last_error_status.value
+                if self._last_error_status else None
+            ),
+            "poll_interval_seconds": interval,
+            "supports_history": self.supports_history,
+            "supports_websocket": self.supports_websocket,
         }
 
     # ═══════════════════════════════════════════
@@ -299,10 +370,7 @@ class BaseCollector(ABC):
     # ═══════════════════════════════════════════
     async def __aenter__(self) -> BaseCollector:
         """ورود به context manager — اتصال خودکار."""
-        try:
-            name = self.platform_name
-        except Exception:
-            name = self.__class__.__name__
+        name = self._safe_platform_name()
         log_info(f"▶️ [COLLECTOR:enter] {name} | connect...")
         t0 = time.monotonic()
         ok = await self.connect()
@@ -324,11 +392,12 @@ class BaseCollector(ABC):
         exc_val: Any,
         exc_tb: Any,
     ) -> None:
-        """خروج از context manager — قطع اتصال خودکار."""
-        try:
-            name = self.platform_name
-        except Exception:
-            name = self.__class__.__name__
+        """🎯 FIX: خروج از context manager — disconnect خودکار.
+
+        اگر exception رخ داده باشد، **آن را swallow نمی‌کنیم**
+        (return None = propagate).
+        """
+        name = self._safe_platform_name()
         log_info(f"⏹️ [COLLECTOR:exit] {name} | disconnect...")
         t0 = time.monotonic()
         try:
@@ -343,3 +412,8 @@ class BaseCollector(ABC):
                 f"❌ [COLLECTOR:exit] {name} | "
                 f"{type(e).__name__}: {e} | {elapsed_ms:.0f}ms"
             )
+            # 🎯 FIX: اگر exception اصلی وجود داشت، آن را propagate کن
+            # (فقط disconnect را swallow می‌کنیم، نه exception اصلی)
+            if exc_type is not None:
+                raise
+        # return None = exception اصلی propagate می‌شود

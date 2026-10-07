@@ -7,13 +7,15 @@
   - آن را از طریق StorageHandler.handle() به DB می‌فرستد
   - چک می‌کند که در DB ذخیره شده است
 
-نسخهٔ ۲ (این نسخه):
-  - 🐛 FIX بحرانی: متن پیام حالا از یک کلیدواژهٔ واقعی
-    (kw.keywords[0]) استفاده می‌کند. قبلاً «کود مایع سپاهان رویش»
-    با هیچ‌کدام از ۲۹۳ کلیدواژه match نمی‌شد → تست 0/N fail می‌شد.
+نسخهٔ ۳ (این نسخه):
+  - 🐛 FIX: متن پیام حالا از یک کلیدواژهٔ واقعی استفاده می‌کند
+    (kw.keywords[0] قبلی → انتخاب هوشمندتر با معیارهای امنیتی).
   - 🐛 FIX: fallback امن اگه keyword_finder خالی بود.
+  - 🐛 FIX: Connection leak در مرحله ۶ و ۷ — حالا try/finally.
+  - 🎯 FIX: import sqlite3 به بالای فایل منتقل شد (نه دوبار داخل تابع).
+  - 🎯 FIX: متغیر db (unused) حذف شد.
   - 🎯 گزارش کلیدواژه انتخاب‌شده (برای دیباگ).
-  - ✅ حفظ همهٔ مراحل نسخهٔ ۱.
+  - ✅ حفظ همهٔ مراحل نسخهٔ ۲.
 
 اجرا:
   python tests/test_storage_full.py
@@ -22,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sqlite3
 import sys
 import time
 from datetime import datetime
@@ -37,29 +40,67 @@ from tests.db_helpers import (
 
 
 # ═════════════════════════════════════════════════════════
-# انتخاب کلیدواژهٔ واقعی از finder
+# helpers داخلی
 # ═════════════════════════════════════════════════════════
+def _safe_close(conn: sqlite3.Connection | None) -> None:
+    """بستن امن یک connection — بدون raise."""
+    if conn is None:
+        return
+    try:
+        conn.close()
+    except Exception:
+        pass
+
+
 def _pick_real_keyword() -> str:
     """
-    یک کلیدواژهٔ واقعی از لیست keyword_finder برمی‌گرداند.
+    یک کلیدواژهٔ واقعی و امن از keyword_finder برمی‌گرداند.
 
     چرا؟ چون StorageHandler فقط پیام‌هایی را ذخیره می‌کند که
-    حداقل یک کلیدواژه از finder داشته باشند. اگه متن تست
-    با هیچ کلیدواژه‌ای match نشود، گارد ۳ پیام را رد می‌کند
-    و تست شکست می‌خورد.
+    حداقل یک کلیدواژه از finder داشته باشند.
+
+    معیارهای انتخاب:
+      - طول ≥ ۵ کاراکتر (برای جلوگیری از substring problem)
+      - بدون کاراکتر خاص (پرانتز، نقطه، اسلش)
+      - ترجیح فارسی (چون متن تست فارسی است)
     """
     try:
         from analyzers.keyword_finder import get_keyword_finder
         kw = get_keyword_finder()
-        if kw.keywords:
-            return kw.keywords[0]
+        if not kw.keywords:
+            return "کود مایع"    # fallback با طول کافی
+
+        def _is_safe(k: str) -> bool:
+            if not k or len(k) < 5:
+                return False
+            # بدون کاراکتر خاص
+            if any(c in k for c in "()[]{}\\/|.*+?^$"):
+                return False
+            return True
+
+        # ─── اول: کلیدواژهٔ فارسی امن ───
+        for k in kw.keywords:
+            if _is_safe(k) and any(
+                '\u0600' <= c <= '\u06ff' for c in k
+            ):
+                return k
+
+        # ─── دوم: هر کلیدواژهٔ امن ───
+        for k in kw.keywords:
+            if _is_safe(k):
+                return k
+
+        # ─── سوم: اولین کلیدواژه ───
+        return kw.keywords[0]
     except Exception as e:
         print(f"  ⚠️ keyword_finder error: {type(e).__name__}: {e}")
 
-    # fallback امن — ولی احتمالاً با data واقعی match نمی‌شود
-    return "کود"
+    return "کود مایع"
 
 
+# ═════════════════════════════════════════════════════════
+# main
+# ═════════════════════════════════════════════════════════
 async def main():
     banner("تست مستقل StorageHandler")
     report = TestReport("storage")
@@ -85,7 +126,6 @@ async def main():
         )
         await pipeline.start()
         handler = pipeline._storage
-        db = pipeline._db
 
         report.add("handler.init", "ok",
                    f"name={handler.handler_name}")
@@ -98,7 +138,6 @@ async def main():
     # ═══ ۳) پیام فیک با کلیدواژهٔ واقعی ═══
     section("مرحله ۳: ساخت پیام فیک")
 
-    # 🐛 FIX: کلیدواژهٔ واقعی از finder
     real_kw = _pick_real_keyword()
     report.add(
         "keyword.selected", "ok",
@@ -131,7 +170,7 @@ async def main():
     }
     report.add(
         "fake_msg.created", "ok",
-        f"id={fake_msg['id']} | text={test_text[:60]}..."
+        f"id={fake_msg['id'][:40]} | text={test_text[:60]}..."
     )
 
     # ═══ ۴) چک پیش‌پرواز: آیا متن با finder match می‌شود؟ ═══
@@ -177,9 +216,8 @@ async def main():
 
     # ═══ ۶) چک DB تست ═══
     section("مرحله ۶: چک ذخیره‌سازی در DB تست")
+    conn = None
     try:
-        import sqlite3
-
         conn = sqlite3.connect(pipeline._db_path)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
@@ -204,15 +242,14 @@ async def main():
             )
             fallback_row = cur.fetchone()
 
-        conn.close()
-
         if row:
             stored = dict(row)
+            kw_str = (stored.get("keywords") or "—")[:60]
             report.add(
                 "db.saved", "ok",
-                f"id={stored['id']} | "
-                f"chat={stored['chat_name']} | "
-                f"kw={stored.get('keywords')}"
+                f"id={stored['id'][:30]} | "
+                f"chat={(stored.get('chat_name') or '?')[:25]} | "
+                f"kw={kw_str}"
             )
             print(f"\n  ✅ پیام در DB پیدا شد:")
             print(f"     id={stored['id']}")
@@ -223,7 +260,7 @@ async def main():
 
             if stored.get("keywords"):
                 report.add("db.keywords", "ok",
-                           f"کلیدواژه: {stored['keywords']}")
+                           f"کلیدواژه: {kw_str}")
             else:
                 report.add("db.keywords", "warn",
                            "کلیدواژه ذخیره نشده")
@@ -233,7 +270,7 @@ async def main():
             if fallback_row:
                 detail += (
                     f" | ولی پیام دیگری در DB هست: "
-                    f"id={fallback_row['id']}"
+                    f"id={fallback_row['id'][:30]}"
                 )
             report.add("db.saved", "fail", detail)
 
@@ -250,11 +287,13 @@ async def main():
             )
     except Exception as e:
         report.add("db.saved", "fail", str(e))
+    finally:
+        _safe_close(conn)
 
     # ═══ ۷) آمار DB تست ═══
     section("مرحله ۷: آمار DB تست")
+    conn = None
     try:
-        import sqlite3
         conn = sqlite3.connect(pipeline._db_path)
         cur = conn.cursor()
 
@@ -278,7 +317,6 @@ async def main():
             ("storage_test",),
         )
         samples = cur.fetchall()
-        conn.close()
 
         report.add("db.stats", "ok",
                    f"storage_test: total={total} | leads={leads}")
@@ -286,12 +324,14 @@ async def main():
         if samples:
             print(f"\n  📋 نمونهٔ پیام‌های DB تست:")
             for s in samples:
-                print(f"     id={s[0][:30]} | "
+                print(f"     id={str(s[0])[:30]} | "
                       f"chat={s[1]} | "
                       f"kw={s[2]} | "
                       f"tier={s[3]}")
     except Exception as e:
         report.add("db.stats", "warn", str(e))
+    finally:
+        _safe_close(conn)
 
     # ═══ ۸) cleanup ═══
     section("مرحله ۸: پاک‌سازی")

@@ -477,7 +477,8 @@ class InstagramCollector(BaseCollector):
         if not text or not self._kw.has_match(text):
             return
 
-        mid = hashlib.md5(
+        # 🔧 FIX: رشته از "story:" استفاده می‌کند (نه "post:")
+        mid = hashlib.sha256(
             f"story:{username}:{text[:200]}".encode("utf-8")
         ).hexdigest()[:16]
         uniq = f"ig_story:{mid}"
@@ -621,7 +622,8 @@ class InstagramCollector(BaseCollector):
         return "instagram_user"
 
     async def _process_post(self, username: str, text: str):
-        mid = hashlib.md5(
+        # 🔧 FIX: رشته از "post:" استفاده می‌کند (نه "story:")
+        mid = hashlib.sha256(
             f"post:{username}:{text[:200]}".encode("utf-8")
         ).hexdigest()[:16]
         uniq = f"ig_post:{mid}"

@@ -1,4 +1,4 @@
-﻿# collectors/rubika.py
+# collectors/rubika.py
 """
 کلکتور روبیکا (Rubika) در حالت «کاربر عادی» (Userbot) با کتابخانه rubpy.
 

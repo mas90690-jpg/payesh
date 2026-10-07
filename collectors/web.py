@@ -640,7 +640,7 @@ class WebCollector(BaseCollector):
             )
             return None
         # اثرانگشت محتوا برای حذف تکراری (پایدار بین اجراها)
-        fingerprint = hashlib.md5((url + "|" + text[:1000]).encode("utf-8")).hexdigest()
+        fingerprint = hashlib.sha256((url + "|" + text[:1000]).encode("utf-8")).hexdigest()[:16]
         if fingerprint in self._seen_hashes:
             log_debug(f"⏭️ [seen] تکراری | web | {url[:60]}")
             return None

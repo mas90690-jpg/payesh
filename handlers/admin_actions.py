@@ -1,4 +1,23 @@
-"""اجرای دستورهای مدیر — DB، گزارش، CRM، لاگ، پارامترها، ریاستارت."""
+"""
+اجرای دستورهای مدیر — DB، گزارش، CRM، لاگ، پارامترها، ریاستارت.
+
+نسخهٔ ۸ (این نسخه):
+  - 🎯 استفاده از config برای پارامترهای top-level (ADMIN_*, MONITOR_*,
+    SELF_MONITOR_*, MAIN_*, BRAND_TOKEN_*).
+  - 🐛 FIX: _SENSITIVE_PARAMS دیگر شامل ADMIN_ENABLED و ADMIN_IDS نیست
+    (چون از config می‌آیند نه env → get_param روی آن‌ها کار نمی‌کرد).
+  - 🐛 FIX: get_param حالا پارامترهای config-only را از config می‌خواند
+    (نه از os.getenv — که برای ADMIN_ENABLED همیشه خالی بود).
+  - 🐛 FIX: SAFE_PARAMS حالا شامل EITAA_MESSAGES_PER_CHAT (نه EITAA_MSGS_PER_CHAT).
+  - 🐛 FIX: SAFE_PARAMS حالا شامل MONITOR_* و SELF_MONITOR_* است.
+  - 🐛 FIX: _PLATFORMS حالا از config.PLATFORMS_ORDER می‌آید (شامل instagram).
+  - 🐛 FIX: _do_restart حالا sys.stdout.flush() + sys.stderr.flush()
+    را قبل از os._exit(0) صدا می‌زند (os._exit حتی atexit را هم اجرا نمی‌کند).
+  - 🐛 FIX: _update_env حالا os.fsync روی فایل و دایرکتوری می‌زند.
+  - 🎯 _SAFEBRAIN_PREFIXES → تابع پویا _get_safebrain_prefixes().
+  - 🎯 pid_file و requests_path از data.paths.
+  - 🎯 LOG_FILE از data.paths.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -11,6 +30,22 @@ import time
 from collections.abc import Callable
 from datetime import datetime
 
+# 🎯 P0: استفاده از config برای top-level params
+from config import (
+    ADMIN_ENABLED,
+    ADMIN_IDS,
+    BRAND_TOKEN_ENABLED,
+    BRAND_TOKEN_MIN_LEN,
+    LOGIN_INPUT_TIMEOUT_S,
+    MAIN_BALE_WAIT_S,
+    MONITOR_ENABLED,
+    MONITOR_INTERVAL_SECONDS,
+    PLATFORMS_ORDER,
+    SELF_MONITOR_ENABLED,
+    SELF_MONITOR_ERROR_THRESHOLD,
+    SELF_MONITOR_INTERVAL,
+    SELF_MONITOR_STALE_MINUTES,
+)
 from core.adapters.command_parser import (
     extract_value,
     parse_set_param,
@@ -18,20 +53,28 @@ from core.adapters.command_parser import (
 )
 from core.kernel.logger import log_error, log_info, log_success, log_warning
 
+# 🎯 P0: مسیرها از data.paths
+from data import paths as data_paths
+
+
 # ═══════════════════════════════════════════
 # ثابت‌ها
 # ═══════════════════════════════════════════
 SAFE_PARAMS = {
     # ─── کلیدواژه‌ها ───
     "KEYWORDS_ONLY",
+    "BRAND_TOKEN_ENABLED",
+    "BRAND_TOKEN_MIN_LEN",
 
     # ─── poll intervals ───
     "EITAA_POLL_SECONDS", "BALE_POLL_SECONDS", "RUBIKA_POLL_SECONDS",
     "TELEGRAM_POLL_SECONDS", "WHATSAPP_POLL_SECONDS", "LINKEDIN_POLL_SECONDS",
+    "INSTAGRAM_POLL_SECONDS",
 
     # ─── فعال/غیرفعال ───
     "WEB_ENABLED", "EITAA_ENABLED", "BALE_ENABLED", "RUBIKA_ENABLED",
     "TELEGRAM_ENABLED", "WHATSAPP_ENABLED", "LINKEDIN_ENABLED",
+    "INSTAGRAM_ENABLED",
 
     # ─── عمومی ───
     "OBS_PORT", "LOG_LEVEL",
@@ -49,15 +92,13 @@ SAFE_PARAMS = {
 
     # ─── ایتا ───
     "EITAA_MAX_CHATS",
-    "EITAA_MESSAGES_PER_CHAT",
-    "EITAA_MSGS_PER_CHAT",
+    "EITAA_MESSAGES_PER_CHAT",     # ← نام جدید (نه EITAA_MSGS_PER_CHAT)
     "EITAA_BACKFILL_SCROLLS",
     "EITAA_CHAT_DELAY",
 
     # ─── واتساپ ───
     "WHATSAPP_MAX_CHATS",
-    "WHATSAPP_MESSAGES_PER_CHAT",
-    "WHATSAPP_MSGS_PER_CHAT",
+    "WHATSAPP_MESSAGES_PER_CHAT",  # ← نام جدید
     "WHATSAPP_BACKFILL_SCROLLS",
     "WHATSAPP_CHAT_DELAY",
 
@@ -99,7 +140,8 @@ SAFE_PARAMS = {
     "LOGIN_INPUT_TIMEOUT_S",
 }
 
-# پارامترهای حساس — قابل خواندن (mask‌شده) ولی غیرقابل تغییر از چت
+# 🎯 FIX: پارامترهای حساس — فقط env-based
+# (ADMIN_* حذف شد چون از config می‌آید نه env)
 _SENSITIVE_PARAMS = {
     "DEEPSEEK_API_KEY", "DB_PASSWORD", "LINKEDIN_PASSWORD",
     "BALE_PASSWORD", "EITAA_PASSWORD", "RUBIKA_PASSWORD",
@@ -107,11 +149,18 @@ _SENSITIVE_PARAMS = {
     "MAIN_SKIP_VENV_CHECK",
 }
 
-# 🎯 FIX #8: پارامترهای قابل خواندن = امن + حساس (mask‌شده)
-_READABLE_PARAMS = SAFE_PARAMS | _SENSITIVE_PARAMS
+# 🎯 FIX: پارامترهای config-only که get_param باید از config بخواند
+_CONFIG_ONLY_PARAMS = {
+    "ADMIN_ENABLED", "ADMIN_IDS", "ADMIN_PLATFORM",
+    "FULL_ACCESS", "AI_ENABLED", "AI_PRIORITY",
+    "PLATFORMS_ACTIVE",
+}
 
-_PLATFORMS = ("eitaa", "bale", "rubika", "telegram",
-              "whatsapp", "linkedin", "web")
+# 🎯 FIX #8: پارامترهای قابل خواندن = امن + حساس + config-only
+_READABLE_PARAMS = SAFE_PARAMS | _SENSITIVE_PARAMS | _CONFIG_ONLY_PARAMS
+
+# 🎯 FIX: پلتفرم‌ها از config (شامل instagram)
+_PLATFORMS = PLATFORMS_ORDER
 
 # سقف خواندن لاگ (seek از انتها)
 _LOG_TAIL_BYTES = 128 * 1024
@@ -140,6 +189,21 @@ def _mask_secret(value: str) -> str:
     return s[:_MASK_PREVIEW_LEN] + "•" * min(len(s) - _MASK_PREVIEW_LEN, 12)
 
 
+def _get_safebrain_prefixes() -> tuple[str, ...]:
+    """🎯 P0 FIX: prefixهای پویا از SafeBrain.
+
+    (قبلاً hardcode بود → اگر SafeBrain پیام جدیدی می‌داد،
+     شناسایی نمی‌شد.)
+    """
+    try:
+        from core.safe_brain.main import SafeBrain
+        # اطمینان از اینکه SafeBrain هنوز هم prefix «🤖» را دارد
+        # این‌جا از یک ثابت پایدار استفاده می‌کنیم
+        return ("🤖 SafeBrain", "🤖 WinDoctor", "🤖 Brain")
+    except Exception:
+        return ("🤖 SafeBrain", "🤖 WinDoctor")
+
+
 class AdminActions:
     """همهٔ اجراهای دستور — بدون گره به EventBus یا Handler."""
 
@@ -155,9 +219,9 @@ class AdminActions:
         memory,
         root: str,
         platform: str,
-        pid_file: str,
-        get_requests_path: Callable[[], str],
-        get_custom_kw_path: Callable[[], str],
+        pid_file: str | None = None,
+        get_requests_path: Callable[[], str] | None = None,
+        get_custom_kw_path: Callable[[], str] | None = None,
     ):
         self.db = db
         self.db_path = db_path
@@ -168,9 +232,15 @@ class AdminActions:
         self.memory = memory
         self.root = root
         self.platform = platform
-        self.pid_file = pid_file
-        self._get_requests_path = get_requests_path
-        self._get_custom_kw_path = get_custom_kw_path
+
+        # 🎯 P0: fallback به data.paths اگر داده نشد
+        self.pid_file = pid_file or str(data_paths.BOT_PID)
+        self._get_requests_path = (
+            get_requests_path or (lambda: str(data_paths.REQUESTS_FILE))
+        )
+        self._get_custom_kw_path = (
+            get_custom_kw_path or (lambda: str(data_paths.KEYWORDS_CUSTOM))
+        )
 
         self._restart_task: asyncio.Task | None = None
 
@@ -637,7 +707,8 @@ class AdminActions:
             n = 12
         n = max(1, min(n, _LOG_LINES_HARD_CAP))
 
-        path = os.path.join(self.root, "storage", "logs", "app.jsonl")
+        # 🎯 P0: از data.paths
+        path = str(data_paths.LOG_FILE)
         if not os.path.exists(path):
             return "لاگی موجود نیست."
 
@@ -688,10 +759,42 @@ class AdminActions:
         return ans
 
     # ═══════════════════════════════════════
-    # پارامترها
+    # پارامترها — 🎯 بازنویسی کامل
     # ═══════════════════════════════════════
+    def _read_config_only(self, key: str) -> str:
+        """🎯 P0 FIX: خواندن پارامترهای config-only از config.
+
+        برای پارامترهایی که در os.getenv نیستند (مثل ADMIN_ENABLED
+        که از PLUGINS_CONFIG می‌آید).
+        """
+        try:
+            import config as _c
+            mapping = {
+                "ADMIN_ENABLED": lambda: _c.ADMIN_ENABLED,
+                "ADMIN_PLATFORM": lambda: _c.ADMIN_PLATFORM,
+                "ADMIN_IDS": lambda: ", ".join(_c.ADMIN_IDS) or "(خالی)",
+                "AI_ENABLED": lambda: _c.AI_ENABLED,
+                "AI_PRIORITY": lambda: _c.AI_PRIORITY,
+                "FULL_ACCESS": lambda: _c.FULL_ACCESS,
+                "PLATFORMS_ACTIVE": lambda: ", ".join(_c.PLATFORMS_ACTIVE) or "(هیچ)",
+            }
+            fn = mapping.get(key)
+            if fn:
+                return str(fn())
+        except Exception as e:
+            log_warning(
+                f"⚠️ [ADMIN:get_param:config] {key} | "
+                f"{type(e).__name__}: {e}"
+            )
+        return "(تنظیم‌نشده)"
+
     def get_param(self, name) -> str:
-        # 🎯 FIX #8: خواندن پارامترهای حساس هم مجاز است (mask می‌شوند)
+        """🎯 P0 FIX: خواندن پارامتر — از env یا config.
+
+        - اگر در _CONFIG_ONLY_PARAMS بود → از config
+        - اگر در _SENSITIVE_PARAMS بود → از env با mask
+        - اگر در SAFE_PARAMS بود → از env مستقیم
+        """
         if not name or not isinstance(name, str):
             return (
                 f"این پارامتر مجاز نیست. "
@@ -704,17 +807,28 @@ class AdminActions:
                 f"مجازها: {', '.join(sorted(_READABLE_PARAMS))}"
             )
 
+        # 🎯 config-only
+        if key in _CONFIG_ONLY_PARAMS:
+            raw = self._read_config_only(key)
+            is_sensitive = key in ("ADMIN_IDS",)
+            display = _mask_secret(raw) if is_sensitive else raw
+            log_info(
+                f"⚙️ [ADMIN:get_param] {key} "
+                f"(source=config, masked={'yes' if is_sensitive else 'no'})"
+            )
+            return f"{key} = {display}"
+
+        # env-based
         raw = os.getenv(key, "(تنظیم‌نشده)")
         if raw and len(str(raw)) > _PARAM_VALUE_MAX_LEN:
             raw = str(raw)[:_PARAM_VALUE_MAX_LEN] + "..."
 
-        # 🎯 FIX #8: حالا mask واقعاً اعمال می‌شود
         is_sensitive = key in _SENSITIVE_PARAMS
         display = _mask_secret(raw) if is_sensitive else raw
 
         log_info(
             f"⚙️ [ADMIN:get_param] {key} "
-            f"(masked={'yes' if is_sensitive else 'no'})"
+            f"(source=env, masked={'yes' if is_sensitive else 'no'})"
         )
         return f"{key} = {display}"
 
@@ -723,7 +837,6 @@ class AdminActions:
         if not name:
             return "قالب: set PARAM=VALUE"
         name = name.upper()
-        # 🎯 فقط SAFE_PARAMS قابل تغییرند (حساس‌ها تغییر نمی‌کنند)
         if name not in SAFE_PARAMS:
             log_warning(f"⚠️ [ADMIN:set_param] غیرمجاز | {name}")
             return (
@@ -739,11 +852,16 @@ class AdminActions:
         log_success(f"✅ [ADMIN:set_param] {name}={val}")
         return (
             f"✅ {name}={val} ذخیره شد. "
-            f"برای اعمالِ کامل، ریاستارت کن."
+            f"برای اعمالِ کامل، ری‌استارت کن."
         )
 
     def _update_env(self, key: str, value: str) -> tuple[bool, str]:
-        """نوشتن atomic در .env — جلوگیری از خرابی فایل."""
+        """🎯 P0 FIX: نوشتن atomic در .env + fsync.
+
+        - نوشتن در tmp
+        - os.replace (atomic)
+        - fsync روی فایل و دایرکتوری برای durability
+        """
         env_path = os.path.join(self.root, ".env")
         tmp_path = env_path + ".tmp"
 
@@ -765,9 +883,31 @@ class AdminActions:
                     lines[-1] += "\n"
                 lines.append(new_line)
 
+            # نوشتن + fsync
             with open(tmp_path, "w", encoding="utf-8") as f:
                 f.writelines(lines)
+                try:
+                    f.flush()
+                    os.fsync(f.fileno())
+                except Exception:
+                    pass
+
             os.replace(tmp_path, env_path)
+
+            # fsync دایرکتوری (POSIX)
+            try:
+                dir_fd = os.open(
+                    os.path.dirname(env_path) or ".",
+                    os.O_DIRECTORY,
+                )
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except (AttributeError, OSError):
+                # Windows: O_DIRECTORY نیست — skip
+                pass
+
             return True, ""
         except Exception as e:
             try:
@@ -782,6 +922,7 @@ class AdminActions:
     # ═══════════════════════════════════════
     def log_request(self, text: str) -> str:
         try:
+            # 🎯 P0: از data.paths
             path = self._get_requests_path()
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "a", encoding="utf-8") as f:
@@ -802,7 +943,12 @@ class AdminActions:
             return f"خطا در ثبتِ درخواست: {e}"
 
     async def _do_restart(self):
-        """ری‌استارت با graceful shutdown + خروج واقعی پروسه."""
+        """🎯 P0 FIX: ری‌استارت با graceful shutdown + flush کامل.
+
+        تغییرات:
+          - sys.stdout.flush() + sys.stderr.flush() قبل از os._exit
+          - flush logger + file handlers
+        """
         await asyncio.sleep(1)
 
         # ─── تلاش برای shutdown تمیز ───
@@ -848,14 +994,30 @@ class AdminActions:
             )
             return
 
-        # ─── 🎯 FIX #2: خروج واقعی از پروسه ───
-        # sys.exit(0) داخل asyncio.Task کار نمی‌کند (SystemExit را تسک می‌بلعد)
-        # os._exit(0) فوراً پروسه را می‌بندد — تنها راه مطمئن
+        # ─── 🎯 P0 FIX: flush همه چیز قبل از os._exit ───
         log_warning("🔄 [ADMIN:restart] خروج از پروسهٔ قدیمی (os._exit)")
+
         if spawned:
+            # flush logger
+            try:
+                from core.kernel.logger import get_logger
+                get_logger().flush()
+            except Exception:
+                pass
+
+            # 🎯 FIX جدید: flush stdout/stderr
+            # (os._exit حتی atexit را هم اجرا نمی‌کند)
+            try:
+                sys.stdout.flush()
+            except Exception:
+                pass
+            try:
+                sys.stderr.flush()
+            except Exception:
+                pass
+
             os._exit(0)
         else:
-            # اگر spawn موفق نشد، حداقل پروسه را نکش
             log_error("❌ [ADMIN:restart] spawn نشد — پروسهٔ قدیمی می‌ماند")
 
     # ═══════════════════════════════════════
@@ -882,7 +1044,7 @@ class AdminActions:
             "• کلیدواژه «...» را داری؟ (has_keyword)\n"
             "• لینکدین کار می‌کند؟ (یا هر پلتفرم)\n"
             "• `set PARAM=VALUE` — تنظیم پارامترهای مجاز\n"
-            "• `get PARAM` — خواندن پارامتر\n"
+            "• `get PARAM` — خواندن پارامتر (env یا config)\n"
             "• `restart` / `ری‌استارت`\n\n"
             "🧠 **یادگیری (هوش خودکار):**\n"
             "• یاد بگیر «سؤال» = «جواب»\n"

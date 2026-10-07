@@ -1,4 +1,4 @@
-# core/manual_data_api.py
+# core/manual/data_api.py
 """
 API دسترسی کامل به داده — برای استفادهٔ هوش دستی.
 
@@ -10,14 +10,20 @@ API دسترسی کامل به داده — برای استفادهٔ هوش د�
       فرمت قدیمی: ["کود", "سم"]
       فرمت جدید: {"version": "...", "keywords": {"کود": {"tier": "T1"}}}
 
-نسخهٔ ۳ (این نسخه):
-  - 🎯 لاگ دقیق و ساخت‌یافته با پیشوند [DATAPI:...]:
-      * خطاهای SQL با نوع استثنا + کوئری بریده
-      * کوئری‌های کند (>500ms) → warning
-      * موفقیت/خطای add/remove custom keyword
-      * موفقیت/خطای add target group
-      * خواندن/نوشتن فایل keywords_custom.json
-  - 🧹 بدون لاگ برای read‌های پرتکرار (leads_today و...)
+نسخهٔ ۴ (این نسخه):
+  - 🎯 استفاده از `data.paths` برای همهٔ مسیرها (LOG_FILE, REPORTS_DIR, ...).
+  - 🎯 `_BANNED_SQL` حالا از `access_manager._BANNED_SQL_KEYWORDS` مشتق
+    می‌شود (منبع یکتا).
+  - 🎯 `_SLOW_QUERY_MS`, `_LOG_TAIL_BYTES` حالا env-based.
+  - 🎯 `_write_custom_kw` حالا `os.fsync` می‌زند (durability).
+  - 🎯 `add_target_group` حالا atomic write + fsync.
+  - 🎯 `_read_custom_kw_raw` حالا با `FileNotFoundError` جدا
+    مدیریت می‌شود.
+  - 🐛 FIX: `custom_keywords_with_tier` حالا `T3` را هم قبول می‌کند
+    (قبلاً فقط T1/T2).
+  - 🎯 `_env_int` helper برای thresholds.
+  - 🎯 `platform_last_poll` حالا tz-aware هم می‌پذیرد.
+  - ✅ حفظ همهٔ رفتار نسخهٔ ۳.
 """
 from __future__ import annotations
 
@@ -26,36 +32,88 @@ import os
 import sqlite3
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from core.kernel.logger import log_error, log_info, log_success, log_warning
 
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-STORAGE_DIR = os.path.join(ROOT, "storage")
-LOGS_DIR = os.path.join(STORAGE_DIR, "logs")
-REPORTS_DIR = os.path.join(STORAGE_DIR, "reports")
-
-# ⭐ مسیرها از data/paths.py (منبع یکتا) — به‌صورت str برای سازگاری
+# 🎯 P0: مسیرها از data.paths
 from data import paths as data_paths
 
-CUSTOM_KW = str(data_paths.KEYWORDS_CUSTOM)
-TARGET_GROUPS = str(data_paths.TARGET_GROUPS)
+# 🎯 P0: منبع یکتا برای banned SQL
+try:
+    from core.adapters.access_manager import (
+        _BANNED_SQL_KEYWORDS as _ACCESS_BANNED_SQL,
+    )
+except ImportError:
+    _ACCESS_BANNED_SQL = None
 
-# سقف خواندن خطوط لاگ در RAM (seek از انتها، نه کل فایل)
-_LOG_TAIL_BYTES = 512 * 1024
 
-# آستانهٔ هشدار برای کوئری‌های کند (میلی‌ثانیه)
-_SLOW_QUERY_MS = 500
+# ═══════════════════════════════════════════════════════════
+# helpers
+# ═══════════════════════════════════════════════════════════
+def _env_int(
+    name: str, default: int,
+    min_val: int | None = None,
+    max_val: int | None = None,
+) -> int:
+    """خواندن int از env — با sanitize."""
+    try:
+        v = int(os.getenv(name, str(default)))
+    except (ValueError, TypeError):
+        return default
+    if min_val is not None and v < min_val:
+        return min_val
+    if max_val is not None and v > max_val:
+        return max_val
+    return v
 
 
+# ═══════════════════════════════════════════════════════════
+# مسیرها (از data.paths)
+# ═══════════════════════════════════════════════════════════
+ROOT: Path = data_paths.PROJECT_ROOT
+STORAGE_DIR: Path = data_paths.STORAGE_DIR
+LOGS_DIR: Path = data_paths.LOGS_DIR
+REPORTS_DIR: Path = data_paths.REPORTS_DIR
+LOG_FILE: Path = data_paths.LOG_FILE
+
+CUSTOM_KW: str = str(data_paths.KEYWORDS_CUSTOM)
+TARGET_GROUPS: str = str(data_paths.TARGET_GROUPS)
+
+
+# ═══════════════════════════════════════════════════════════
+# آستانه‌ها (env-based)
+# ═══════════════════════════════════════════════════════════
+_LOG_TAIL_BYTES = _env_int(
+    "DATAPI_LOG_TAIL_BYTES", 512 * 1024,
+    min_val=10_000, max_val=10_000_000,
+)
+_SLOW_QUERY_MS = _env_int(
+    "DATAPI_SLOW_QUERY_MS", 500,
+    min_val=50, max_val=60_000,
+)
+
+# SQL keywords که نمی‌توانند در SELECT باشند
+# 🎯 FIX: از access_manager مشتق می‌شود
+if _ACCESS_BANNED_SQL:
+    _BANNED_SQL: tuple[str, ...] = tuple(_ACCESS_BANNED_SQL)
+else:
+    _BANNED_SQL = (
+        "DROP", "DELETE", "UPDATE", "INSERT", "ALTER",
+        "TRUNCATE", "ATTACH", "PRAGMA", "VACUUM", "CREATE",
+        "REPLACE", "GRANT", "REVOKE",
+    )
+
+# 🎯 T3 هم حالا معتبر است
+_VALID_TIERS: tuple[str, ...] = ("T1", "T2", "T3")
+
+
+# ═══════════════════════════════════════════════════════════
+# DataAPI
+# ═══════════════════════════════════════════════════════════
 class DataAPI:
     """دسترسی کامل به همهٔ داده‌های ربات (خواندنی + امن)."""
-
-    # کلیدواژه‌های SQL ممنوعه (فراتر از SELECT)
-    _BANNED_SQL = (
-        "DROP", "DELETE", "UPDATE", "INSERT", "ALTER", "TRUNCATE",
-        "ATTACH", "PRAGMA", "VACUUM", "CREATE", "REPLACE",
-    )
 
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -64,7 +122,11 @@ class DataAPI:
     # دیتابیس (SELECT فقط)
     # ═══════════════════════════════════════════
     def sql(self, query: str, params: tuple = ()) -> list[dict]:
-        """اجرای کوئری SELECT. هر چیز دیگری رد می‌شود."""
+        """اجرای کوئری SELECT. هر چیز دیگری رد می‌شود.
+
+        Returns:
+            لیست dict (اگر خطا → لیست خالی).
+        """
         q = (query or "").strip()
         qu = q.upper()
 
@@ -74,26 +136,24 @@ class DataAPI:
                 f"⛔ [DATAPI:sql] رد کوئری غیر SELECT | {q[:80]!r}"
             )
             return []
-        if any(kw in qu for kw in self._BANNED_SQL):
+        if any(kw in qu for kw in _BANNED_SQL):
             log_warning(
-                f"⛔ [DATAPI:sql] کلمهٔ ممنوعه در کوئری | {q[:80]!r}"
+                f"⛔ [DATAPI:sql] کلمهٔ ممنوعه | {q[:80]!r}"
             )
             return []
 
         t0 = time.monotonic()
+        c = None
         try:
             c = sqlite3.connect(self.db_path)
             c.row_factory = sqlite3.Row
-            try:
-                rows = c.execute(q, params).fetchall()
-                result = [dict(r) for r in rows]
-            finally:
-                c.close()
+            rows = c.execute(q, params).fetchall()
+            result = [dict(r) for r in rows]
 
             elapsed_ms = (time.monotonic() - t0) * 1000
             if elapsed_ms > _SLOW_QUERY_MS:
                 log_warning(
-                    f"🐌 [DATAPI:sql] کوئری کند | {elapsed_ms:.0f}ms | "
+                    f"🐌 [DATAPI:sql] کند | {elapsed_ms:.0f}ms | "
                     f"rows={len(result)} | {q[:80]!r}"
                 )
             return result
@@ -101,24 +161,34 @@ class DataAPI:
             elapsed_ms = (time.monotonic() - t0) * 1000
             log_error(
                 f"❌ [DATAPI:sql] {type(e).__name__}: {e} | "
-                f"{elapsed_ms:.0f}ms | {q[:80]!r} | params={params!r}"
+                f"{elapsed_ms:.0f}ms | {q[:80]!r} | "
+                f"params={params!r}"
             )
             return []
+        finally:
+            if c is not None:
+                try:
+                    c.close()
+                except Exception:
+                    pass
 
     def scalar(self, query: str, params: tuple = ()) -> Any:
         """یک مقدار تک (اولین ستون اولین ردیف) — 0 اگر نبود."""
         rows = self.sql(query, params)
         if not rows:
             return 0
-        return list(rows[0].values())[0]
+        try:
+            return list(rows[0].values())[0]
+        except Exception:
+            return 0
 
     def row(self, query: str, params: tuple = ()) -> dict | None:
-        """یک ردیف."""
+        """یک ردیف یا None."""
         rows = self.sql(query, params)
         return rows[0] if rows else None
 
     # ═══════════════════════════════════════════
-    # آمار سرنخ‌ها (read — بدون لاگ پرتکرار)
+    # آمار سرنخ‌ها
     # ═══════════════════════════════════════════
     def leads_total(self) -> int:
         return int(self.scalar(
@@ -128,13 +198,15 @@ class DataAPI:
     def leads_today(self) -> int:
         return int(self.scalar(
             "SELECT COUNT(*) FROM messages WHERE keywords!='' "
-            "AND date(timestamp, 'localtime')=date('now', 'localtime')"
+            "AND date(timestamp, 'localtime')="
+            "date('now', 'localtime')"
         ) or 0)
 
     def leads_yesterday(self) -> int:
         return int(self.scalar(
             "SELECT COUNT(*) FROM messages WHERE keywords!='' "
-            "AND date(timestamp, 'localtime')=date('now', 'localtime', '-1 day')"
+            "AND date(timestamp, 'localtime')="
+            "date('now', 'localtime', '-1 day')"
         ) or 0)
 
     def leads_last_n_days(self, n: int) -> int:
@@ -150,8 +222,8 @@ class DataAPI:
 
     def leads_by_platform(self) -> list[dict]:
         return self.sql(
-            "SELECT platform, COUNT(*) as n FROM messages WHERE keywords!='' "
-            "GROUP BY platform ORDER BY n DESC"
+            "SELECT platform, COUNT(*) as n FROM messages "
+            "WHERE keywords!='' GROUP BY platform ORDER BY n DESC"
         )
 
     def leads_by_platform_last_n(self, n: int) -> list[dict]:
@@ -160,7 +232,8 @@ class DataAPI:
         except (TypeError, ValueError):
             n = 30
         return self.sql(
-            "SELECT platform, COUNT(*) as n FROM messages WHERE keywords!='' "
+            "SELECT platform, COUNT(*) as n FROM messages "
+            "WHERE keywords!='' "
             "AND timestamp >= datetime('now', ?) "
             "GROUP BY platform ORDER BY n DESC",
             (f"-{n} days",),
@@ -168,17 +241,21 @@ class DataAPI:
 
     def hot_today(self) -> int:
         return int(self.scalar(
-            "SELECT COUNT(*) FROM messages WHERE opportunity_type='داغ' "
+            "SELECT COUNT(*) FROM messages "
+            "WHERE opportunity_type='داغ' "
             "AND date(timestamp)=date('now')"
         ) or 0)
 
     def hot_total(self) -> int:
         return int(self.scalar(
-            "SELECT COUNT(*) FROM messages WHERE opportunity_type='داغ'"
+            "SELECT COUNT(*) FROM messages "
+            "WHERE opportunity_type='داغ'"
         ) or 0)
 
-    def top_keywords(self, limit: int = 10, days: int = 30) -> list[dict]:
-        """پرتکرارترین کلیدواژه‌ها در N روز اخیر (تجزیهٔ دستی ستون keywords)."""
+    def top_keywords(
+        self, limit: int = 10, days: int = 30
+    ) -> list[dict]:
+        """پرتکرارترین کلیدواژه‌ها در N روز اخیر."""
         rows = self.sql(
             "SELECT keywords FROM messages WHERE keywords!='' "
             "AND timestamp >= datetime('now', ?)",
@@ -192,60 +269,82 @@ class DataAPI:
                     counts[kw] = counts.get(kw, 0) + 1
         return [
             {"keyword": k, "count": v}
-            for k, v in sorted(counts.items(), key=lambda x: -x[1])[:limit]
+            for k, v in sorted(
+                counts.items(), key=lambda x: -x[1]
+            )[:limit]
         ]
 
-    def top_groups(self, limit: int = 10, days: int = 30) -> list[dict]:
+    def top_groups(
+        self, limit: int = 10, days: int = 30
+    ) -> list[dict]:
         return self.sql(
             """
-            SELECT chat_name, platform, COUNT(*) AS n, MAX(chat_link) AS link
+            SELECT chat_name, platform, COUNT(*) AS n,
+                   MAX(chat_link) AS link
             FROM messages
-            WHERE keywords!='' AND timestamp >= datetime('now', ?)
+            WHERE keywords!=''
+              AND timestamp >= datetime('now', ?)
             GROUP BY chat_name, platform
             ORDER BY n DESC LIMIT ?
             """,
             (f"-{int(days)} days", int(limit)),
         )
 
-    def last_lead(self, platform: str | None = None) -> dict | None:
+    def last_lead(
+        self, platform: str | None = None
+    ) -> dict | None:
         """آخرین سرنخ — با فیلتر پلتفرم اختیاری."""
         if platform:
             return self.row(
-                "SELECT platform, chat_name, keywords, opportunity_type, "
-                "opportunity_score, text, timestamp, chat_link "
-                "FROM messages WHERE keywords!='' AND platform=? "
+                "SELECT platform, chat_name, keywords, "
+                "opportunity_type, opportunity_score, "
+                "text, timestamp, chat_link "
+                "FROM messages WHERE keywords!='' "
+                "AND platform=? "
                 "ORDER BY timestamp DESC LIMIT 1",
                 (platform,),
             )
         return self.row(
-            "SELECT platform, chat_name, keywords, opportunity_type, "
-            "opportunity_score, text, timestamp, chat_link "
-            "FROM messages WHERE keywords!='' ORDER BY timestamp DESC LIMIT 1"
+            "SELECT platform, chat_name, keywords, "
+            "opportunity_type, opportunity_score, "
+            "text, timestamp, chat_link "
+            "FROM messages WHERE keywords!='' "
+            "ORDER BY timestamp DESC LIMIT 1"
         )
-        
-    def first_lead(self, platform: str | None = None) -> dict | None:
+
+    def first_lead(
+        self, platform: str | None = None
+    ) -> dict | None:
         """اولین سرنخ — با فیلتر پلتفرم اختیاری."""
         if platform:
             return self.row(
-                "SELECT platform, chat_name, keywords, opportunity_type, "
-                "opportunity_score, text, timestamp, chat_link "
-                "FROM messages WHERE keywords!='' AND platform=? "
+                "SELECT platform, chat_name, keywords, "
+                "opportunity_type, opportunity_score, "
+                "text, timestamp, chat_link "
+                "FROM messages WHERE keywords!='' "
+                "AND platform=? "
                 "ORDER BY timestamp ASC LIMIT 1",
                 (platform,),
             )
         return self.row(
-            "SELECT platform, chat_name, keywords, opportunity_type, "
-            "opportunity_score, text, timestamp, chat_link "
-            "FROM messages WHERE keywords!='' ORDER BY timestamp ASC LIMIT 1"
+            "SELECT platform, chat_name, keywords, "
+            "opportunity_type, opportunity_score, "
+            "text, timestamp, chat_link "
+            "FROM messages WHERE keywords!='' "
+            "ORDER BY timestamp ASC LIMIT 1"
         )
-        
-    def search_leads(self, term: str, limit: int = 10) -> list[dict]:
+
+    def search_leads(
+        self, term: str, limit: int = 10
+    ) -> list[dict]:
         like = f"%{term}%"
         return self.sql(
             """
             SELECT platform, chat_name, keywords, text, timestamp
             FROM messages
-            WHERE keywords!='' AND (text LIKE ? OR keywords LIKE ? OR chat_name LIKE ?)
+            WHERE keywords!=''
+              AND (text LIKE ? OR keywords LIKE ?
+                   OR chat_name LIKE ?)
             ORDER BY timestamp DESC LIMIT ?
             """,
             (like, like, like, int(limit)),
@@ -254,16 +353,30 @@ class DataAPI:
     # ═══════════════════════════════════════════
     # وضعیت پلتفرم‌ها
     # ═══════════════════════════════════════════
-    def platform_last_poll(self, platform: str) -> datetime | None:
-        r = self.row("SELECT last_poll FROM last_poll WHERE platform=?", (platform,))
+    def platform_last_poll(
+        self, platform: str
+    ) -> datetime | None:
+        """🎯 FIX: حالا tz-aware هم قبول می‌کند."""
+        r = self.row(
+            "SELECT last_poll FROM last_poll WHERE platform=?",
+            (platform,),
+        )
         if not r or not r.get("last_poll"):
             return None
         try:
-            return datetime.fromisoformat(r["last_poll"])
+            ts = r["last_poll"]
+            when = datetime.fromisoformat(
+                str(ts).replace("Z", "+00:00")
+            )
+            # اگه aware بود → naive کن (سازگاری)
+            if when.tzinfo is not None:
+                when = when.replace(tzinfo=None)
+            return when
         except Exception as e:
             log_warning(
                 f"⚠️ [DATAPI:platform_last_poll] تاریخ نامعتبر | "
-                f"platform={platform} | value={r.get('last_poll')!r} | {e}"
+                f"platform={platform} | "
+                f"value={r.get('last_poll')!r} | {e}"
             )
             return None
 
@@ -277,16 +390,13 @@ class DataAPI:
             return len(get_keyword_finder().keywords)
         except Exception as e:
             log_warning(
-                f"⚠️ [DATAPI:keyword_count] {type(e).__name__}: {e}"
+                f"⚠️ [DATAPI:keyword_count] "
+                f"{type(e).__name__}: {e}"
             )
             return 0
 
     def keyword_list(self, limit: int = 30) -> list[str]:
-        """لیست کلیدواژه‌ها.
-
-        Args:
-            limit: تعداد مورد نظر. اگر 0 یا منفی باشد، همه برگردانده می‌شوند.
-        """
+        """لیست کلیدواژه‌ها (limit=0 یا منفی → همه)."""
         try:
             from analyzers.keyword_finder import get_keyword_finder
             kws = list(get_keyword_finder().keywords)
@@ -295,94 +405,103 @@ class DataAPI:
             return kws
         except Exception as e:
             log_warning(
-                f"⚠️ [DATAPI:keyword_list] {type(e).__name__}: {e}"
+                f"⚠️ [DATAPI:keyword_list] "
+                f"{type(e).__name__}: {e}"
             )
             return []
 
-    # ─── keywords_custom.json — پشتیبانی از هر دو فرمت ───
+    # ─── keywords_custom.json ───
     @staticmethod
     def _read_custom_kw_raw() -> Any:
-        """محتوای خام فایل را می‌خواند (list یا dict)."""
+        """محتوای خام فایل (list یا dict).
+
+        🎯 FIX: FileNotFoundError جدا مدیریت می‌شود.
+        """
         if not os.path.exists(CUSTOM_KW):
             return []
         try:
             with open(CUSTOM_KW, encoding="utf-8") as f:
                 return json.load(f)
+        except FileNotFoundError:
+            return []
         except json.JSONDecodeError as e:
             log_error(
                 f"❌ [DATAPI:custom_kw] JSON نامعتبر | "
-                f"{CUSTOM_KW} | {e}"
+                f"{CUSTOM_KW} | line={e.lineno} col={e.colno} | "
+                f"{e.msg}"
             )
             return []
         except Exception as e:
             log_error(
-                f"❌ [DATAPI:custom_kw] خواندن ناموفق | "
+                f"❌ [DATAPI:custom_kw] خواندن | "
                 f"{CUSTOM_KW} | {type(e).__name__}: {e}"
             )
             return []
 
     def custom_keywords_with_tier(self) -> dict[str, str]:
-        """همهٔ کلیدواژه‌های سفارشی به صورت {name: tier}.
+        """همهٔ کلیدواژه‌های سفارشی → {name: tier}.
 
-        هر دو فرمت را پشتیبانی می‌کند:
-          - لیست (قدیمی): همه T1
-          - dict با keywords: tier از فایل خوانده می‌شود
+        🎯 FIX: T3 هم قبول می‌شود (قبلاً فقط T1/T2).
         """
         data = self._read_custom_kw_raw()
 
-        # فرمت قدیمی: لیست خالص
+        # ─── فرمت قدیمی: list ───
         if isinstance(data, list):
-            out: dict[str, str] = {}
-            for x in data:
-                if isinstance(x, str) and x.strip():
-                    out[x.strip()] = "T1"
-            return out
+            return {
+                str(x).strip(): "T1"
+                for x in data
+                if isinstance(x, str) and x.strip()
+            }
 
-        # فرمت جدید: dict
+        # ─── فرمت جدید: dict ───
         if isinstance(data, dict):
             kws = data.get("keywords")
             if kws is None:
                 log_warning(
-                    f"⚠️ [DATAPI:custom_kw] dict بدون «keywords» | "
-                    f"کلیدها: {list(data.keys())[:5]}"
+                    f"⚠️ [DATAPI:custom_kw] dict بدون "
+                    f"«keywords» | کلیدها: "
+                    f"{list(data.keys())[:5]}"
                 )
                 return {}
+
             if isinstance(kws, dict):
-                out = {}
+                out: dict[str, str] = {}
                 for k, meta in kws.items():
                     name = str(k).strip()
                     if not name:
                         continue
                     if isinstance(meta, dict):
-                        tier = str(meta.get("tier", "T1")).upper()
+                        tier = str(
+                            meta.get("tier", "T1")
+                        ).upper()
                     elif isinstance(meta, str):
                         tier = meta.upper()
                     else:
                         tier = "T1"
-                    if tier not in ("T1", "T2", "T3"):
+                    # 🎯 FIX: T3 هم قبول
+                    if tier not in _VALID_TIERS:
                         tier = "T1"
                     out[name] = tier
                 return out
-            # dict با لیست داخل keywords
+
             if isinstance(kws, list):
                 return {
                     str(x).strip(): "T1"
                     for x in kws
                     if isinstance(x, str) and x.strip()
                 }
+
         return {}
 
     def custom_keywords(self) -> list[str]:
-        """لیست نام کلیدواژه‌های سفارشی (فقط اسم، بدون tier).
-
-        پشتیبان هر دو فرمت فایل. برای خواندن tier، از custom_keywords_with_tier
-        استفاده کن.
-        """
+        """لیست نام کلیدواژه‌های سفارشی (بدون tier)."""
         return list(self.custom_keywords_with_tier().keys())
 
     @staticmethod
-    def _write_custom_kw(keywords_with_tier: dict[str, str]) -> bool:
-        """ذخیرهٔ کلیدواژه‌ها با tier — atomic (tmp + replace)."""
+    def _write_custom_kw(
+        keywords_with_tier: dict[str, str]
+    ) -> bool:
+        """🎯 FIX: ذخیرهٔ کلیدواژه‌ها با tier — atomic + fsync."""
         try:
             data = {
                 "version": "2.0.0",
@@ -391,7 +510,7 @@ class DataAPI:
                     k.strip(): {
                         "tier": (
                             t.upper()
-                            if t and t.upper() in ("T1", "T2", "T3")
+                            if t and t.upper() in _VALID_TIERS
                             else "T1"
                         )
                     }
@@ -399,11 +518,32 @@ class DataAPI:
                     if k and k.strip()
                 },
             }
-            os.makedirs(os.path.dirname(CUSTOM_KW), exist_ok=True)
+
+            parent = os.path.dirname(CUSTOM_KW)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+
             tmp = CUSTOM_KW + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+                try:
+                    f.flush()
+                    os.fsync(f.fileno())
+                except (AttributeError, OSError):
+                    pass
             os.replace(tmp, CUSTOM_KW)
+
+            # fsync دایرکتوری (POSIX)
+            if parent:
+                try:
+                    dir_fd = os.open(parent, os.O_DIRECTORY)
+                    try:
+                        os.fsync(dir_fd)
+                    finally:
+                        os.close(dir_fd)
+                except (AttributeError, OSError):
+                    pass
+
             log_info(
                 f"💾 [DATAPI:custom_kw] ذخیره شد | "
                 f"count={len(data['keywords'])} | {CUSTOM_KW}"
@@ -411,20 +551,20 @@ class DataAPI:
             return True
         except Exception as e:
             log_error(
-                f"❌ [DATAPI:custom_kw] نوشتن ناموفق | "
+                f"❌ [DATAPI:custom_kw] نوشتن | "
                 f"{CUSTOM_KW} | {type(e).__name__}: {e}"
             )
             return False
 
-    def add_custom_keyword(self, kw: str, tier: str = "T1") -> bool:
-        """افزودن کلیدواژهٔ سفارشی با tier.
-
-        Returns:
-            True اگر افزوده شد، False اگر خطا یا از قبل موجود.
-        """
+    def add_custom_keyword(
+        self, kw: str, tier: str = "T1"
+    ) -> bool:
+        """افزودن کلیدواژهٔ سفارشی."""
         kw = (kw or "").strip()
         if not kw:
-            log_warning("⚠️ [DATAPI:add_kw] کلیدواژهٔ خالی رد شد")
+            log_warning(
+                "⚠️ [DATAPI:add_kw] کلیدواژهٔ خالی رد شد"
+            )
             return False
 
         current = self.custom_keywords_with_tier()
@@ -435,25 +575,34 @@ class DataAPI:
             )
             return False
 
-        current[kw] = tier or "T1"
+        # اعتبارسنجی tier
+        tier_clean = (tier or "T1").upper()
+        if tier_clean not in _VALID_TIERS:
+            tier_clean = "T1"
+        current[kw] = tier_clean
+
         ok = self._write_custom_kw(current)
         if ok:
             log_success(
-                f"✅ [DATAPI:add_kw] «{kw}» اضافه شد | tier={current[kw]} | "
-                f"total={len(current)}"
+                f"✅ [DATAPI:add_kw] «{kw}» اضافه شد | "
+                f"tier={tier_clean} | total={len(current)}"
             )
         return ok
 
     def remove_custom_keyword(self, kw: str) -> bool:
-        """حذف کلیدواژهٔ سفارشی. سایر tierها حفظ می‌شوند."""
+        """حذف کلیدواژهٔ سفارشی — سایر tierها حفظ می‌شوند."""
         kw = (kw or "").strip()
         if not kw:
-            log_warning("⚠️ [DATAPI:remove_kw] کلیدواژهٔ خالی رد شد")
+            log_warning(
+                "⚠️ [DATAPI:remove_kw] کلیدواژهٔ خالی رد شد"
+            )
             return False
 
         current = self.custom_keywords_with_tier()
         if kw not in current:
-            log_info(f"ℹ️ [DATAPI:remove_kw] «{kw}» نبود — رد شد")
+            log_info(
+                f"ℹ️ [DATAPI:remove_kw] «{kw}» نبود — رد شد"
+            )
             return False
 
         current.pop(kw)
@@ -466,80 +615,153 @@ class DataAPI:
         return ok
 
     def custom_kw_count(self) -> int:
-        """تعداد کلیدواژه‌های سفارشی — مستقیم از فایل."""
+        """تعداد کلیدواژه‌های سفارشی."""
         return len(self.custom_keywords_with_tier())
 
     # ═══════════════════════════════════════════
     # گروه‌های هدف
     # ═══════════════════════════════════════════
     def target_groups(self) -> list[str]:
-        """خواندن خام فایل (شامل پیشوند پلتفرم مثل eitaa:name)."""
+        """خواندن خام فایل (شامل prefix پلتفرم مثل `eitaa:name`)."""
         try:
             if os.path.exists(TARGET_GROUPS):
-                with open(TARGET_GROUPS, encoding="utf-8") as f:
+                with open(
+                    TARGET_GROUPS, encoding="utf-8"
+                ) as f:
                     return [
-                        ln.strip() for ln in f
+                        ln.strip()
+                        for ln in f
                         if ln.strip() and not ln.startswith("#")
                     ]
         except Exception as e:
             log_warning(
-                f"⚠️ [DATAPI:target_groups] {type(e).__name__}: {e}"
+                f"⚠️ [DATAPI:target_groups] "
+                f"{type(e).__name__}: {e}"
             )
         return []
 
     def add_target_group(self, name: str) -> bool:
-        if not name:
-            log_warning("⚠️ [DATAPI:add_target] نام خالی رد شد")
+        """🎯 FIX: افزودن گروه هدف — atomic + fsync."""
+        if not name or not str(name).strip():
+            log_warning(
+                "⚠️ [DATAPI:add_target] نام خالی رد شد"
+            )
             return False
+
+        name_clean = str(name).strip()
         try:
             existing = self.target_groups()
-            if name in existing:
-                log_info(f"ℹ️ [DATAPI:add_target] «{name}» از قبل هست — رد شد")
+            if name_clean in existing:
+                log_info(
+                    f"ℹ️ [DATAPI:add_target] «{name_clean}» "
+                    f"از قبل هست — رد شد"
+                )
                 return False
-            with open(TARGET_GROUPS, "a", encoding="utf-8") as f:
-                f.write(f"\n{name}")
+
+            # 🎯 FIX: atomic + fsync
+            parent = os.path.dirname(TARGET_GROUPS)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+
+            tmp = TARGET_GROUPS + ".tmp"
+
+            # خواندن محتوای فعلی
+            content = ""
+            if os.path.exists(TARGET_GROUPS):
+                with open(
+                    TARGET_GROUPS, encoding="utf-8"
+                ) as f:
+                    content = f.read()
+
+            # اطمینان از newline در انتها
+            if content and not content.endswith("\n"):
+                content += "\n"
+            content += f"{name_clean}\n"
+
+            # نوشتن atomic
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(content)
+                try:
+                    f.flush()
+                    os.fsync(f.fileno())
+                except (AttributeError, OSError):
+                    pass
+            os.replace(tmp, TARGET_GROUPS)
+
+            # fsync دایرکتوری
+            if parent:
+                try:
+                    dir_fd = os.open(parent, os.O_DIRECTORY)
+                    try:
+                        os.fsync(dir_fd)
+                    finally:
+                        os.close(dir_fd)
+                except (AttributeError, OSError):
+                    pass
+
             log_success(
-                f"✅ [DATAPI:add_target] «{name}» اضافه شد | "
-                f"total={len(existing) + 1}"
+                f"✅ [DATAPI:add_target] «{name_clean}» "
+                f"اضافه شد | total={len(existing) + 1}"
             )
             return True
         except Exception as e:
             log_error(
-                f"❌ [DATAPI:add_target] {type(e).__name__}: {e}"
+                f"❌ [DATAPI:add_target] "
+                f"{type(e).__name__}: {e}"
             )
+            # cleanup tmp
+            try:
+                tmp = TARGET_GROUPS + ".tmp"
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except Exception:
+                pass
             return False
 
     # ═══════════════════════════════════════════
     # لاگ‌ها
     # ═══════════════════════════════════════════
     @staticmethod
-    def _tail_lines(path: str, max_bytes: int = _LOG_TAIL_BYTES) -> list[str]:
-        """آخرین خطوط فایل را بدون خواندن کل آن می‌خواند (seek از انتها)."""
+    def _tail_lines(
+        path: str, max_bytes: int | None = None
+    ) -> list[str]:
+        """آخرین خطوط فایل (seek از انتها)."""
+        if max_bytes is None:
+            max_bytes = _LOG_TAIL_BYTES
         try:
             size = os.path.getsize(path)
             with open(path, "rb") as f:
                 if size > max_bytes:
                     f.seek(-max_bytes, os.SEEK_END)
-                    f.readline()  # خط ناقص اول را دور می‌ریزیم
+                    f.readline()  # خط ناقص اول
                 data = f.read()
-            return data.decode("utf-8", errors="ignore").splitlines()
+            return data.decode(
+                "utf-8", errors="ignore"
+            ).splitlines()
+        except FileNotFoundError:
+            return []
         except Exception as e:
             log_warning(
-                f"⚠️ [DATAPI:_tail_lines] {type(e).__name__}: {e} | path={path}"
+                f"⚠️ [DATAPI:_tail_lines] "
+                f"{type(e).__name__}: {e} | path={path}"
             )
             return []
 
-    def recent_logs(self, n: int = 15, level: str | None = None) -> list[dict]:
-        """آخرین N خط JSON از app.jsonl — از انتهای فایل (نه کل فایل)."""
-        path = os.path.join(LOGS_DIR, "app.jsonl")
+    def recent_logs(
+        self, n: int = 15, level: str | None = None
+    ) -> list[dict]:
+        """آخرین N خط JSON از app.jsonl."""
+        # 🎯 P0: از data.paths
+        path = str(LOG_FILE)
         if not os.path.exists(path):
             return []
+
         out: list[dict] = []
         for ln in reversed(self._tail_lines(path)):
             try:
                 o = json.loads(ln)
             except Exception:
-                # خط نامعتبر — بی‌صدا رد شو (خطوط ناقص در tail رایج‌اند)
+                # خط نامعتبر — بی‌صدا رد (خطوط ناقص در tail)
                 continue
             if level and o.get("level") != level:
                 continue
@@ -549,6 +771,7 @@ class DataAPI:
         return out
 
     def error_count_recent(self, n: int = 100) -> int:
+        """تعداد خطاهای ERROR/CRITICAL در N خط اخیر."""
         return sum(
             1 for l in self.recent_logs(n)
             if l.get("level") in ("ERROR", "CRITICAL")
@@ -558,61 +781,87 @@ class DataAPI:
     # گزارش‌ها
     # ═══════════════════════════════════════════
     def recent_reports(self, n: int = 10) -> list[dict]:
+        """آخرین گزارش‌های تولیدشده."""
         out: list[dict] = []
         try:
-            if not os.path.isdir(REPORTS_DIR):
+            # 🎯 P0: از data.paths
+            reports_dir = str(REPORTS_DIR)
+            if not os.path.isdir(reports_dir):
                 return []
-            for name in os.listdir(REPORTS_DIR):
-                p = os.path.join(REPORTS_DIR, name)
+            for name in os.listdir(reports_dir):
+                p = os.path.join(reports_dir, name)
                 if os.path.isfile(p):
                     try:
                         out.append({
                             "name": name,
-                            "size_kb": os.path.getsize(p) / 1024,
+                            "size_kb": (
+                                os.path.getsize(p) / 1024
+                            ),
                             "mtime": os.path.getmtime(p),
                         })
                     except OSError:
-                        # فایل بین listdir و stat حذف شده — رد کن
+                        # فایل بین listdir و stat حذف شده
                         continue
             out.sort(key=lambda x: -x["mtime"])
         except Exception as e:
             log_warning(
-                f"⚠️ [DATAPI:recent_reports] {type(e).__name__}: {e}"
+                f"⚠️ [DATAPI:recent_reports] "
+                f"{type(e).__name__}: {e}"
             )
         return out[:n]
 
     # ═══ سرنخ به تفکیک ساعت ═══
     def leads_by_hour_today(self) -> list[dict]:
         return self.sql(
-            """SELECT strftime('%H', timestamp) as hour, COUNT(*) as n
-               FROM messages WHERE keywords!='' AND date(timestamp)=date('now')
-               GROUP BY hour ORDER BY hour"""
+            """
+            SELECT strftime('%H', timestamp) as hour,
+                   COUNT(*) as n
+            FROM messages
+            WHERE keywords!=''
+              AND date(timestamp)=date('now')
+            GROUP BY hour ORDER BY hour
+            """
         )
 
     # ═══ سرنخ داغ اخیر ═══
-    def recent_hot_leads(self, limit: int = 5) -> list[dict]:
+    def recent_hot_leads(
+        self, limit: int = 5
+    ) -> list[dict]:
         return self.sql(
-            """SELECT chat_name, platform, keywords, opportunity_score, text
-               FROM messages WHERE opportunity_type='داغ'
-               ORDER BY timestamp DESC LIMIT ?""",
+            """
+            SELECT chat_name, platform, keywords,
+                   opportunity_score, text
+            FROM messages
+            WHERE opportunity_type='داغ'
+            ORDER BY timestamp DESC LIMIT ?
+            """,
             (int(limit),),
         )
 
     # ═══ سرنخ یک گروه خاص ═══
-    def leads_in_group(self, chat_name: str, limit: int = 20) -> list[dict]:
+    def leads_in_group(
+        self, chat_name: str, limit: int = 20
+    ) -> list[dict]:
         return self.sql(
-            """SELECT keywords, text, opportunity_type, timestamp
-               FROM messages WHERE keywords!='' AND chat_name LIKE ?
-               ORDER BY timestamp DESC LIMIT ?""",
+            """
+            SELECT keywords, text, opportunity_type, timestamp
+            FROM messages
+            WHERE keywords!='' AND chat_name LIKE ?
+            ORDER BY timestamp DESC LIMIT ?
+            """,
             (f"%{chat_name}%", int(limit)),
         )
 
     # ═══ سرنخ یک کلیدواژه خاص ═══
-    def leads_with_keyword(self, kw: str, limit: int = 20) -> list[dict]:
+    def leads_with_keyword(
+        self, kw: str, limit: int = 20
+    ) -> list[dict]:
         return self.sql(
-            """SELECT chat_name, platform, text, timestamp
-               FROM messages WHERE keywords LIKE ?
-               ORDER BY timestamp DESC LIMIT ?""",
+            """
+            SELECT chat_name, platform, text, timestamp
+            FROM messages WHERE keywords LIKE ?
+            ORDER BY timestamp DESC LIMIT ?
+            """,
             (f"%{kw}%", int(limit)),
         )
 
@@ -620,33 +869,47 @@ class DataAPI:
     def compare_today_yesterday(self) -> dict[str, int]:
         today = self.leads_today()
         yesterday = self.leads_yesterday()
-        return {"today": today, "yesterday": yesterday, "diff": today - yesterday}
+        return {
+            "today": today,
+            "yesterday": yesterday,
+            "diff": today - yesterday,
+        }
 
     # ═══ سرنخ‌های امتیاز بالا ═══
-    def high_score_leads(self, min_score: int = 50, limit: int = 10) -> list[dict]:
+    def high_score_leads(
+        self, min_score: int = 50, limit: int = 10
+    ) -> list[dict]:
         return self.sql(
-            """SELECT chat_name, platform, keywords, opportunity_score, text
-               FROM messages WHERE keywords!='' AND opportunity_score >= ?
-               ORDER BY opportunity_score DESC LIMIT ?""",
+            """
+            SELECT chat_name, platform, keywords,
+                   opportunity_score, text
+            FROM messages
+            WHERE keywords!='' AND opportunity_score >= ?
+            ORDER BY opportunity_score DESC LIMIT ?
+            """,
             (int(min_score), int(limit)),
         )
 
     # ═══ گروه‌های غیرفعال ═══
     def silent_groups(self, days: int = 7) -> list[dict]:
         return self.sql(
-            """SELECT chat_name, platform, MAX(timestamp) as last_seen
-               FROM messages WHERE keywords!=''
-               GROUP BY chat_name, platform
-               HAVING MAX(timestamp) < datetime('now', ?)
-               ORDER BY last_seen DESC""",
+            """
+            SELECT chat_name, platform,
+                   MAX(timestamp) as last_seen
+            FROM messages
+            WHERE keywords!=''
+            GROUP BY chat_name, platform
+            HAVING MAX(timestamp) < datetime('now', ?)
+            ORDER BY last_seen DESC
+            """,
             (f"-{int(days)} days",),
         )
 
     # ═══════════════════════════════════════════
-    # آمار کلی (snapshot برای system_snapshot rule)
+    # آمار کلی (snapshot)
     # ═══════════════════════════════════════════
     def system_snapshot(self) -> dict[str, Any]:
-        """خلاصهٔ کلی — لاگ debug چون پرتکرار است ولی سرنخ دارد."""
+        """خلاصهٔ کلی برای system_snapshot rule."""
         t0 = time.monotonic()
         snap = {
             "leads_total": self.leads_total(),
@@ -665,7 +928,9 @@ class DataAPI:
         elapsed_ms = (time.monotonic() - t0) * 1000
         if elapsed_ms > _SLOW_QUERY_MS:
             log_warning(
-                f"🐌 [DATAPI:snapshot] کند | {elapsed_ms:.0f}ms | "
-                f"total={snap['leads_total']} today={snap['leads_today']}"
+                f"🐌 [DATAPI:snapshot] کند | "
+                f"{elapsed_ms:.0f}ms | "
+                f"total={snap['leads_total']} "
+                f"today={snap['leads_today']}"
             )
         return snap

@@ -679,7 +679,7 @@ class TelegramWebCollector(BaseCollector):
                 text = (await msg.inner_text() or "").strip()
 
                 if not mid and text:
-                    mid = hashlib.md5(
+                    mid = hashlib.sha256(
                         f"{chat_id}:{text}".encode("utf-8")
                     ).hexdigest()[:16]
 

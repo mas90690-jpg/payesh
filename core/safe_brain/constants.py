@@ -1,4 +1,22 @@
-"""ثابت‌ها + کش کلیدواژه + مسیرها — برای SafeBrain."""
+"""ثابت‌ها + کش کلیدواژه + مسیرها — برای SafeBrain.
+
+نسخهٔ ۲ (این نسخه):
+  - 🎯 مسیرهای SafeBrain حالا از `data.paths` می‌آیند (منبع یکتا).
+  - 🐛 FIX: `MAX_API_CALLS_PER_HOUR` حالا با `_env_int` (sanitize).
+  - 🐛 FIX: `_BRAIN_FAIL_RETRY_S` حالا env-based.
+  - 🐛 FIX: `_CACHE_SAVE_INTERVAL_S`, `_MEM_SAVE_INTERVAL_S`,
+    `_SLOW_ACTION_MS`, `_LOG_PREVIEW_LEN` حالا env-based.
+  - 🐛 FIX: `_write_custom_kw_dict` حالا `os.fsync` + dir fsync
+    + cleanup tmp در exception.
+  - 🐛 FIX: `SAFE_ACTIONS` حالا شامل همهٔ اکشن‌های
+    `ai_assistant._ALLOWED_ACTIONS` است (هماهنگی کامل).
+  - 🐛 FIX: `mkdir` حالا با try/except (crash نمی‌کند).
+  - 🎯 `is_safe_action()` + `is_locally_handled()` helperها.
+  - 🎯 `reset_kw_cache()` alias برای `_invalidate_kw_cache()`.
+  - 🎯 `get_stats()` برای debug.
+  - 🎯 `__all__` export.
+  - ✅ حفظ همهٔ رفتار نسخهٔ ۱.
+"""
 from __future__ import annotations
 
 import json
@@ -6,44 +24,137 @@ import os
 import threading
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
-from config import STORAGE_DIR
 from core.kernel.logger import log_error, log_warning
 
+
 # ════════════════════════════════════════════
-# مسیرها
+# helpers
 # ════════════════════════════════════════════
-SAFE_BRAIN_DIR = Path(STORAGE_DIR) / "safe_brain"
-SAFE_MEMORY_DIR = SAFE_BRAIN_DIR / "memory"
-SAFE_CACHE_DIR = SAFE_BRAIN_DIR / "cache"
-for _d in (SAFE_BRAIN_DIR, SAFE_MEMORY_DIR, SAFE_CACHE_DIR):
-    _d.mkdir(parents=True, exist_ok=True)
+def _env_int(
+    name: str, default: int,
+    min_val: int | None = None,
+    max_val: int | None = None,
+) -> int:
+    """خواندن int از env — با sanitize."""
+    try:
+        v = int(os.getenv(name, str(default)))
+    except (ValueError, TypeError):
+        return default
+    if min_val is not None and v < min_val:
+        return min_val
+    if max_val is not None and v > max_val:
+        return max_val
+    return v
+
+
+def _env_float(
+    name: str, default: float,
+    min_val: float | None = None,
+    max_val: float | None = None,
+) -> float:
+    """خواندن float از env — با sanitize."""
+    try:
+        v = float(os.getenv(name, str(default)))
+    except (ValueError, TypeError):
+        return default
+    if min_val is not None and v < min_val:
+        return min_val
+    if max_val is not None and v > max_val:
+        return max_val
+    return v
+
+
+# ════════════════════════════════════════════
+# مسیرها (از data.paths — منبع یکتا)
+# ════════════════════════════════════════════
+try:
+    from data import paths as _data_paths
+    SAFE_BRAIN_DIR: Path = _data_paths.SAFE_BRAIN_DIR
+    SAFE_MEMORY_DIR: Path = _data_paths.SAFE_BRAIN_MEMORY_DIR
+    SAFE_CACHE_DIR: Path = _data_paths.SAFE_BRAIN_CACHE_DIR
+except Exception:
+    # fallback
+    try:
+        from config import STORAGE_DIR
+    except Exception:
+        STORAGE_DIR = "storage"  # type: ignore
+    SAFE_BRAIN_DIR = Path(str(STORAGE_DIR)) / "safe_brain"
+    SAFE_MEMORY_DIR = SAFE_BRAIN_DIR / "memory"
+    SAFE_CACHE_DIR = SAFE_BRAIN_DIR / "cache"
+
+
+# ─── ساخت پوشه‌ها (با try/except) ───
+def _ensure_safe_brain_dirs() -> None:
+    """🎯 FIX: ساخت پوشه‌ها بدون crash."""
+    for d in (
+        SAFE_BRAIN_DIR,
+        SAFE_MEMORY_DIR,
+        SAFE_CACHE_DIR,
+    ):
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
+
+_ensure_safe_brain_dirs()
 
 
 # ════════════════════════════════════════════
 # اکشن‌ها
 # ════════════════════════════════════════════
 
-# اکشن‌هایی که SafeBrain مجاز است در نظر بگیرد
-SAFE_ACTIONS = frozenset({
-    "status", "report", "crm", "logs", "keywords",
-    "add_keyword", "remove_keyword", "has_keyword",
-    "platform_status", "health", "lead_details",
-    "get_param", "set_param", "help", "restart",
-    "explain_logs", "feature_request", "ask",
+# 🎯 FIX: هماهنگ با `ai_assistant._ALLOWED_ACTIONS`
+SAFE_ACTIONS: frozenset[str] = frozenset({
+    "status",
+    "report",
+    "crm",
+    "logs",
+    "keywords",
+    "add_keyword",
+    "remove_keyword",
+    "has_keyword",
+    "platform_status",
+    "health",
+    "lead_details",
+    "get_param",
+    "set_param",
+    "restart",
+    "explain_logs",
+    "feature_request",
+    "ask",
+    "help",
 })
 
 # اکشن‌هایی که SafeBrain خودش انجام می‌دهد
-SAFE_ACTIONS_HANDLED_LOCALLY = frozenset({
-    "help", "add_keyword", "remove_keyword", "feature_request",
+SAFE_ACTIONS_HANDLED_LOCALLY: frozenset[str] = frozenset({
+    "help",
+    "add_keyword",
+    "remove_keyword",
+    "feature_request",
 })
 
 
+def is_safe_action(action: str) -> bool:
+    """🎯 آیا این اکشن مجاز است؟"""
+    return bool(action) and action in SAFE_ACTIONS
+
+
+def is_locally_handled(action: str) -> bool:
+    """🎯 آیا این اکشن توسط SafeBrain خودش انجام می‌شود؟"""
+    return (
+        bool(action)
+        and action in SAFE_ACTIONS_HANDLED_LOCALLY
+    )
+
+
 # ════════════════════════════════════════════
-# الگوهای ممنوعه (🟢 FIX: tuple به‌جای list)
+# الگوهای ممنوعه
 # ════════════════════════════════════════════
-BLOCKED_PATTERNS_REGEX: tuple = (
-    # سیستم
+BLOCKED_PATTERNS_REGEX: tuple[str, ...] = (
+    # ─── سیستم ───
     r"\brm\s+-rf\b",
     r"\brmdir\s+/s\b",
     r"\bdel\s+/f\b",
@@ -56,14 +167,14 @@ BLOCKED_PATTERNS_REGEX: tuple = (
     r"\binit\s+[06]\b",
     r">\s*/dev/sd",
     r"\bchmod\s+777\b",
-    # fork bomb
+    # ─── fork bomb ───
     r":\(\)\s*\{.*?\};:",
-    # دیتابیس
+    # ─── دیتابیس ───
     r"\bdrop\s+table\b",
     r"\bdrop\s+database\b",
     r"\bdelete\s+from\b",
     r"\btruncate\s+table\b",
-    # کد خطرناک
+    # ─── کد خطرناک ───
     r"\bos\.system\b",
     r"\bsubprocess\.(call|popen|run)\b",
     r"\beval\s*\(",
@@ -72,36 +183,51 @@ BLOCKED_PATTERNS_REGEX: tuple = (
     r"\bcompile\s*\(",
 )
 
-BLOCKED_SUBSTRINGS: tuple = (
+BLOCKED_SUBSTRINGS: tuple[str, ...] = (
     ":(){ :|:& };:",  # fork bomb
 )
 
 
 # ════════════════════════════════════════════
-# تنظیمات
+# تنظیمات (env-based)
 # ════════════════════════════════════════════
-# 🔴 FIX: کلیپ منفی
-MAX_API_CALLS_PER_HOUR = max(
-    0, int(os.getenv("SAFE_BRAIN_MAX_API_HOUR", "20"))
+MAX_API_CALLS_PER_HOUR: int = _env_int(
+    "SAFE_BRAIN_MAX_API_HOUR", 20,
+    min_val=0, max_val=10_000,
 )
 
-# cache منفی برین (۵ دقیقه)
-_BRAIN_FAIL_RETRY_S = 300
+# cache منفی برین
+_BRAIN_FAIL_RETRY_S: float = _env_float(
+    "SAFE_BRAIN_BRAIN_RETRY_S", 300.0,
+    min_val=10.0, max_val=3600.0,
+)
 
 # throttle برای save
-_CACHE_SAVE_INTERVAL_S = 3.0
-_MEM_SAVE_INTERVAL_S = 2.0
+_CACHE_SAVE_INTERVAL_S: float = _env_float(
+    "SAFE_BRAIN_CACHE_SAVE_S", 3.0,
+    min_val=0.1, max_val=60.0,
+)
+_MEM_SAVE_INTERVAL_S: float = _env_float(
+    "SAFE_BRAIN_MEM_SAVE_S", 2.0,
+    min_val=0.1, max_val=60.0,
+)
 
-# آستانه‌های هشدار (میلی‌ثانیه)
-_SLOW_ACTION_MS = 2000
-_LOG_PREVIEW_LEN = 80
+# آستانه‌های هشدار
+_SLOW_ACTION_MS: int = _env_int(
+    "SAFE_BRAIN_SLOW_ACTION_MS", 2000,
+    min_val=100, max_val=60_000,
+)
+_LOG_PREVIEW_LEN: int = _env_int(
+    "SAFE_BRAIN_LOG_PREVIEW", 80,
+    min_val=20, max_val=500,
+)
 
 
 # ════════════════════════════════════════════
 # cache برای keywords_custom.json
 # ════════════════════════════════════════════
 _KW_FILE_VERSION = "2.0.0"
-_VALID_TIERS = ("T1", "T2", "T3")
+_VALID_TIERS: tuple[str, ...] = ("T1", "T2", "T3")
 
 _KW_CACHE: dict[str, str] | None = None
 _KW_CACHE_MTIME: float = 0.0
@@ -110,13 +236,17 @@ _KW_LOCK = threading.Lock()
 
 def _kw_file_path() -> Path:
     """مسیر فایل keywords_custom.json."""
-    from data import paths as data_paths
-    return data_paths.KEYWORDS_CUSTOM
+    try:
+        from data import paths as data_paths
+        return data_paths.KEYWORDS_CUSTOM
+    except Exception:
+        return SAFE_BRAIN_DIR / ".." / "runtime" / "keywords_custom.json"
 
 
-def _read_custom_kw_dict(force_reload: bool = False) -> dict[str, str]:
-    """
-    خواندن {name: tier} با cache mtime-aware.
+def _read_custom_kw_dict(
+    force_reload: bool = False,
+) -> dict[str, str]:
+    """خواندن {name: tier} با cache mtime-aware.
 
     Args:
         force_reload: اگر True، cache نادیده گرفته می‌شود.
@@ -128,7 +258,9 @@ def _read_custom_kw_dict(force_reload: bool = False) -> dict[str, str]:
 
     path = _kw_file_path()
     try:
-        mtime = path.stat().st_mtime if path.exists() else 0.0
+        mtime = (
+            path.stat().st_mtime if path.exists() else 0.0
+        )
     except OSError:
         mtime = 0.0
 
@@ -155,7 +287,7 @@ def _read_custom_kw_dict(force_reload: bool = False) -> dict[str, str]:
     except json.JSONDecodeError as e:
         log_warning(
             f"⚠️ [SAFEBRAIN:kw] JSON نامعتبر | "
-            f"line={e.lineno} | {e.msg}"
+            f"line={e.lineno} col={e.colno} | {e.msg}"
         )
         return {}
     except Exception as e:
@@ -168,7 +300,7 @@ def _read_custom_kw_dict(force_reload: bool = False) -> dict[str, str]:
     # ─── parse ───
     out: dict[str, str] = {}
 
-    # فرمت قدیمی: list
+    # ─── فرمت قدیمی: list ───
     if isinstance(data, list):
         out = {
             str(x).strip(): "T1"
@@ -176,13 +308,14 @@ def _read_custom_kw_dict(force_reload: bool = False) -> dict[str, str]:
             if isinstance(x, str) and x.strip()
         }
 
-    # فرمت جدید: dict
+    # ─── فرمت جدید: dict ───
     elif isinstance(data, dict):
         kws = data.get("keywords")
         if kws is None:
             log_warning(
-                f"⚠️ [SAFEBRAIN:kw] dict بدون کلید «keywords» — "
-                f"کلیدهای موجود: {list(data.keys())[:5]}"
+                f"⚠️ [SAFEBRAIN:kw] dict بدون کلید "
+                f"«keywords» — کلیدهای موجود: "
+                f"{list(data.keys())[:5]}"
             )
             return {}
 
@@ -192,7 +325,9 @@ def _read_custom_kw_dict(force_reload: bool = False) -> dict[str, str]:
                 if not name:
                     continue
                 if isinstance(meta, dict):
-                    tier = str(meta.get("tier", "T1")).upper()
+                    tier = str(
+                        meta.get("tier", "T1")
+                    ).upper()
                 elif isinstance(meta, str):
                     tier = meta.upper()
                 else:
@@ -222,9 +357,16 @@ def _invalidate_kw_cache() -> None:
         _KW_CACHE_MTIME = 0.0
 
 
-def _write_custom_kw_dict(kw_tier: dict[str, str]) -> bool:
-    """
-    نوشتن {name: tier} — atomic.
+# ─── alias ───
+def reset_kw_cache() -> None:
+    """🎯 alias عمومی برای `_invalidate_kw_cache`."""
+    _invalidate_kw_cache()
+
+
+def _write_custom_kw_dict(
+    kw_tier: dict[str, str],
+) -> bool:
+    """نوشتن {name: tier} — atomic + fsync.
 
     Args:
         kw_tier: dict {نام: tier}.
@@ -233,6 +375,8 @@ def _write_custom_kw_dict(kw_tier: dict[str, str]) -> bool:
         True اگر موفق.
     """
     path = _kw_file_path()
+    tmp = path.with_suffix(".tmp")
+
     try:
         data = {
             "version": _KW_FILE_VERSION,
@@ -249,11 +393,38 @@ def _write_custom_kw_dict(kw_tier: dict[str, str]) -> bool:
                 if k and k.strip()
             },
         }
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
+
+        # 🎯 امن: mkdir
+        try:
+            path.parent.mkdir(
+                parents=True, exist_ok=True
+            )
+        except Exception:
+            pass
+
+        # 🎯 write + fsync
         with open(str(tmp), "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+            try:
+                f.flush()
+                os.fsync(f.fileno())
+            except (AttributeError, OSError):
+                pass
+
         tmp.replace(path)
+
+        # 🎯 fsync دایرکتوری (POSIX)
+        try:
+            dir_fd = os.open(
+                str(path.parent), os.O_DIRECTORY
+            )
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except (AttributeError, OSError):
+            pass
+
         _invalidate_kw_cache()
         return True
     except Exception as e:
@@ -261,4 +432,69 @@ def _write_custom_kw_dict(kw_tier: dict[str, str]) -> bool:
             f"❌ [SAFEBRAIN:kw] نوشتن | "
             f"{type(e).__name__}: {e}"
         )
+        # 🎯 cleanup tmp
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except Exception:
+            pass
         return False
+
+
+# ════════════════════════════════════════════
+# debug
+# ════════════════════════════════════════════
+def get_stats() -> dict[str, Any]:
+    """🎯 خلاصهٔ وضعیت — برای debug."""
+    with _KW_LOCK:
+        cache_size = (
+            len(_KW_CACHE)
+            if _KW_CACHE is not None else 0
+        )
+        cache_mtime = _KW_CACHE_MTIME
+
+    return {
+        "safe_brain_dir": str(SAFE_BRAIN_DIR),
+        "memory_dir": str(SAFE_MEMORY_DIR),
+        "cache_dir": str(SAFE_CACHE_DIR),
+        "safe_actions": len(SAFE_ACTIONS),
+        "locally_handled": len(
+            SAFE_ACTIONS_HANDLED_LOCALLY
+        ),
+        "blocked_patterns": len(BLOCKED_PATTERNS_REGEX),
+        "blocked_substrings": len(BLOCKED_SUBSTRINGS),
+        "max_api_per_hour": MAX_API_CALLS_PER_HOUR,
+        "brain_retry_s": _BRAIN_FAIL_RETRY_S,
+        "kw_cache_size": cache_size,
+        "kw_cache_mtime": cache_mtime,
+        "valid_tiers": list(_VALID_TIERS),
+        "kw_file_version": _KW_FILE_VERSION,
+    }
+
+
+# ════════════════════════════════════════════
+# __all__
+# ════════════════════════════════════════════
+__all__ = [
+    # مسیرها
+    "SAFE_BRAIN_DIR",
+    "SAFE_MEMORY_DIR",
+    "SAFE_CACHE_DIR",
+    # اکشن‌ها
+    "SAFE_ACTIONS",
+    "SAFE_ACTIONS_HANDLED_LOCALLY",
+    "is_safe_action",
+    "is_locally_handled",
+    # امنیت
+    "BLOCKED_PATTERNS_REGEX",
+    "BLOCKED_SUBSTRINGS",
+    # تنظیمات
+    "MAX_API_CALLS_PER_HOUR",
+    # kw cache
+    "_read_custom_kw_dict",
+    "_write_custom_kw_dict",
+    "_invalidate_kw_cache",
+    "reset_kw_cache",
+    # debug
+    "get_stats",
+]

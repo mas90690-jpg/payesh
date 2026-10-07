@@ -1,24 +1,30 @@
-"""
-Observability HTTP server — سبک، بدون وابستگی اضافه (aiohttp موجود است).
+"""Observability HTTP server — سبک، بدون وابستگی اضافه.
 
 Endpointها:
-    GET  /health   → JSON health (200 healthy/degraded, 503 unhealthy)
+    GET  /health   → JSON health (200/503)
     GET  /metrics  → Prometheus text exposition
     GET  /         → صفحهٔ وضعیت انسانی
-    GET  /chat     → چتِ محلی با هوش (بدون نیاز به اینترنت/بله)
+    GET  /chat     → چتِ محلی با هوش
     POST /chat     → JSON {message} → {reply}
 
-تنظیمات از .env:
-    OBS_ENABLED (default true), OBS_HOST (0.0.0.0), OBS_PORT (8787)
-
-نسخهٔ ۵ (این نسخه):
-  - 🐛 FIX بحرانی: _periodic_cleanup دیگر سرور را ۲ دقیقه بلوکه نمی‌کند.
-    (قبلاً `lambda app: asyncio.create_task(...)` یک Task برمی‌گرداند
-    که aiohttp در on_startup منتظر آن می‌ماند → سرور دیر بالا می‌آمد.)
-    حالا تسک به‌درستی در پس‌زمینه اجرا می‌شود و مرجعش نگه داشته می‌شود.
-  - 🐛 FIX: تسک پس‌زمینه در on_cleanup لغو می‌شود (بدون نشت).
-  - 🎯 لاگ timing برای زمان راه‌اندازی سرور.
-  - (به‌همراه تمام FIXهای نسخهٔ ۴)
+نسخهٔ ۶ (این نسخه):
+  - 🐛 FIX: `_PLATFORM_ORDER` حالا از `config.PLATFORMS_ORDER`
+    می‌آید (شامل instagram).
+  - 🐛 FIX: `_LOG_PREVIEW_LEN`, `_RATE_CLEANUP_INTERVAL_S` env-based.
+  - 🐛 FIX: `_safe_int`, `_safe_float` حالا `min_val`/`max_val`
+    دارند.
+  - 🐛 FIX: `enabled`, `host`, `port` حالا از `config.OBS_CONFIG`.
+  - 🐛 FIX: `AI_ENABLED` حالا در بالای فایل import می‌شود
+    (نه در runtime).
+  - 🐛 FIX: `_gather_counts_sqlite` حالا از `localtime` modifier
+    در SQLite استفاده می‌کند.
+  - 🐛 FIX: `_get_admin` حالا `import` امن دارد.
+  - 🎯 `_RATE_LIMIT_HEADERS` constants.
+  - 🎯 `reset_caches()` برای تست.
+  - 🎯 `get_rate_limiter_stats()`.
+  - 🎯 `server_info()`.
+  - 🎯 `__all__` export.
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۵.
 """
 from __future__ import annotations
 
@@ -32,44 +38,144 @@ import traceback
 from datetime import datetime, timedelta
 from typing import Any
 
-from core.kernel.logger import log_error, log_info, log_success, log_warning
-
-# ─── ثابت‌ها ───
-_SERVER_START = datetime.now()
-
-_PLATFORM_ORDER = (
-    "eitaa", "bale", "rubika", "telegram",
-    "whatsapp", "web", "linkedin",
+from core.kernel.logger import (
+    log_error,
+    log_info,
+    log_success,
+    log_warning,
 )
 
-_LOG_PREVIEW_LEN = 80
 
-# ─── سقف‌ها ───
-def _safe_int(name: str, default: int) -> int:
+# ═══════════════════════════════════════════
+# helpers
+# ═══════════════════════════════════════════
+def _env_int(
+    name: str, default: int,
+    min_val: int | None = None,
+    max_val: int | None = None,
+) -> int:
+    """خواندن int از env — با sanitize."""
     try:
-        return int(os.getenv(name, str(default)))
+        v = int(os.getenv(name, str(default)))
     except (ValueError, TypeError):
         return default
+    if min_val is not None and v < min_val:
+        return min_val
+    if max_val is not None and v > max_val:
+        return max_val
+    return v
 
-def _safe_float(name: str, default: float) -> float:
+
+def _env_float(
+    name: str, default: float,
+    min_val: float | None = None,
+    max_val: float | None = None,
+) -> float:
+    """خواندن float از env — با sanitize."""
     try:
-        return float(os.getenv(name, str(default)))
+        v = float(os.getenv(name, str(default)))
     except (ValueError, TypeError):
         return default
+    if min_val is not None and v < min_val:
+        return min_val
+    if max_val is not None and v > max_val:
+        return max_val
+    return v
 
-_MAX_CHAT_LEN = _safe_int("OBS_CHAT_MAX_LEN", 2000)
-_MAX_BODY_BYTES = _safe_int("OBS_MAX_BODY_BYTES", 10000)
-_RATE_LIMIT_WINDOW_S = _safe_int("OBS_RATE_WINDOW", 60)
-_RATE_LIMIT_MAX = _safe_int("OBS_RATE_MAX", 30)  # per-IP per-window
+
+# ═══════════════════════════════════════════
+# AI_ENABLED (top of file)
+# ═══════════════════════════════════════════
+try:
+    from config import AI_ENABLED
+except Exception:
+    AI_ENABLED = True
+
+
+# ═══════════════════════════════════════════
+# ثابت‌ها
+# ═══════════════════════════════════════════
+_SERVER_START = datetime.now()
+
+
+def _build_platform_order() -> tuple[str, ...]:
+    """🎯 FIX: از config.PLATFORMS_ORDER با fallback."""
+    try:
+        from config import PLATFORMS_ORDER
+        if PLATFORMS_ORDER:
+            return tuple(PLATFORMS_ORDER)
+    except Exception:
+        pass
+    return (
+        "eitaa", "bale", "rubika", "telegram",
+        "whatsapp", "web", "linkedin", "instagram",
+    )
+
+
+_PLATFORM_ORDER: tuple[str, ...] = _build_platform_order()
+
+_LOG_PREVIEW_LEN = _env_int(
+    "OBS_LOG_PREVIEW", 80,
+    min_val=20, max_val=500,
+)
+
+# ═══════════════════════════════════════════
+# سقف‌ها (env-based)
+# ═══════════════════════════════════════════
+_MAX_CHAT_LEN = _env_int(
+    "OBS_CHAT_MAX_LEN", 2000,
+    min_val=100, max_val=50_000,
+)
+_MAX_BODY_BYTES = _env_int(
+    "OBS_MAX_BODY_BYTES", 10_000,
+    min_val=1024, max_val=10_000_000,
+)
+_RATE_LIMIT_WINDOW_S = _env_int(
+    "OBS_RATE_WINDOW", 60,
+    min_val=1, max_val=3600,
+)
+_RATE_LIMIT_MAX = _env_int(
+    "OBS_RATE_MAX", 30,
+    min_val=1, max_val=10_000,
+)
 
 # ─── cache intervals ───
-_STATS_CACHE_S = _safe_float("OBS_STATS_CACHE_S", 10.0)
-_SYS_CACHE_S = _safe_float("OBS_SYS_CACHE_S", 5.0)
-_HEALTH_CACHE_S = _safe_float("OBS_HEALTH_CACHE_S", 30.0)
-_COUNTS_TIMEOUT_S = _safe_float("OBS_COUNTS_TIMEOUT_S", 5.0)
+_STATS_CACHE_S = _env_float(
+    "OBS_STATS_CACHE_S", 10.0,
+    min_val=0.0, max_val=600.0,
+)
+_SYS_CACHE_S = _env_float(
+    "OBS_SYS_CACHE_S", 5.0,
+    min_val=0.0, max_val=600.0,
+)
+_HEALTH_CACHE_S = _env_float(
+    "OBS_HEALTH_CACHE_S", 30.0,
+    min_val=0.0, max_val=600.0,
+)
+_COUNTS_TIMEOUT_S = _env_float(
+    "OBS_COUNTS_TIMEOUT_S", 5.0,
+    min_val=1.0, max_val=120.0,
+)
 
-# فاصلهٔ پاک‌سازی bucketهای rate limiter (ثانیه)
-_RATE_CLEANUP_INTERVAL_S = 300.0
+# ─── cleanup interval ───
+_RATE_CLEANUP_INTERVAL_S = _env_float(
+    "OBS_RATE_CLEANUP_S", 300.0,
+    min_val=10.0, max_val=3600.0,
+)
+
+# ─── SQLite timeout ───
+_SQLITE_TIMEOUT_S = _env_float(
+    "OBS_SQLITE_TIMEOUT_S", 3.0,
+    min_val=0.5, max_val=60.0,
+)
+
+# ─── rate limit headers ───
+_RATE_LIMIT_HEADERS = (
+    "X-RateLimit-Limit",
+    "X-RateLimit-Remaining",
+    "X-RateLimit-Window",
+    "Retry-After",
+)
 
 
 # ═══════════════════════════════════════════
@@ -107,7 +213,7 @@ catch(err){w.textContent='❌ خطا در ارتباط';}};
 # ═══════════════════════════════════════════
 # Prometheus renderer
 # ═══════════════════════════════════════════
-def _prom_escape(value: str) -> str:
+def _prom_escape(value: Any) -> str:
     """escape مقدار label برای Prometheus."""
     if value is None:
         return ""
@@ -119,10 +225,10 @@ def _prom_escape(value: str) -> str:
 
 
 def _prom_metric_value(value: Any) -> str:
-    """مقدار عددی امن برای Prometheus (NaN/Inf نه)."""
+    """مقدار عددی امن برای Prometheus."""
     try:
         f = float(value)
-        if f != f:  # NaN
+        if f != f:
             return "0"
         if f == float("inf") or f == float("-inf"):
             return "0"
@@ -132,67 +238,84 @@ def _prom_metric_value(value: Any) -> str:
 
 
 def render_prometheus(
-    counts: dict, sys_stats: dict, collectors_up: dict
+    counts: dict[str, Any],
+    sys_stats: dict[str, Any],
+    collectors_up: dict[str, bool],
 ) -> str:
-    """Prometheus text exposition — label escape + عدد امن."""
+    """Prometheus text exposition."""
     out: list[str] = []
 
-    def g(name: str, value: Any, help_: str, typ: str = "gauge") -> None:
+    def g(
+        name: str, value: Any, help_: str,
+        typ: str = "gauge",
+    ) -> None:
         out.append(f"# HELP {name} {help_}")
         out.append(f"# TYPE {name} {typ}")
         out.append(f"{name} {_prom_metric_value(value)}")
 
     def g_labeled(
-        name: str, value: Any, labels: dict[str, str],
-        help_: str, typ: str = "gauge",
+        name: str, value: Any,
+        labels: dict[str, str],
     ) -> None:
         label_str = ",".join(
-            f'{k}="{_prom_escape(v)}"' for k, v in labels.items()
+            f'{k}="{_prom_escape(v)}"'
+            for k, v in labels.items()
         )
-        out.append(f"{name}{{{label_str}}} {_prom_metric_value(value)}")
+        out.append(
+            f"{name}{{{label_str}}} "
+            f"{_prom_metric_value(value)}"
+        )
 
     g(
-        "app_messages_total", counts.get("messages", 0),
+        "app_messages_total",
+        counts.get("messages", 0),
         "Total stored messages", "counter",
     )
     g(
-        "app_leads_total", counts.get("leads", 0),
+        "app_leads_total",
+        counts.get("leads", 0),
         "Total leads (keyword matches)", "counter",
     )
     g(
-        "app_hot_leads_total", counts.get("hot", 0),
+        "app_hot_leads_total",
+        counts.get("hot", 0),
         "Hot (high-intent) leads", "counter",
     )
 
     # per-platform (all-time)
     by_platform = counts.get("by_platform") or {}
     out.append(
-        "# HELP app_leads_by_platform Leads per platform (all-time)"
+        "# HELP app_leads_by_platform "
+        "Leads per platform (all-time)"
     )
     out.append("# TYPE app_leads_by_platform gauge")
     for p in _PLATFORM_ORDER:
         g_labeled(
-            "app_leads_by_platform", by_platform.get(p, 0),
-            {"platform": p}, "",
+            "app_leads_by_platform",
+            by_platform.get(p, 0),
+            {"platform": p},
         )
 
-    # per-platform (last 24h)
+    # per-platform (24h)
     by_24h = counts.get("by_platform_24h") or {}
     out.append(
         "# HELP app_leads_by_platform_last_24h "
         "Leads per platform (last 24h)"
     )
-    out.append("# TYPE app_leads_by_platform_last_24h gauge")
+    out.append(
+        "# TYPE app_leads_by_platform_last_24h gauge"
+    )
     for p in _PLATFORM_ORDER:
         g_labeled(
-            "app_leads_by_platform_last_24h", by_24h.get(p, 0),
-            {"platform": p}, "",
+            "app_leads_by_platform_last_24h",
+            by_24h.get(p, 0),
+            {"platform": p},
         )
 
     g(
         "system_cpu_percent",
         round(float(sys_stats.get("cpu", 0) or 0), 1),
-        "Process host CPU %",
+        "Host CPU %",
     )
     g(
         "system_ram_percent",
@@ -200,30 +323,35 @@ def render_prometheus(
         "Host RAM %",
     )
     g(
-        "app_uptime_seconds", int(sys_stats.get("uptime", 0) or 0),
+        "app_uptime_seconds",
+        int(sys_stats.get("uptime", 0) or 0),
         "Uptime in seconds", "counter",
     )
 
     # collector_up
     ups = collectors_up or {}
     out.append(
-        "# HELP collector_up Collector connected (1=up,0=down)"
+        "# HELP collector_up "
+        "Collector connected (1=up,0=down)"
     )
     out.append("# TYPE collector_up gauge")
     for p in _PLATFORM_ORDER:
         g_labeled(
-            "collector_up", 1 if ups.get(p) else 0,
-            {"platform": p}, "",
+            "collector_up",
+            1 if ups.get(p) else 0,
+            {"platform": p},
         )
 
     return "\n".join(out) + "\n"
 
 
 # ═══════════════════════════════════════════
-# cache helpers (thread-safe)
+# TTL cache
 # ═══════════════════════════════════════════
 class _TTLCache:
     """کش ساده با TTL — thread-safe."""
+
+    __slots__ = ("ttl", "_value", "_time", "_lock")
 
     def __init__(self, ttl_s: float):
         self.ttl = ttl_s
@@ -250,17 +378,45 @@ class _TTLCache:
             self._value = None
             self._time = 0.0
 
+    def __repr__(self) -> str:
+        with self._lock:
+            has_val = self._value is not None
+        return f"<TTLCache ttl={self.ttl}s has_value={has_val}>"
+
 
 _counts_cache = _TTLCache(_STATS_CACHE_S)
 _sys_cache = _TTLCache(_SYS_CACHE_S)
 _health_cache = _TTLCache(_HEALTH_CACHE_S)
 
 
+def reset_caches() -> None:
+    """🎯 پاک کردن همه cacheها — برای تست."""
+    _counts_cache.invalidate()
+    _sys_cache.invalidate()
+    _health_cache.invalidate()
+    log_info("🗑️ [OBS:cache] همه cacheها پاک شدند")
+
+
 # ═══════════════════════════════════════════
-# آمار
+# gather counts
 # ═══════════════════════════════════════════
-async def _gather_counts(db) -> dict:
-    """آمار برای متریک‌ها — با cache + timeout + لاگ خطا."""
+def _empty_counts() -> dict[str, Any]:
+    """🎯 counts پایه."""
+    return {
+        "messages": 0,
+        "leads": 0,
+        "hot": 0,
+        "by_platform": dict.fromkeys(
+            _PLATFORM_ORDER, 0
+        ),
+        "by_platform_24h": dict.fromkeys(
+            _PLATFORM_ORDER, 0
+        ),
+    }
+
+
+async def _gather_counts(db) -> dict[str, Any]:
+    """آمار برای metricها — با cache + timeout."""
     cached = _counts_cache.get()
     if cached is not None:
         return cached
@@ -274,53 +430,45 @@ async def _gather_counts(db) -> dict:
         return counts
     except TimeoutError:
         log_warning(
-            f"⏰ [OBS:counts] timeout ({_COUNTS_TIMEOUT_S}s) — "
-            f"برگشت مقادیر پایه"
+            f"⏰ [OBS:counts] timeout "
+            f"({_COUNTS_TIMEOUT_S}s)"
         )
     except Exception as e:
         log_warning(
-            f"⚠️ [OBS:counts] {type(e).__name__}: {e}"
+            f"⚠️ [OBS:counts] "
+            f"{type(e).__name__}: {e}"
         )
 
-    return {
-        "messages": 0,
-        "leads": 0,
-        "hot": 0,
-        "by_platform": dict.fromkeys(_PLATFORM_ORDER, 0),
-        "by_platform_24h": dict.fromkeys(_PLATFORM_ORDER, 0),
-    }
+    return _empty_counts()
 
 
-async def _gather_counts_inner(db) -> dict:
-    """قلب _gather_counts (بدون cache/timeout)."""
-    counts: dict[str, Any] = {
-        "messages": 0,
-        "leads": 0,
-        "hot": 0,
-        "by_platform": dict.fromkeys(_PLATFORM_ORDER, 0),
-        "by_platform_24h": dict.fromkeys(_PLATFORM_ORDER, 0),
-    }
+async def _gather_counts_inner(db) -> dict[str, Any]:
+    """قلب `_gather_counts`."""
+    counts = _empty_counts()
 
-    # ─── مسیر سریع: db.get_total_count ───
+    # ─── مسیر سریع ───
     try:
         tc = await db.get_total_count()
-        counts["messages"] = int(tc.get("messages", 0) or 0)
-        counts["leads"] = int(tc.get("leads", 0) or 0)
+        counts["messages"] = int(
+            tc.get("messages", 0) or 0
+        )
+        counts["leads"] = int(
+            tc.get("leads", 0) or 0
+        )
     except Exception as e:
         log_warning(
             f"⚠️ [OBS:counts] get_total_count | "
             f"{type(e).__name__}: {e}"
         )
 
-    # ─── مسیر SQLite ───
+    # ─── SQLite ───
     path = getattr(db, "db_path", None)
     if not path or not os.path.exists(path):
         log_info(
-            "ℹ️ [OBS:counts] SQLite مسیر نیست — فقط مقادیر پایه"
+            "ℹ️ [OBS:counts] SQLite مسیر نیست"
         )
         return counts
 
-    # اجرای SQL در thread جدا (جلوگیری از بلاک event loop)
     try:
         counts = await asyncio.to_thread(
             _gather_counts_sqlite, path, counts
@@ -334,14 +482,18 @@ async def _gather_counts_inner(db) -> dict:
     return counts
 
 
-def _gather_counts_sqlite(path: str, counts: dict) -> dict:
+def _gather_counts_sqlite(
+    path: str, counts: dict[str, Any]
+) -> dict[str, Any]:
     """کوئری‌های SQLite (sync، در thread)."""
     try:
-        c = sqlite3.connect(path, timeout=3.0)
+        c = sqlite3.connect(
+            path, timeout=_SQLITE_TIMEOUT_S
+        )
         try:
             cur = c.cursor()
 
-            # hot
+            # ─── hot ───
             try:
                 counts["hot"] = int(
                     cur.execute(
@@ -351,14 +503,17 @@ def _gather_counts_sqlite(path: str, counts: dict) -> dict:
                 )
             except Exception as e:
                 log_warning(
-                    f"⚠️ [OBS:counts:hot] {type(e).__name__}: {e}"
+                    f"⚠️ [OBS:counts:hot] "
+                    f"{type(e).__name__}: {e}"
                 )
 
-            # per-platform all-time
+            # ─── per-platform all-time ───
             try:
                 for p, n in cur.execute(
-                    "SELECT platform, COUNT(*) FROM messages "
-                    "WHERE keywords!='' GROUP BY platform"
+                    "SELECT platform, COUNT(*) "
+                    "FROM messages "
+                    "WHERE keywords!='' "
+                    "GROUP BY platform"
                 ):
                     if p in counts["by_platform"]:
                         counts["by_platform"][p] = int(n)
@@ -368,14 +523,16 @@ def _gather_counts_sqlite(path: str, counts: dict) -> dict:
                     f"{type(e).__name__}: {e}"
                 )
 
-            # per-platform last 24h
+            # 🎯 FIX: per-platform last 24h با localtime
             try:
                 since = (
                     datetime.now() - timedelta(hours=24)
                 ).strftime("%Y-%m-%d %H:%M:%S")
                 for p, n in cur.execute(
-                    "SELECT platform, COUNT(*) FROM messages "
-                    "WHERE keywords!='' AND timestamp >= ? "
+                    "SELECT platform, COUNT(*) "
+                    "FROM messages "
+                    "WHERE keywords!='' "
+                    "AND timestamp >= datetime(?, 'localtime') "
                     "GROUP BY platform",
                     (since,),
                 ):
@@ -390,14 +547,14 @@ def _gather_counts_sqlite(path: str, counts: dict) -> dict:
             c.close()
     except Exception as e:
         log_warning(
-            f"⚠️ [OBS:counts] connect | {type(e).__name__}: {e} | "
-            f"path={path}"
+            f"⚠️ [OBS:counts] connect | "
+            f"{type(e).__name__}: {e} | path={path}"
         )
     return counts
 
 
-def _sys_stats() -> dict:
-    """CPU/RAM/uptime — با cache 5s."""
+def _sys_stats() -> dict[str, Any]:
+    """CPU/RAM/uptime — با cache."""
     cached = _sys_cache.get()
     if cached is not None:
         return cached
@@ -405,7 +562,9 @@ def _sys_stats() -> dict:
     stats: dict[str, Any] = {
         "cpu": 0,
         "ram": 0,
-        "uptime": (datetime.now() - _SERVER_START).total_seconds(),
+        "uptime": (
+            datetime.now() - _SERVER_START
+        ).total_seconds(),
     }
     try:
         import psutil
@@ -413,20 +572,26 @@ def _sys_stats() -> dict:
         stats["ram"] = psutil.virtual_memory().percent
     except ImportError:
         log_warning(
-            "⚠️ [OBS:sys] psutil نصب نیست — CPU/RAM صفر"
+            "⚠️ [OBS:sys] psutil نصب نیست"
         )
     except Exception as e:
-        log_warning(f"⚠️ [OBS:sys] {type(e).__name__}: {e}")
+        log_warning(
+            f"⚠️ [OBS:sys] {type(e).__name__}: {e}"
+        )
 
     _sys_cache.set(stats)
     return stats
 
 
 # ═══════════════════════════════════════════
-# Rate limiter (per-IP)
+# Rate limiter
 # ═══════════════════════════════════════════
 class _RateLimiter:
-    """rate limiter ساده per-IP با پنجرهٔ ثابت."""
+    """rate limiter per-IP با پنجرهٔ ثابت."""
+
+    __slots__ = (
+        "max_req", "window_s", "_buckets", "_lock",
+    )
 
     def __init__(self, max_req: int, window_s: int):
         self.max_req = max_req
@@ -438,9 +603,10 @@ class _RateLimiter:
         """(allowed, remaining)."""
         now = time.monotonic()
         with self._lock:
-            last_time, count = self._buckets.get(ip, (0.0, 0))
+            last_time, count = self._buckets.get(
+                ip, (0.0, 0)
+            )
             if now - last_time >= self.window_s:
-                # reset window
                 self._buckets[ip] = (now, 1)
                 return True, self.max_req - 1
             if count >= self.max_req:
@@ -458,29 +624,60 @@ class _RateLimiter:
                 if now - t < self.window_s * 2
             }
 
+    def get_stats(self) -> dict[str, Any]:
+        """🎯 آمار rate limiter."""
+        with self._lock:
+            n = len(self._buckets)
+        return {
+            "max_req": self.max_req,
+            "window_s": self.window_s,
+            "active_ips": n,
+        }
 
-_rate_limiter = _RateLimiter(_RATE_LIMIT_MAX, _RATE_LIMIT_WINDOW_S)
+    def __repr__(self) -> str:
+        return (
+            f"<RateLimiter max={self.max_req} "
+            f"window={self.window_s}s>"
+        )
+
+
+_rate_limiter = _RateLimiter(
+    _RATE_LIMIT_MAX, _RATE_LIMIT_WINDOW_S
+)
+
+
+def get_rate_limiter_stats() -> dict[str, Any]:
+    """🎯 آمار rate limiter."""
+    return _rate_limiter.get_stats()
 
 
 # ═══════════════════════════════════════════
 # helpers
 # ═══════════════════════════════════════════
+_CONTROL_CHARS_RE = re.compile(
+    r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]"
+)
+
+
 def _sanitize_message(text: str) -> str:
-    """پاک‌سازی پیام ورودی از null bytes + کنترل کاراکترها."""
+    """پاک‌سازی پیام ورودی."""
     if not text:
         return ""
-    # حذف null + control (به‌جز newline/tab)
-    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
-    # سقف طول
+    try:
+        text = _CONTROL_CHARS_RE.sub("", str(text))
+    except Exception:
+        return ""
     if len(text) > _MAX_CHAT_LEN:
         text = text[:_MAX_CHAT_LEN]
     return text.strip()
 
 
 def _get_client_ip(request) -> str:
-    """IP مشتری — با احترام به X-Forwarded-For."""
+    """IP مشتری — با X-Forwarded-For."""
     try:
-        xff = request.headers.get("X-Forwarded-For", "")
+        xff = request.headers.get(
+            "X-Forwarded-For", ""
+        )
         if xff:
             return xff.split(",")[0].strip()
         return request.remote or "unknown"
@@ -494,59 +691,72 @@ def _get_client_ip(request) -> str:
 async def start_obs_server(
     db,
     health_checker=None,
-    collectors: list | None = None,
+    collectors: list[Any] | None = None,
 ):
-    """راه‌اندازی سرور observability — runner برمی‌گرداند (یا None)."""
+    """راه‌اندازی سرور observability."""
     t_start = time.monotonic()
 
-    enabled = (
-        os.getenv("OBS_ENABLED", "true").strip().lower() == "true"
-    )
-    if not enabled:
+    # ─── config check ───
+    try:
+        from config import OBS_CONFIG
+        _obs_enabled = bool(OBS_CONFIG.get("enabled", True))
+        _obs_host = str(
+            OBS_CONFIG.get("host", "0.0.0.0")
+        ) or "0.0.0.0"
+        _obs_port = int(OBS_CONFIG.get("port", 8787))
+    except Exception:
+        _obs_enabled = (
+            os.getenv("OBS_ENABLED", "true")
+            .strip().lower() == "true"
+        )
+        _obs_host = os.getenv("OBS_HOST", "0.0.0.0")
+        try:
+            _obs_port = int(os.getenv("OBS_PORT", "8787"))
+        except (ValueError, TypeError):
+            _obs_port = 8787
+
+    if not _obs_enabled:
         log_warning(
-            "⚠️ [OBS:init] غیرفعال (OBS_ENABLED=false) — "
-            "هیچ سروری راه نمی‌افتد"
+            "⚠️ [OBS:init] غیرفعال (OBS_ENABLED=false)"
         )
         return None
 
     try:
         from aiohttp import web
     except ImportError as e:
-        log_error(f"❌ [OBS:init] aiohttp نصب نیست | {e}")
+        log_error(
+            f"❌ [OBS:init] aiohttp نصب نیست | {e}"
+        )
         return None
 
     collectors = collectors or []
-    host = os.getenv("OBS_HOST", "0.0.0.0")
-
-    raw_port = os.getenv("OBS_PORT", "8787")
-    try:
-        port = int(raw_port)
-    except (ValueError, TypeError):
-        log_warning(
-            f"⚠️ [OBS:init] OBS_PORT نامعتبر | raw={raw_port!r} — "
-            f"استفاده از 8787"
-        )
-        port = 8787
 
     log_info(
-        f"▶️ [OBS:init] شروع | host={host} port={port} | "
+        f"▶️ [OBS:init] شروع | "
+        f"host={_obs_host} port={_obs_port} | "
         f"collectors={len(collectors)} | "
         f"health_checker={'✅' if health_checker else '—'} | "
-        f"rate_limit={_RATE_LIMIT_MAX}/{_RATE_LIMIT_WINDOW_S}s"
+        f"rate_limit={_RATE_LIMIT_MAX}/"
+        f"{_RATE_LIMIT_WINDOW_S}s | "
+        f"platforms={list(_PLATFORM_ORDER)}"
     )
 
-    # ─── نگاشت collector → is_connected ───
-    def _collector_map() -> dict:
+    # ─── collector map ───
+    def _collector_map() -> dict[str, bool]:
         m = dict.fromkeys(_PLATFORM_ORDER, False)
         for c in collectors:
             name = getattr(c, "platform_name", None)
             if name:
-                m[name] = bool(getattr(c, "is_connected", False))
+                m[name] = bool(
+                    getattr(c, "is_connected", False)
+                )
         return m
 
-    # ─── AdminHandler (lazy, thread-safe, db-aware) ───
+    # ─── AdminHandler (lazy) ───
     _admin_lock = asyncio.Lock()
-    _admin_state: dict[str, Any] = {"h": None, "db_id": None}
+    _admin_state: dict[str, Any] = {
+        "h": None, "db_id": None,
+    }
 
     async def _get_admin():
         current_db_id = id(db)
@@ -555,7 +765,17 @@ async def start_obs_server(
                 _admin_state["h"] is None
                 or _admin_state["db_id"] != current_db_id
             ):
-                from handlers.admin_handler import AdminHandler
+                try:
+                    from handlers.admin_handler import (
+                        AdminHandler,
+                    )
+                except Exception as e:
+                    log_error(
+                        f"❌ [OBS:chat] import "
+                        f"AdminHandler | "
+                        f"{type(e).__name__}: {e}"
+                    )
+                    raise
                 log_info(
                     f"🏗️ [OBS:chat] ساخت AdminHandler "
                     f"(db_id={current_db_id})"
@@ -570,7 +790,7 @@ async def start_obs_server(
     async def health(request):
         t0 = time.monotonic()
 
-        # cache
+        # ─── cache ───
         cached = _health_cache.get()
         if cached is not None:
             result, code = cached
@@ -579,34 +799,53 @@ async def start_obs_server(
                 f"🌐 [OBS:/health] {code} (cache) | "
                 f"{elapsed_ms:.0f}ms"
             )
-            return web.json_response(result, status=code)
+            return web.json_response(
+                result, status=code
+            )
 
+        # ─── checker ───
         if health_checker is not None:
             try:
                 result = await health_checker.check_all()
-                overall = result.get("overall_status", "unknown")
+                overall = result.get(
+                    "overall_status", "unknown"
+                )
                 code = (
-                    200 if overall in ("healthy", "degraded") else 503
+                    200
+                    if overall in (
+                        "healthy", "degraded"
+                    )
+                    else 503
                 )
                 _health_cache.set((result, code))
-                elapsed_ms = (time.monotonic() - t0) * 1000
+                elapsed_ms = (
+                    time.monotonic() - t0
+                ) * 1000
                 log_info(
-                    f"🌐 [OBS:/health] {code} {overall} | "
-                    f"{elapsed_ms:.0f}ms"
-                )
-                return web.json_response(result, status=code)
-            except Exception as e:
-                elapsed_ms = (time.monotonic() - t0) * 1000
-                log_error(
-                    f"❌ [OBS:/health] health_checker | "
-                    f"{type(e).__name__}: {e} | {elapsed_ms:.0f}ms"
+                    f"🌐 [OBS:/health] {code} "
+                    f"{overall} | {elapsed_ms:.0f}ms"
                 )
                 return web.json_response(
-                    {"overall_status": "unhealthy", "error": str(e)},
+                    result, status=code
+                )
+            except Exception as e:
+                elapsed_ms = (
+                    time.monotonic() - t0
+                ) * 1000
+                log_error(
+                    f"❌ [OBS:/health] "
+                    f"{type(e).__name__}: {e} | "
+                    f"{elapsed_ms:.0f}ms"
+                )
+                return web.json_response(
+                    {
+                        "overall_status": "unhealthy",
+                        "error": str(e),
+                    },
                     status=503,
                 )
 
-        # fallback: minimal + DB check
+        # ─── fallback ───
         db_ok = True
         try:
             if db is not None:
@@ -632,8 +871,8 @@ async def start_obs_server(
         _health_cache.set((result, code))
         elapsed_ms = (time.monotonic() - t0) * 1000
         log_info(
-            f"🌐 [OBS:/health] {code} {overall} (fallback) | "
-            f"{elapsed_ms:.0f}ms"
+            f"🌐 [OBS:/health] {code} {overall} "
+            f"(fallback) | {elapsed_ms:.0f}ms"
         )
         return web.json_response(result, status=code)
 
@@ -646,17 +885,19 @@ async def start_obs_server(
             )
             elapsed_ms = (time.monotonic() - t0) * 1000
             log_info(
-                f"🌐 [OBS:/metrics] 200 | {elapsed_ms:.0f}ms | "
-                f"leads={counts.get('leads', 0)} "
-                f"messages={counts.get('messages', 0)}"
+                f"🌐 [OBS:/metrics] 200 | "
+                f"{elapsed_ms:.0f}ms | "
+                f"leads={counts.get('leads', 0)}"
             )
             return web.Response(
-                text=text, content_type="text/plain"
+                text=text,
+                content_type="text/plain",
             )
         except Exception as e:
             elapsed_ms = (time.monotonic() - t0) * 1000
             log_error(
-                f"❌ [OBS:/metrics] {type(e).__name__}: {e} | "
+                f"❌ [OBS:/metrics] "
+                f"{type(e).__name__}: {e} | "
                 f"{elapsed_ms:.0f}ms"
             )
             return web.Response(
@@ -671,7 +912,8 @@ async def start_obs_server(
             counts = await _gather_counts(db)
             s = _sys_stats()
             by = "، ".join(
-                f"{p}={counts['by_platform'].get(p, 0)}"
+                f"{p}="
+                f"{counts['by_platform'].get(p, 0)}"
                 for p in _PLATFORM_ORDER
             )
             body = (
@@ -679,18 +921,22 @@ async def start_obs_server(
                 f"uptime: {int(s['uptime'])}s | "
                 f"cpu: {s['cpu']}% | ram: {s['ram']}%\n"
                 f"messages: {counts['messages']} | "
-                f"leads: {counts['leads']} | hot: {counts['hot']}\n"
+                f"leads: {counts['leads']} | "
+                f"hot: {counts['hot']}\n"
                 f"by platform: {by}\n"
                 f"endpoints: /health  /metrics  /chat\n"
             )
             elapsed_ms = (time.monotonic() - t0) * 1000
             log_info(
-                f"🌐 [OBS:/] 200 | {elapsed_ms:.0f}ms | "
-                f"uptime={int(s['uptime'])}s"
+                f"🌐 [OBS:/] 200 | {elapsed_ms:.0f}ms"
             )
-            return web.Response(text=body, content_type="text/plain")
+            return web.Response(
+                text=body, content_type="text/plain"
+            )
         except Exception as e:
-            log_error(f"❌ [OBS:/] {type(e).__name__}: {e}")
+            log_error(
+                f"❌ [OBS:/] {type(e).__name__}: {e}"
+            )
             return web.Response(
                 text=f"error: {e}",
                 content_type="text/plain",
@@ -719,21 +965,38 @@ async def start_obs_server(
 
         # ─── rate limit ───
         client_ip = _get_client_ip(request)
-        allowed, remaining = _rate_limiter.check(client_ip)
+        allowed, remaining = _rate_limiter.check(
+            client_ip
+        )
         if not allowed:
             log_warning(
-                f"⛔ [OBS:/chat:api] rate limit | ip={client_ip}"
+                f"⛔ [OBS:/chat:api] rate limit | "
+                f"ip={client_ip}"
             )
             return web.json_response(
-                {"reply": "⏳ درخواست‌های زیادی — کمی صبر کن."},
+                {
+                    "reply": "⏳ درخواست‌های زیادی — "
+                    "کمی صبر کن."
+                },
                 status=429,
-                headers={"Retry-After": str(_RATE_LIMIT_WINDOW_S)},
+                headers={
+                    "Retry-After": str(
+                        _RATE_LIMIT_WINDOW_S
+                    ),
+                    "X-RateLimit-Limit": str(
+                        _RATE_LIMIT_MAX
+                    ),
+                    "X-RateLimit-Remaining": "0",
+                    "X-RateLimit-Window": str(
+                        _RATE_LIMIT_WINDOW_S
+                    ),
+                },
             )
 
-        from config import AI_ENABLED
+        # ─── AI_ENABLED ───
         if not AI_ENABLED:
             log_warning(
-                "⚠️ [OBS:/chat:api] AI_ENABLED=false — رد شد"
+                "⚠️ [OBS:/chat:api] AI_ENABLED=false"
             )
             return web.json_response({
                 "reply": (
@@ -742,7 +1005,7 @@ async def start_obs_server(
                 )
             })
 
-        # ─── Content-Length check ───
+        # ─── Content-Length ───
         try:
             cl = request.content_length
             if cl is not None and cl > _MAX_BODY_BYTES:
@@ -757,7 +1020,7 @@ async def start_obs_server(
         except Exception:
             pass
 
-        # ─── parse JSON ───
+        # ─── parse ───
         try:
             data = await request.json()
             message = _sanitize_message(
@@ -769,12 +1032,17 @@ async def start_obs_server(
                 f"{type(e).__name__}: {e}"
             )
             return web.json_response(
-                {"reply": "❌ درخواست نامعتبر (بدنه باید JSON باشد)."},
+                {
+                    "reply": "❌ درخواست نامعتبر "
+                    "(بدنه باید JSON باشد)."
+                },
                 status=400,
             )
 
         if not message:
-            return web.json_response({"reply": "📝 پیام خالی."})
+            return web.json_response(
+                {"reply": "📝 پیام خالی."}
+            )
 
         # ─── اجرا ───
         try:
@@ -782,7 +1050,8 @@ async def start_obs_server(
             reply = await admin.process_text(message)
             elapsed_ms = (time.monotonic() - t0) * 1000
             log_success(
-                f"✅ [OBS:/chat:api] {elapsed_ms:.0f}ms | "
+                f"✅ [OBS:/chat:api] "
+                f"{elapsed_ms:.0f}ms | "
                 f"ip={client_ip} | "
                 f"in={message[:_LOG_PREVIEW_LEN]!r} | "
                 f"out_len={len(reply or '')}"
@@ -790,48 +1059,56 @@ async def start_obs_server(
         except Exception as e:
             elapsed_ms = (time.monotonic() - t0) * 1000
             log_error(
-                f"❌ [OBS:/chat:api] {type(e).__name__}: {e} | "
+                f"❌ [OBS:/chat:api] "
+                f"{type(e).__name__}: {e} | "
                 f"{elapsed_ms:.0f}ms | ip={client_ip}"
             )
-            # traceback کامل فقط در DEBUG
-            if os.getenv("LOG_LEVEL", "").upper() == "DEBUG":
-                for line in traceback.format_exc().splitlines()[-10:]:
+            if (
+                os.getenv("LOG_LEVEL", "").upper()
+                == "DEBUG"
+            ):
+                for line in (
+                    traceback.format_exc()
+                    .splitlines()[-10:]
+                ):
                     log_error(f"   ↳ {line}")
             reply = "❌ خطای داخلی در پردازش پیام."
 
         return web.json_response(
             {"reply": reply},
             headers={
-                "X-RateLimit-Remaining": str(max(0, remaining)),
+                "X-RateLimit-Limit": str(
+                    _RATE_LIMIT_MAX
+                ),
+                "X-RateLimit-Remaining": str(
+                    max(0, remaining)
+                ),
+                "X-RateLimit-Window": str(
+                    _RATE_LIMIT_WINDOW_S
+                ),
             },
         )
 
     # ═══════════════════════════════════════════
     # ساخت و راه‌اندازی
     # ═══════════════════════════════════════════
-    app = web.Application(client_max_size=_MAX_BODY_BYTES)
+    app = web.Application(
+        client_max_size=_MAX_BODY_BYTES
+    )
     app.router.add_get("/", index)
     app.router.add_get("/health", health)
     app.router.add_get("/metrics", metrics)
     app.router.add_get("/chat", chat_page)
     app.router.add_post("/chat", chat_api)
 
-    # ─── cleanup دوره‌ای rate limiter (پس‌زمینه، بدون بلاک کردن startup) ───
-    #
-    # ⚠️ BUG-FIX: قبلاً این‌جا از
-    #     lambda app: asyncio.create_task(_periodic_cleanup(app))
-    # استفاده می‌شد. aiohttp در on_startup مقدار برگشتی را
-    # await می‌کند؛ چون lambda یک Task برمی‌گرداند، aiohttp منتظر
-    # تمام شدن آن Task می‌ماند و چون Task تا ابد در حلقهٔ while
-    # است، سرور تا چند دقیقه بالا نمی‌آمد.
-    #
-    # راه‌حل: تابع async که تسک را می‌سازد و بلافاصله return می‌کند
-    # (Task در پس‌زمینه می‌ماند و مرجعش در app نگه داشته می‌شود).
+    # ─── periodic cleanup ───
     async def _start_periodic_cleanup(app_):
         async def _runner():
             try:
                 while True:
-                    await asyncio.sleep(_RATE_CLEANUP_INTERVAL_S)
+                    await asyncio.sleep(
+                        _RATE_CLEANUP_INTERVAL_S
+                    )
                     try:
                         _rate_limiter.cleanup()
                     except Exception as e:
@@ -842,10 +1119,12 @@ async def start_obs_server(
             except asyncio.CancelledError:
                 return
 
-        task = asyncio.create_task(_runner(), name="obs_rate_cleanup")
+        task = asyncio.create_task(
+            _runner(), name="obs_rate_cleanup"
+        )
         app_["_obs_cleanup_task"] = task
         log_info(
-            f"🧹 [OBS:init] تسک پاک‌سازی rate limiter راه افتاد | "
+            f"🧹 [OBS:init] تسک cleanup راه افتاد | "
             f"هر {_RATE_CLEANUP_INTERVAL_S:.0f}s"
         )
 
@@ -863,19 +1142,22 @@ async def start_obs_server(
 
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, host, port)
+    site = web.TCPSite(runner, _obs_host, _obs_port)
 
     try:
         await site.start()
         elapsed_ms = (time.monotonic() - t_start) * 1000
         log_success(
-            f"✅ [OBS:start] سرور روی http://{host}:{port} فعال شد | "
-            f"/health /metrics /chat | {elapsed_ms:.0f}ms"
+            f"✅ [OBS:start] سرور روی "
+            f"http://{_obs_host}:{_obs_port} | "
+            f"/health /metrics /chat | "
+            f"{elapsed_ms:.0f}ms"
         )
         return runner
     except Exception as e:
         log_error(
-            f"❌ [OBS:start] bind ناموفق | host={host} port={port} | "
+            f"❌ [OBS:start] bind ناموفق | "
+            f"host={_obs_host} port={_obs_port} | "
             f"{type(e).__name__}: {e}"
         )
         try:
@@ -883,6 +1165,54 @@ async def start_obs_server(
             log_info("🧹 [OBS:start] runner تمیز شد")
         except Exception as e2:
             log_warning(
-                f"⚠️ [OBS:start] cleanup | {type(e2).__name__}: {e2}"
+                f"⚠️ [OBS:start] cleanup | "
+                f"{type(e2).__name__}: {e2}"
             )
         return None
+
+
+# ═══════════════════════════════════════════
+# debug
+# ═══════════════════════════════════════════
+def server_info() -> dict[str, Any]:
+    """🎯 اطلاعات سرور — برای debug."""
+    return {
+        "started_at": _SERVER_START.isoformat(),
+        "uptime_s": (
+            datetime.now() - _SERVER_START
+        ).total_seconds(),
+        "platform_order": list(_PLATFORM_ORDER),
+        "rate_limit": {
+            "max": _RATE_LIMIT_MAX,
+            "window_s": _RATE_LIMIT_WINDOW_S,
+        },
+        "caches": {
+            "stats_ttl_s": _STATS_CACHE_S,
+            "sys_ttl_s": _SYS_CACHE_S,
+            "health_ttl_s": _HEALTH_CACHE_S,
+        },
+        "limits": {
+            "max_chat_len": _MAX_CHAT_LEN,
+            "max_body_bytes": _MAX_BODY_BYTES,
+        },
+        "ai_enabled": AI_ENABLED,
+    }
+
+
+def get_stats() -> dict[str, Any]:
+    """🎯 alias برای `server_info`."""
+    return server_info()
+
+
+# ═══════════════════════════════════════════
+# __all__
+# ═══════════════════════════════════════════
+__all__ = [
+    "start_obs_server",
+    "render_prometheus",
+    "server_info",
+    "get_stats",
+    "reset_caches",
+    "get_rate_limiter_stats",
+    "_PLATFORM_ORDER",
+]

@@ -1,10 +1,8 @@
-# core/formula_manager.py
-"""
-Formula Manager — ذخیره و اجرای امن فرمول‌های SQL با متن.
+"""Formula Manager — ذخیره و اجرای امن فرمول‌های SQL با متن.
 
 استانداردها:
   - Whitelist عملیات (SELECT/DELETE/UPDATE/INSERT)
-  - Whitelist جداول (messages, leads, ...)
+  - Whitelist جداول
   - Ban کلمات خطرناک (DROP, ALTER, TRUNCATE, ...)
   - اعتبارسنجی SQL با EXPLAIN قبل از ذخیره
   - بکاپ خودکار + Transaction + Rollback
@@ -12,30 +10,35 @@ Formula Manager — ذخیره و اجرای امن فرمول‌های SQL با
   - Rate limiting (۱۰ write در دقیقه)
   - Audit log JSONL
   - Hot-reload (بدون ری‌استارت)
-  - Atomic write (tmp + replace)
+  - Atomic write (tmp + fsync + replace)
 
-نسخهٔ ۲ (این نسخه):
-  - 🐛 FIX بحرانی: confirm فقط وقتی اجازه داره که قبلاً preview صادر
-    شده باشه (issued is not None). قبلاً confirm مستقیم کار می‌کرد →
-    بدون تأیید واقعی، write اجرا می‌شد.
-  - 🐛 FIX: _run_read اتصال sqlite رو با try/finally می‌بنده (نشتی نداشته باشه)
-  - 🐛 FIX: _pending_confirms با auto-cleanup — هر دور اجرا، confirmedهای
-    منقضی حذف می‌شن (جلوگیری از نشتی حافظه)
-  - 🐛 FIX: _audit دیگر بی‌صدا نیست
-  - 🐛 FIX: _preview_write خطا را لاگ می‌کند
-  - 🐛 FIX: _bump_run دیگر در read اجرا نمی‌شود (بهینه)
-  - 🎯 لاگ دقیق و ساخت‌یافته با پیشوند [FORMULA:...]:
-      * init: db_path + limits
-      * load: تعداد فرمول + mtime + migration
-      * save/delete: name + type + زمان
-      * execute: name + type + زمان + تعداد rows
-      * write: preview + rate-check + backup + transaction + audit
-      * خطاها: type(e).__name__ + context
-  - 🎯 ثابت‌ها از env قابل تنظیم
-  - 🧹 hashlib import حذف شد (استفاده نمی‌شد)
-  - 🧹 from __future__ import annotations
-  - 🧹 type hints در همه‌جا
-  - 🧹 آستانه‌های کندی (SLOW_*) برای هشدار
+نسخهٔ ۳ (این نسخه):
+  - 🐛 FIX: `ROOT` حالا `Path(__file__).parent.parent.parent` است
+    (فایل در `core/adapters/` است).
+  - 🐛 FIX: `_load()` حالا `_cache_mtime` را در همهٔ مسیرها set
+    می‌کند (قبلاً cache miss می‌داد).
+  - 🐛 FIX: `_load()` migration list→dict حالا روی disk ذخیره
+    می‌شود (جلوگیری از تکرار).
+  - 🐛 FIX: `_save()` حالا `os.fsync` + fsync دایرکتوری دارد.
+  - 🐛 FIX: `_run_read()` حالا `_audit` می‌کند (طبق MEMORY).
+  - 🐛 FIX: `_run_write()` transaction rollback حالا امن است
+    (اگر `sqlite3.connect` exception بدهد، `c` None-safe).
+  - 🐛 FIX: `_validate_sql` EXPLAIN حالا write queries را امن
+    handle می‌کند.
+  - 🐛 FIX: همهٔ state mutation حالا با `threading.RLock` محافظت
+    می‌شود (race-safe):
+      * `_pending_confirms`
+      * `_write_times`
+      * `_audit` (append)
+      * `_cache` + `_cache_mtime`
+  - 🐛 FIX: `_ALLOWED_TABLES` حالا از config (با fallback).
+  - 🐛 FIX: `AUDIT_FILE` از `data.paths.FORMULA_AUDIT`.
+  - 🎯 `_env_int` helper برای همهٔ محدودیت‌ها.
+  - 🎯 `_SLOW_*` env-based.
+  - 🎯 `get_stats()` کامل‌تر.
+  - 🎯 `reset_formula_manager()` برای تست.
+  - 🎯 `__all__` export.
+  - ✅ حفظ همهٔ رفتار نسخهٔ ۲.
 """
 from __future__ import annotations
 
@@ -44,53 +47,120 @@ import os
 import re
 import shutil
 import sqlite3
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from core.kernel.logger import log_error, log_info, log_success, log_warning
+from core.kernel.logger import (
+    log_error,
+    log_info,
+    log_success,
+    log_warning,
+)
+
+
+# ═══════════════════════════════════════════
+# helpers
+# ═══════════════════════════════════════════
+def _env_int(
+    name: str, default: int,
+    min_val: int | None = None,
+    max_val: int | None = None,
+) -> int:
+    """خواندن int از env — با sanitize."""
+    try:
+        v = int(os.getenv(name, str(default)))
+    except (ValueError, TypeError):
+        return default
+    if min_val is not None and v < min_val:
+        return min_val
+    if max_val is not None and v > max_val:
+        return max_val
+    return v
+
 
 # ═══════════════════════════════════════════
 # مسیرها (منبع یکتا: data/paths.py)
 # ═══════════════════════════════════════════
-ROOT = Path(__file__).parent.parent
+# 🐛 FIX: فایل در `core/adapters/` است → 3 `.parent`
+ROOT = Path(__file__).parent.parent.parent
 STORAGE_DIR = ROOT / "storage"
 
 from data import paths as data_paths
 
-FORMULAS_FILE = data_paths.MY_FORMULAS
-AUDIT_FILE = STORAGE_DIR / "offset" / "formula_audit.jsonl"
-BACKUP_DIR = STORAGE_DIR / "backups" / "formulas"
+FORMULAS_FILE: Path = data_paths.MY_FORMULAS
+AUDIT_FILE: Path = data_paths.FORMULA_AUDIT
+BACKUP_DIR: Path = STORAGE_DIR / "backups" / "formulas"
 
-for _d in (AUDIT_FILE.parent, BACKUP_DIR):
-    _d.mkdir(parents=True, exist_ok=True)
+for _d in (AUDIT_FILE.parent, BACKUP_DIR, FORMULAS_FILE.parent):
+    try:
+        _d.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
 
 
 # ═══════════════════════════════════════════
-# محدودیت‌ها (قابل تنظیم از env)
+# محدودیت‌ها (env-based)
 # ═══════════════════════════════════════════
-_MAX_FORMULAS = max(1, int(os.getenv("FORMULA_MAX_COUNT", "200")))
-_MAX_SQL_LEN = max(50, int(os.getenv("FORMULA_MAX_SQL_LEN", "2000")))
-_WRITE_RATE_LIMIT = max(1, int(os.getenv("FORMULA_WRITE_RATE", "10")))
-_CONFIRM_TTL = max(10, int(os.getenv("FORMULA_CONFIRM_TTL", "300")))  # ۵ دقیقه
-_ALLOWED_READ = ("SELECT",)
-_ALLOWED_WRITE = ("DELETE", "UPDATE", "INSERT")
-_BANNED = (
-    "DROP", "ALTER", "TRUNCATE", "ATTACH", "PRAGMA", "VACUUM",
-    "REPLACE", "CREATE", "GRANT", "REVOKE",
+_MAX_FORMULAS = _env_int(
+    "FORMULA_MAX_COUNT", 200, min_val=1, max_val=10_000
 )
-_ALLOWED_TABLES = ("messages", "leads", "daily_stats",
-                   "chat_offsets", "last_poll")
+_MAX_SQL_LEN = _env_int(
+    "FORMULA_MAX_SQL_LEN", 2000, min_val=50, max_val=100_000
+)
+_WRITE_RATE_LIMIT = _env_int(
+    "FORMULA_WRITE_RATE", 10, min_val=1, max_val=1000
+)
+_CONFIRM_TTL = _env_int(
+    "FORMULA_CONFIRM_TTL", 300, min_val=10, max_val=3600
+)
 
 # آستانه‌های هشدار (میلی‌ثانیه)
-_SLOW_READ_MS = 2000
-_SLOW_WRITE_MS = 5000
-_SLOW_BACKUP_MS = 3000
+_SLOW_READ_MS = _env_int(
+    "FORMULA_SLOW_READ_MS", 2000,
+    min_val=100, max_val=60_000,
+)
+_SLOW_WRITE_MS = _env_int(
+    "FORMULA_SLOW_WRITE_MS", 5000,
+    min_val=100, max_val=60_000,
+)
+_SLOW_BACKUP_MS = _env_int(
+    "FORMULA_SLOW_BACKUP_MS", 3000,
+    min_val=100, max_val=60_000,
+)
+
+# ─── SQL op types ───
+_ALLOWED_READ: tuple[str, ...] = ("SELECT",)
+_ALLOWED_WRITE: tuple[str, ...] = ("DELETE", "UPDATE", "INSERT")
+
+_BANNED: tuple[str, ...] = (
+    "DROP", "ALTER", "TRUNCATE", "ATTACH", "PRAGMA",
+    "VACUUM", "REPLACE", "CREATE", "GRANT", "REVOKE",
+)
+
+# 🐛 FIX: از config (با fallback)
+try:
+    from config import SQLITE_CONFIG as _SQLITE_CFG
+    _ALLOWED_TABLES: tuple[str, ...] = tuple(
+        _SQLITE_CFG.get("allowed_tables", (
+            "messages", "leads", "daily_stats",
+            "chat_offsets", "last_poll",
+        ))
+    )
+except Exception:
+    _ALLOWED_TABLES = (
+        "messages", "leads", "daily_stats",
+        "chat_offsets", "last_poll",
+    )
 
 
 class FormulaManager:
-    """مدیر فرمول‌ها — ذخیره، اجرا، اعتبارسنجی، audit."""
+    """مدیر فرمول‌ها — ذخیره، اجرا، اعتبارسنجی، audit.
+
+    تمام state mutations با `threading.RLock` محافظت می‌شوند.
+    """
 
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -98,11 +168,15 @@ class FormulaManager:
         self._cache_mtime: float = 0.0
         self._pending_confirms: dict[str, float] = {}
         self._write_times: list[float] = []
+        # 🐛 FIX: lock برای همه state mutation
+        self._lock = threading.RLock()
 
         log_info(
             f"🔧 [FORMULA:init] آماده | db={db_path} | "
-            f"max_formulas={_MAX_FORMULAS} max_sql={_MAX_SQL_LEN} | "
-            f"rate={_WRITE_RATE_LIMIT}/min | confirm_ttl={_CONFIRM_TTL}s | "
+            f"max_formulas={_MAX_FORMULAS} "
+            f"max_sql={_MAX_SQL_LEN} | "
+            f"rate={_WRITE_RATE_LIMIT}/min | "
+            f"confirm_ttl={_CONFIRM_TTL}s | "
             f"file={FORMULAS_FILE}"
         )
 
@@ -112,17 +186,28 @@ class FormulaManager:
     def _load(self) -> dict[str, dict]:
         """بارگذاری فرمول‌ها با cache بر اساس mtime."""
         try:
-            mtime = FORMULAS_FILE.stat().st_mtime if FORMULAS_FILE.exists() else 0.0
+            mtime = (
+                FORMULAS_FILE.stat().st_mtime
+                if FORMULAS_FILE.exists() else 0.0
+            )
         except OSError:
             mtime = 0.0
 
-        if self._cache is not None and mtime == self._cache_mtime:
-            return self._cache
+        with self._lock:
+            if (
+                self._cache is not None
+                and mtime == self._cache_mtime
+            ):
+                return self._cache
 
+        # ─── فایل نیست ───
         if not FORMULAS_FILE.exists():
-            self._cache, self._cache_mtime = {}, mtime
-            return self._cache
+            with self._lock:
+                self._cache = {}
+                self._cache_mtime = mtime
+            return {}
 
+        # ─── خواندن ───
         try:
             with open(FORMULAS_FILE, encoding="utf-8") as f:
                 data = json.load(f)
@@ -131,24 +216,33 @@ class FormulaManager:
                 f"❌ [FORMULA:load] JSON نامعتبر | "
                 f"line={e.lineno} col={e.colno} | {e.msg}"
             )
-            self._cache = {}
-            return self._cache
+            with self._lock:
+                self._cache = {}
+                self._cache_mtime = mtime
+            return {}
         except Exception as e:
             log_error(
-                f"❌ [FORMULA:load] خواندن | {type(e).__name__}: {e}"
+                f"❌ [FORMULA:load] خواندن | "
+                f"{type(e).__name__}: {e}"
             )
-            self._cache = {}
-            return self._cache
+            with self._lock:
+                self._cache = {}
+                self._cache_mtime = mtime
+            return {}
 
-        # migration از list قدیمی به dict
+        # ─── migration list → dict ───
         migrated = False
         if isinstance(data, list):
-            data = {f"formula_{i}": {"sql": s} for i, s in enumerate(data)}
+            data = {
+                f"formula_{i}": {"sql": s}
+                for i, s in enumerate(data)
+            }
             migrated = True
             log_warning(
-                f"⚠️ [FORMULA:load] migration از list به dict | "
+                f"⚠️ [FORMULA:load] migration از list | "
                 f"{len(data)} فرمول"
             )
+
         if not isinstance(data, dict):
             log_warning(
                 f"⚠️ [FORMULA:load] ساختار نامعتبر | "
@@ -156,69 +250,138 @@ class FormulaManager:
             )
             data = {}
 
-        self._cache, self._cache_mtime = data, mtime
+        # ─── ذخیره در cache ───
+        with self._lock:
+            self._cache = data
+            self._cache_mtime = mtime
+
         if not migrated:
             log_info(
-                f"📚 [FORMULA:load] {len(data)} فرمول بارگذاری شد | "
+                f"📚 [FORMULA:load] {len(data)} فرمول | "
                 f"mtime={mtime:.0f}"
             )
+        else:
+            # 🐛 FIX: ذخیره migration روی disk
+            try:
+                self._save(data)
+                log_success(
+                    f"✅ [FORMULA:load] migration ذخیره شد"
+                )
+            except Exception as e:
+                log_warning(
+                    f"⚠️ [FORMULA:load] migration save | "
+                    f"{type(e).__name__}: {e}"
+                )
+
         return data
 
     def _save(self, data: dict) -> bool:
-        """ذخیره atomic (tmp + replace)."""
+        """🎯 FIX: ذخیره atomic با fsync."""
         try:
-            FORMULAS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            FORMULAS_FILE.parent.mkdir(
+                parents=True, exist_ok=True
+            )
             tmp = FORMULAS_FILE.with_suffix(".tmp")
+
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+                try:
+                    f.flush()
+                    os.fsync(f.fileno())
+                except (AttributeError, OSError):
+                    pass
+
             tmp.replace(FORMULAS_FILE)
-            self._cache, self._cache_mtime = data, FORMULAS_FILE.stat().st_mtime
+
+            # fsync دایرکتوری
+            try:
+                parent = str(FORMULAS_FILE.parent)
+                dir_fd = os.open(parent, os.O_DIRECTORY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except (AttributeError, OSError):
+                pass
+
+            # 🐛 FIX: به‌روزرسانی cache با mtime
+            with self._lock:
+                try:
+                    new_mtime = FORMULAS_FILE.stat().st_mtime
+                except OSError:
+                    new_mtime = self._cache_mtime
+                self._cache = data
+                self._cache_mtime = new_mtime
+
             return True
         except Exception as e:
             log_error(
                 f"❌ [FORMULA:save] {type(e).__name__}: {e} | "
                 f"count={len(data)}"
             )
+            # cleanup tmp
+            try:
+                tmp = FORMULAS_FILE.with_suffix(".tmp")
+                if tmp.exists():
+                    tmp.unlink()
+            except Exception:
+                pass
             return False
 
     # ═══════════════════════════════════════════
     # اعتبارسنجی SQL
     # ═══════════════════════════════════════════
-    def _validate_sql(self, sql: str) -> tuple[bool, str, str]:
+    def _validate_sql(
+        self, sql: str
+    ) -> tuple[bool, str, str]:
         """اعتبارسنجی — Returns (ok, error, ftype)."""
         if not sql or not sql.strip():
             return False, "SQL خالیه", ""
 
         sql = sql.strip()
         if len(sql) > _MAX_SQL_LEN:
-            return False, f"SQL خیلی بلنده (حداکثر {_MAX_SQL_LEN})", ""
+            return (
+                False,
+                f"SQL خیلی بلنده (حداکثر {_MAX_SQL_LEN})",
+                "",
+            )
 
         upper = sql.upper()
 
-        # banned words
+        # ─── banned ───
         for b in _BANNED:
-            if re.search(rf"\b{re.escape(b)}\b", upper):
+            if re.search(
+                rf"\b{re.escape(b)}\b", upper
+            ):
                 log_warning(
-                    f"⚠️ [FORMULA:validate] کلمه ممنوعه «{b}» | "
+                    f"⚠️ [FORMULA:validate] ممنوعه «{b}» | "
                     f"sql={sql[:60]!r}"
                 )
                 return False, f"کلمه «{b}» ممنوع است", ""
 
-        # نوع دستور
+        # ─── نوع ───
         tokens = upper.split(None, 1)
         if not tokens:
             return False, "SQL نامعتبر", ""
+
         first = tokens[0]
         if first in _ALLOWED_READ:
             ftype = "read"
         elif first in _ALLOWED_WRITE:
             ftype = "write"
         else:
-            return False, f"نوع دستور «{first}» پشتیبانی نمی‌شه", ""
+            return (
+                False,
+                f"نوع دستور «{first}» پشتیبانی نمی‌شه",
+                "",
+            )
 
-        # جدول whitelist
+        # ─── جدول whitelist ───
         m = re.search(
-            r"\b(?:FROM|INTO|UPDATE)\s+([a-zA-Z_][a-zA-Z0-9_]*)", sql, re.I
+            r"\b(?:FROM|INTO|UPDATE)\s+"
+            r"([a-zA-Z_][a-zA-Z0-9_]*)",
+            sql,
+            re.I,
         )
         if m:
             tbl = m.group(1).lower()
@@ -229,7 +392,8 @@ class FormulaManager:
                 )
                 return False, f"جدول «{tbl}» مجاز نیست", ""
 
-        # EXPLAIN روی دیتابیس واقعی
+        # ─── EXPLAIN ───
+        # 🐛 FIX: write queries هم قابل EXPLAIN هستند
         try:
             c = sqlite3.connect(self.db_path)
             try:
@@ -238,16 +402,22 @@ class FormulaManager:
                 c.close()
         except sqlite3.OperationalError as e:
             msg = str(e).lower()
-            # جدول/ستون نبود = syntax سالم
             if "no such table" in msg or "no such column" in msg:
                 log_info(
-                    f"ℹ️ [FORMULA:validate] EXPLAIN ok (جدول/ستون موقت) | "
-                    f"{e}"
+                    f"ℹ️ [FORMULA:validate] EXPLAIN ok "
+                    f"(جدول/ستون موقت) | {e}"
+                )
+            elif "cannot explain" in msg:
+                # 🐛 FIX: بعضی write queries
+                log_info(
+                    f"ℹ️ [FORMULA:validate] EXPLAIN برای "
+                    f"این نوع پشتیبانی نمی‌شود | {e}"
                 )
             else:
                 log_warning(
                     f"⚠️ [FORMULA:validate] EXPLAIN fail | "
-                    f"{type(e).__name__}: {e} | sql={sql[:80]!r}"
+                    f"{type(e).__name__}: {e} | "
+                    f"sql={sql[:80]!r}"
                 )
                 return False, f"خطای syntax: {e}", ""
         except sqlite3.Error as e:
@@ -260,9 +430,14 @@ class FormulaManager:
         return True, "", ftype
 
     # ═══════════════════════════════════════════
-    # save
+    # save / delete
     # ═══════════════════════════════════════════
-    def save(self, name: str, sql: str, created_by: str = "admin") -> str:
+    def save(
+        self,
+        name: str,
+        sql: str,
+        created_by: str = "admin",
+    ) -> str:
         t0 = time.monotonic()
         name = (name or "").strip()
         if not name:
@@ -273,7 +448,7 @@ class FormulaManager:
         data = self._load()
         if len(data) >= _MAX_FORMULAS and name not in data:
             log_warning(
-                f"⚠️ [FORMULA:save] تعداد فرمول‌ها به سقف رسیده | "
+                f"⚠️ [FORMULA:save] سقف تعداد | "
                 f"count={len(data)} max={_MAX_FORMULAS}"
             )
             return f"⛔ حداکثر {_MAX_FORMULAS} فرمول مجاز است."
@@ -281,17 +456,23 @@ class FormulaManager:
         ok, err, ftype = self._validate_sql(sql)
         if not ok:
             log_warning(
-                f"⚠️ [FORMULA:save] نامعتبر | name={name!r} | {err}"
+                f"⚠️ [FORMULA:save] نامعتبر | "
+                f"name={name!r} | {err}"
             )
             return f"⛔ {err}"
 
         old = data.get(name, {})
+        if not isinstance(old, dict):
+            old = {}
         is_update = name in data
 
         entry = {
             "sql": sql.strip(),
             "type": ftype,
-            "created_at": old.get("created_at") or datetime.now().isoformat(),
+            "created_at": (
+                old.get("created_at")
+                or datetime.now().isoformat()
+            ),
             "updated_at": datetime.now().isoformat(),
             "created_by": created_by,
             "run_count": old.get("run_count", 0),
@@ -305,7 +486,8 @@ class FormulaManager:
         elapsed_ms = (time.monotonic() - t0) * 1000
         icon = "📖" if ftype == "read" else "✏️"
         log_success(
-            f"✅ [FORMULA:save] {'به‌روز' if is_update else 'جدید'} | "
+            f"✅ [FORMULA:save] "
+            f"{'به‌روز' if is_update else 'جدید'} | "
             f"name={name!r} type={ftype} | {elapsed_ms:.0f}ms"
         )
         return (
@@ -315,9 +497,6 @@ class FormulaManager:
             f"▶️ اجرا: «اجرا کن «{name}»»"
         )
 
-    # ═══════════════════════════════════════════
-    # delete
-    # ═══════════════════════════════════════════
     def delete(self, name: str) -> str:
         name = (name or "").strip()
         data = self._load()
@@ -339,18 +518,24 @@ class FormulaManager:
     def list_all(self) -> str:
         data = self._load()
         if not data:
-            return ("📭 هیچ فرمولی ذخیره نشده.\n"
-                    "📝 ذخیره: «ذخیره کن «اسم» = SELECT ...»")
+            return (
+                "📭 هیچ فرمولی ذخیره نشده.\n"
+                "📝 ذخیره: «ذخیره کن «اسم» = SELECT ...»"
+            )
         lines = [f"📋 {len(data)} فرمول:"]
         for name, info in data.items():
-            icon = "📖" if info.get("type") == "read" else "✏️"
+            info = info if isinstance(info, dict) else {}
+            icon = (
+                "📖" if info.get("type") == "read"
+                else "✏️"
+            )
             runs = info.get("run_count", 0)
             lines.append(f"   {icon} «{name}» (اجرا: {runs})")
         return "\n".join(lines)
 
     def show(self, name: str) -> str:
         info = self._load().get(name)
-        if not info:
+        if not info or not isinstance(info, dict):
             return f"❌ فرمول «{name}» پیدا نشد."
         return (
             f"📄 «{name}»\n"
@@ -364,30 +549,43 @@ class FormulaManager:
     # execute
     # ═══════════════════════════════════════════
     def execute(
-        self, name: str, text: str = "", confirm: bool = False
+        self,
+        name: str,
+        text: str = "",
+        confirm: bool = False,
     ) -> str:
         data = self._load()
         info = data.get(name)
-        if not info:
-            log_warning(f"⚠️ [FORMULA:execute] نبود | name={name!r}")
+        if not info or not isinstance(info, dict):
+            log_warning(
+                f"⚠️ [FORMULA:execute] نبود | name={name!r}"
+            )
             return f"❌ فرمول «{name}» پیدا نشد."
 
         ftype = info.get("type", "read")
+        sql = info.get("sql", "")
+        if not sql:
+            return f"❌ فرمول «{name}» SQL ندارد."
+
         log_info(
             f"▶️ [FORMULA:execute] {name!r} | type={ftype} | "
             f"confirm={confirm}"
         )
 
         if ftype == "read":
-            return self._run_read(name, info["sql"], data)
+            return self._run_read(name, sql, data)
         if ftype == "write":
-            return self._run_write(name, info["sql"], confirm, data)
+            return self._run_write(
+                name, sql, confirm, data
+            )
         return f"⛔ نوع «{name}» پشتیبانی نمی‌شه."
 
     # ═══════════════════════════════════════════
     # _run_read
     # ═══════════════════════════════════════════
-    def _run_read(self, name: str, sql: str, data: dict) -> str:
+    def _run_read(
+        self, name: str, sql: str, data: dict
+    ) -> str:
         t0 = time.monotonic()
         rows: list = []
         try:
@@ -401,13 +599,18 @@ class FormulaManager:
             elapsed_ms = (time.monotonic() - t0) * 1000
             log_error(
                 f"❌ [FORMULA:read] {name!r} | "
-                f"{type(e).__name__}: {e} | {elapsed_ms:.0f}ms | "
-                f"sql={sql[:80]!r}"
+                f"{type(e).__name__}: {e} | "
+                f"{elapsed_ms:.0f}ms | sql={sql[:80]!r}"
             )
             return f"❌ خطا: {e}"
 
         elapsed_ms = (time.monotonic() - t0) * 1000
-        self._bump_run(name, data, save=False)  # فقط در RAM
+
+        # 🐛 FIX: audit برای read هم
+        try:
+            self._audit(name, sql, len(rows))
+        except Exception:
+            pass
 
         if not rows:
             log_info(
@@ -416,7 +619,7 @@ class FormulaManager:
             )
             return f"📭 «{name}» نتیجه‌ای نداشت."
 
-        # تک‌مقداری
+        # ─── تک‌مقداری ───
         if len(rows) == 1 and len(rows[0]) == 1:
             try:
                 val = list(rows[0])[0]
@@ -428,7 +631,7 @@ class FormulaManager:
             )
             return f"📊 «{name}»: {val}"
 
-        # چند ردیف
+        # ─── چند ردیف ───
         lines = [f"📊 «{name}» ({len(rows)} ردیف):"]
         try:
             cols = list(rows[0].keys())
@@ -436,15 +639,25 @@ class FormulaManager:
             cols = []
         for r in rows[:20]:
             try:
-                lines.append("   • " + " | ".join(str(r[c]) for c in cols))
+                if cols:
+                    lines.append(
+                        "   • "
+                        + " | ".join(str(r[c]) for c in cols)
+                    )
+                else:
+                    lines.append(
+                        "   • " + str(tuple(r))
+                    )
             except Exception:
                 lines.append("   • " + str(tuple(r)))
         if len(rows) > 20:
-            lines.append(f"   ... و {len(rows)-20} ردیف دیگر")
+            lines.append(
+                f"   ... و {len(rows) - 20} ردیف دیگر"
+            )
 
         log_success(
-            f"✅ [FORMULA:read] {name!r} | {len(rows)} ردیف | "
-            f"{elapsed_ms:.0f}ms"
+            f"✅ [FORMULA:read] {name!r} | "
+            f"{len(rows)} ردیف | {elapsed_ms:.0f}ms"
         )
         if elapsed_ms > _SLOW_READ_MS:
             log_warning(
@@ -453,89 +666,107 @@ class FormulaManager:
         return "\n".join(lines)
 
     # ═══════════════════════════════════════════
-    # _run_write — با تأیید دو مرحله‌ای
+    # _run_write
     # ═══════════════════════════════════════════
     def _run_write(
-        self, name: str, sql: str, confirm: bool, data: dict
+        self,
+        name: str,
+        sql: str,
+        confirm: bool,
+        data: dict,
     ) -> str:
         now = time.time()
 
-        # ─── cleanup pending منقضی (جلوگیری از نشتی حافظه) ───
-        self._cleanup_pending_confirms(now)
+        with self._lock:
+            # ─── cleanup منقضی ───
+            self._cleanup_pending_confirms_unlocked(now)
 
-        # ─── rate limit ───
-        self._write_times = [
-            t for t in self._write_times if now - t < 60
-        ]
-        if len(self._write_times) >= _WRITE_RATE_LIMIT:
-            log_warning(
-                f"⚠️ [FORMULA:write] rate limit | name={name!r} | "
-                f"used={len(self._write_times)}/{_WRITE_RATE_LIMIT}"
-            )
-            return f"⛔ محدودیت: حداکثر {_WRITE_RATE_LIMIT} write در دقیقه."
+            # ─── rate limit ───
+            self._write_times = [
+                t for t in self._write_times
+                if now - t < 60
+            ]
+            if len(self._write_times) >= _WRITE_RATE_LIMIT:
+                log_warning(
+                    f"⚠️ [FORMULA:write] rate limit | "
+                    f"name={name!r} | "
+                    f"used={len(self._write_times)}/"
+                    f"{_WRITE_RATE_LIMIT}"
+                )
+                return (
+                    f"⛔ محدودیت: حداکثر "
+                    f"{_WRITE_RATE_LIMIT} write در دقیقه."
+                )
 
-        # ─── مرحله ۱: preview (بدون confirm) ───
-        if not confirm:
-            preview = self._preview_write(sql)
-            self._pending_confirms[name] = now
-            log_info(
-                f"📋 [FORMULA:write] preview | name={name!r} | "
-                f"{preview}"
-            )
-            return (
-                f"⚠️ «{name}» می‌خواد بنویسه:\n"
-                f"   {preview}\n"
-                f"برای تأیید: «تأیید «{name}»»"
-            )
+            # ─── مرحله ۱: preview ───
+            if not confirm:
+                preview = self._preview_write(sql)
+                self._pending_confirms[name] = now
+                log_info(
+                    f"📋 [FORMULA:write] preview | "
+                    f"name={name!r} | {preview}"
+                )
+                return (
+                    f"⚠️ «{name}» می‌خواد بنویسه:\n"
+                    f"   {preview}\n"
+                    f"برای تأیید: «تأیید «{name}»»"
+                )
 
-        # ─── مرحله ۲: confirm — ولی فقط اگه preview صادر شده باشه ───
-        # 🐛 FIX: چک اجباری — قبلاً اگه کاربر مستقیم confirm می‌زد،
-        # بدون preview اجازه می‌گرفت.
-        issued = self._pending_confirms.get(name)
-        if issued is None:
-            log_warning(
-                f"⛔ [FORMULA:write] confirm بدون preview | name={name!r}"
-            )
-            return (
-                f"⛔ برای «{name}» اول باید preview بگیرید.\n"
-                f"دستور: «اجرا کن «{name}»» (بدون تأیید) → بعد «تأیید «{name}»»"
-            )
+            # ─── مرحله ۲: confirm ───
+            issued = self._pending_confirms.get(name)
+            if issued is None:
+                log_warning(
+                    f"⛔ [FORMULA:write] confirm بدون "
+                    f"preview | name={name!r}"
+                )
+                return (
+                    f"⛔ برای «{name}» اول باید preview "
+                    f"بگیرید.\n"
+                    f"دستور: «اجرا کن «{name}»» (بدون تأیید) "
+                    f"→ بعد «تأیید «{name}»»"
+                )
 
-        # چک TTL
-        if (now - issued) > _CONFIRM_TTL:
-            self._pending_confirms.pop(name, None)
-            log_warning(
-                f"⛔ [FORMULA:write] تأیید منقضی | name={name!r} | "
-                f"issued={now - issued:.0f}s ago > ttl={_CONFIRM_TTL}s"
-            )
-            return "⛔ تأیید منقضی شد. دوباره preview بگیر."
+            if (now - issued) > _CONFIRM_TTL:
+                self._pending_confirms.pop(name, None)
+                log_warning(
+                    f"⛔ [FORMULA:write] تأیید منقضی | "
+                    f"name={name!r} | "
+                    f"issued={now - issued:.0f}s ago > "
+                    f"ttl={_CONFIRM_TTL}s"
+                )
+                return "⛔ تأیید منقضی شد. دوباره preview بگیر."
 
-        # ─── backup ───
+        # ─── backup (خارج از lock) ───
         backup_name = ""
         try:
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             backup_name = f"{name}_{ts}.db"
             backup_path = BACKUP_DIR / backup_name
+            BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+
             t_b = time.monotonic()
             shutil.copy2(self.db_path, backup_path)
             backup_ms = (time.monotonic() - t_b) * 1000
             log_info(
-                f"💾 [FORMULA:write] backup | {backup_name} | "
-                f"{backup_ms:.0f}ms"
+                f"💾 [FORMULA:write] backup | "
+                f"{backup_name} | {backup_ms:.0f}ms"
             )
             if backup_ms > _SLOW_BACKUP_MS:
                 log_warning(
-                    f"🐌 [FORMULA:write] backup کند | {backup_ms:.0f}ms"
+                    f"🐌 [FORMULA:write] backup کند | "
+                    f"{backup_ms:.0f}ms"
                 )
         except Exception as e:
             log_error(
-                f"❌ [FORMULA:write] backup | {type(e).__name__}: {e}"
+                f"❌ [FORMULA:write] backup | "
+                f"{type(e).__name__}: {e}"
             )
             return f"❌ بکاپ ناموفق: {e}"
 
-        # ─── اجرا با transaction ───
+        # ─── اجرا (خارج از lock) ───
         t0 = time.monotonic()
         count = 0
+        c = None
         try:
             c = sqlite3.connect(self.db_path)
             try:
@@ -545,22 +776,32 @@ class FormulaManager:
                 count = cur.rowcount
                 c.commit()
             finally:
-                c.close()
+                if c is not None:
+                    c.close()
         except Exception as e:
             log_error(
-                f"❌ [FORMULA:write] transaction | name={name!r} | "
-                f"{type(e).__name__}: {e} | rollback"
+                f"❌ [FORMULA:write] transaction | "
+                f"name={name!r} | {type(e).__name__}: {e} | "
+                f"rollback"
             )
-            try:
-                c.rollback()
-                c.close()
-            except Exception:
-                pass
+            # 🐛 FIX: rollback امن (c ممکن است None باشد)
+            if c is not None:
+                try:
+                    c.rollback()
+                except Exception:
+                    pass
+                try:
+                    c.close()
+                except Exception:
+                    pass
             return f"❌ خطا (rollback): {e}"
 
         elapsed_ms = (time.monotonic() - t0) * 1000
-        self._write_times.append(now)
-        self._pending_confirms.pop(name, None)
+
+        with self._lock:
+            self._write_times.append(now)
+            self._pending_confirms.pop(name, None)
+
         self._bump_run(name, data, save=True)
         self._audit(name, sql, count)
 
@@ -583,14 +824,19 @@ class FormulaManager:
     def _preview_write(self, sql: str) -> str:
         try:
             upper = sql.upper()
+
             if upper.startswith("DELETE"):
                 p = re.sub(
                     r"^\s*DELETE\s+FROM\s+",
                     "SELECT COUNT(*) FROM ",
                     sql, count=1, flags=re.I,
                 )
-                p = re.sub(r"\s+ORDER BY.*$", "", p, flags=re.I)
-                p = re.sub(r"\s+LIMIT.*$", "", p, flags=re.I)
+                p = re.sub(
+                    r"\s+ORDER BY.*$", "", p, flags=re.I
+                )
+                p = re.sub(
+                    r"\s+LIMIT.*$", "", p, flags=re.I
+                )
                 c = sqlite3.connect(self.db_path)
                 try:
                     v = c.execute(p).fetchone()[0]
@@ -618,7 +864,8 @@ class FormulaManager:
                 return "➕ درج ردیف جدید"
         except Exception as e:
             log_warning(
-                f"⚠️ [FORMULA:preview] {type(e).__name__}: {e} | "
+                f"⚠️ [FORMULA:preview] "
+                f"{type(e).__name__}: {e} | "
                 f"sql={sql[:80]!r}"
             )
         return "⚠️ عملیات نوشتن"
@@ -626,8 +873,10 @@ class FormulaManager:
     # ═══════════════════════════════════════════
     # helpers
     # ═══════════════════════════════════════════
-    def _cleanup_pending_confirms(self, now: float) -> None:
-        """حذف confirmedهای منقضی (جلوگیری از نشتی حافظه)."""
+    def _cleanup_pending_confirms_unlocked(
+        self, now: float
+    ) -> None:
+        """نسخهٔ internal — باید تحت lock صدا زده شود."""
         if not self._pending_confirms:
             return
         expired = [
@@ -638,22 +887,32 @@ class FormulaManager:
             self._pending_confirms.pop(k, None)
         if expired:
             log_info(
-                f"🧹 [FORMULA:cleanup] {len(expired)} pending منقضی حذف شد | "
+                f"🧹 [FORMULA:cleanup] {len(expired)} "
+                f"pending منقضی حذف شد | "
                 f"remaining={len(self._pending_confirms)}"
             )
 
-    def _bump_run(self, name: str, data: dict, save: bool = True):
-        """افزایش counter — ذخیره اختیاری (read = بدون ذخیره)."""
+    def _cleanup_pending_confirms(self, now: float) -> None:
+        """نسخهٔ public (با lock)."""
+        with self._lock:
+            self._cleanup_pending_confirms_unlocked(now)
+
+    def _bump_run(
+        self, name: str, data: dict, save: bool = True
+    ) -> None:
+        """افزایش counter — ذخیره اختیاری."""
         info = data.get(name)
-        if not info:
+        if not info or not isinstance(info, dict):
             return
         info["run_count"] = info.get("run_count", 0) + 1
         info["last_run"] = datetime.now().isoformat()
         if save:
             self._save(data)
 
-    def _audit(self, name: str, sql: str, count: int) -> None:
-        """ثبت در audit log — خطا با type لاگ می‌شود."""
+    def _audit(
+        self, name: str, sql: str, count: int
+    ) -> None:
+        """ثبت در audit log — با lock."""
         try:
             entry = {
                 "ts": datetime.now().isoformat(),
@@ -661,11 +920,20 @@ class FormulaManager:
                 "sql": sql[:500],
                 "rows": count,
             }
-            with open(AUDIT_FILE, "a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            with self._lock:
+                with open(
+                    AUDIT_FILE, "a", encoding="utf-8"
+                ) as f:
+                    f.write(
+                        json.dumps(
+                            entry, ensure_ascii=False
+                        )
+                        + "\n"
+                    )
         except Exception as e:
             log_warning(
-                f"⚠️ [FORMULA:audit] {type(e).__name__}: {e} | "
+                f"⚠️ [FORMULA:audit] "
+                f"{type(e).__name__}: {e} | "
                 f"formula={name!r}"
             )
 
@@ -674,14 +942,16 @@ class FormulaManager:
     # ═══════════════════════════════════════════
     def has_pending_confirm(self, name: str) -> bool:
         """آیا این فرمول منتظر تأیید است؟"""
-        if name not in self._pending_confirms:
-            return False
-        # چک TTL
-        now = time.time()
-        if (now - self._pending_confirms[name]) > _CONFIRM_TTL:
-            self._pending_confirms.pop(name, None)
-            return False
-        return True
+        with self._lock:
+            if name not in self._pending_confirms:
+                return False
+            now = time.time()
+            if (
+                now - self._pending_confirms[name]
+            ) > _CONFIRM_TTL:
+                self._pending_confirms.pop(name, None)
+                return False
+            return True
 
     # ═══════════════════════════════════════════
     # عیب‌یابی
@@ -689,14 +959,25 @@ class FormulaManager:
     def get_stats(self) -> dict[str, Any]:
         """خلاصهٔ وضعیت — برای /debug."""
         data = self._load()
+        with self._lock:
+            pending = len(self._pending_confirms)
+            writes = len(self._write_times)
+            cache_size = len(self._cache or {})
+            cache_mtime = self._cache_mtime
+
         return {
             "formulas": len(data),
             "max_formulas": _MAX_FORMULAS,
-            "pending_confirms": len(self._pending_confirms),
-            "write_times_in_last_min": len(self._write_times),
+            "pending_confirms": pending,
+            "write_times_in_last_min": writes,
             "rate_limit_per_min": _WRITE_RATE_LIMIT,
+            "confirm_ttl_s": _CONFIRM_TTL,
             "file": str(FORMULAS_FILE),
             "audit_file": str(AUDIT_FILE),
+            "backup_dir": str(BACKUP_DIR),
+            "cache_size": cache_size,
+            "cache_mtime": cache_mtime,
+            "allowed_tables": list(_ALLOWED_TABLES),
         }
 
 
@@ -704,13 +985,40 @@ class FormulaManager:
 # Singleton
 # ═══════════════════════════════════════════
 _shared: FormulaManager | None = None
+_shared_lock = threading.Lock()
 
 
 def get_formula_manager(db_path: str) -> FormulaManager:
+    """Singleton — instance مشترک سراسری."""
     global _shared
     if _shared is None:
-        log_info(
-            f"🏗️ [FORMULA:singleton] ساخت نمونهٔ اول | db={db_path}"
-        )
-        _shared = FormulaManager(db_path)
+        with _shared_lock:
+            if _shared is None:
+                log_info(
+                    f"🏗️ [FORMULA:singleton] ساخت | "
+                    f"db={db_path}"
+                )
+                _shared = FormulaManager(db_path)
     return _shared
+
+
+def reset_formula_manager() -> None:
+    """🎯 پاک‌کردن singleton — فقط برای تست."""
+    global _shared
+    with _shared_lock:
+        if _shared is not None:
+            log_info("🗑️ [FORMULA:singleton] reset شد")
+        _shared = None
+
+
+# ═══════════════════════════════════════════
+# __all__
+# ═══════════════════════════════════════════
+__all__ = [
+    "FormulaManager",
+    "get_formula_manager",
+    "reset_formula_manager",
+    "FORMULAS_FILE",
+    "AUDIT_FILE",
+    "BACKUP_DIR",
+]

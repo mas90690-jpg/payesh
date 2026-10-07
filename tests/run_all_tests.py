@@ -6,6 +6,7 @@
   python tests/run_all_tests.py
   python tests/run_all_tests.py --only bale eitaa rubika
   python tests/run_all_tests.py --headless
+  python tests/run_all_tests.py --include-disabled
 """
 from __future__ import annotations
 
@@ -29,7 +30,7 @@ PLATFORMS = [
     "telegram",
     "whatsapp",
     "linkedin",
-    "instagram",   
+    "instagram",
     "web",
 ]
 
@@ -53,6 +54,7 @@ def run_test(name: str, headless: bool = False) -> tuple[bool, float]:
         print(f"  ❌ خطا در اجرای {name}: {e}")
         return (False, time.monotonic() - t0)
 
+
 def run_healthcheck() -> tuple[bool, float]:
     """اجرای Health Check جامع بعد از همهٔ تست‌ها."""
     script = os.path.join(ROOT, "tests", "test_healthcheck_full.py")
@@ -72,15 +74,49 @@ def run_healthcheck() -> tuple[bool, float]:
     except Exception as e:
         print(f"  ❌ خطا در Health Check: {e}")
         return (False, time.monotonic() - t0)
-        
+
+
+def _is_platform_enabled(platform: str) -> bool:
+    """آیا پلتفرم در config فعال است؟
+
+    اگر پلتفرم ناشناخته باشد یا config خطا داد → True (پیش‌فرض: تلاش).
+    """
+    try:
+        from config import PLUGINS_CONFIG
+        key = f"{platform}collector"
+        cfg = PLUGINS_CONFIG.get(key, {})
+        return bool(cfg.get("enabled", False))
+    except Exception:
+        return True
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--only", nargs="*", default=None,
                         help="فقط این پلتفرم‌ها")
     parser.add_argument("--headless", action="store_true")
+    parser.add_argument("--include-disabled", action="store_true",
+                        help="تست پلتفرم‌های خاموش را هم اجرا کن")
     args = parser.parse_args()
 
-    tests = args.only if args.only else PLATFORMS
+    # ─── فیلتر پلتفرم‌های خاموش (مگر با --include-disabled) ───
+    requested = args.only if args.only else PLATFORMS
+    tests: list[str] = []
+    skipped: list[str] = []
+
+    for name in requested:
+        if args.include_disabled or _is_platform_enabled(name):
+            tests.append(name)
+        else:
+            skipped.append(name)
+
+    if skipped:
+        print(f"⏭️  پلتفرم‌های خاموش (skip): {', '.join(skipped)}")
+        print(f"   (برای اجرا: --include-disabled)")
+
+    if not tests:
+        print("⚠️ هیچ پلتفرم فعالی برای تست نیست.")
+        sys.exit(0)
 
     print("=" * 70)
     print(f"🚀 اجرای {len(tests)} تست پلتفرم (Pipeline end-to-end)")

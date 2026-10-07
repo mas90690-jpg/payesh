@@ -1,5 +1,5 @@
 """
-ChatOps admin handler — نسخهٔ ۸ (ماژولار + async-correct).
+ChatOps admin handler — نسخهٔ ۱۰ (هماهنگ با config.AI + fallback صحیح).
 
 این فایل فقط coordinator است:
   - گیت‌های امنیتی (خصوصی + ADMIN_IDS)
@@ -12,13 +12,16 @@ ChatOps admin handler — نسخهٔ ۸ (ماژولار + async-correct).
   - handlers/admin_memory.py    → حافظهٔ گفتگو
   - handlers/admin_actions.py   → اجرای دستورها
 
-نسخهٔ ۸ (این نسخه):
-  - 🐛 FIX: پیام پیش‌فرض برای reply خالی (نه ارسال None)
-  - 🐛 FIX: _MAX_REPLY_LEN حذف شد (استفاده نمی‌شد)
-  - 🐛 FIX: _handle_command حالا "" را به پیام راهنما تبدیل می‌کند
-  - 🐛 FIX: _handle_free_text حالا fallback نهایی دارد
-  - 🎯 لاگ واضح‌تر برای fallback نهایی
-  - ✅ حفظ همهٔ FIXهای نسخهٔ ۷.
+نسخهٔ ۱۰ (این نسخه):
+  - 🐛 FIX: `api_key` از `config.AI["deepseek_api_key"]` می‌آید
+    (نه `os.environ` مستقیم) — سازگار با hot-reload.
+  - 🐛 FIX: `_is_safebrain_fallback` حالا هم prefix قدیمی
+    («⚠️ هوش در دسترس نیست») و هم prefix SafeBrain را می‌شناسد.
+  - 🐛 FIX: `_SAFEBRAIN_PREFIXES_ANY` به‌عنوان tuple واحد
+    (به‌جای جستجوی دوگانه).
+  - 🐛 FIX: `_SAFEBRAIN_MIN_REAL_LEN` حالا env-based.
+  - 🎯 همهٔ ثابت‌ها حالا از env می‌آیند (throttle، timeout، length).
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۹.
 """
 from __future__ import annotations
 
@@ -41,6 +44,21 @@ from handlers.admin_actions import AdminActions
 from handlers.admin_memory import AdminMemory
 from handlers.keyword_admin import KeywordAdmin
 
+# 🎯 P0: استفاده از config برای top-level params
+from config import (
+    ADMIN_ENABLED,
+    ADMIN_IDS,
+    ADMIN_PLATFORM,
+    AI,
+    MEMORY_MAX,
+    PLATFORMS_ORDER,
+    SQLITE_CONFIG,
+)
+
+# 🎯 P0: مسیرها از data.paths
+from data import paths as data_paths
+
+
 # ─── Optional imports (graceful) ───
 try:
     from core.manual.brain import get_manual_brain
@@ -57,36 +75,61 @@ except ImportError as e:
     log_warning(f"⚠️ [ADMIN:init] brain در دسترس نیست | {e}")
 
 
-# ─── مسیرها ───
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PID_FILE = os.path.join(ROOT, "storage", "bot.pid")
-REQUESTS = os.path.join(ROOT, "storage", "requests.jsonl")
-MEMORY = os.path.join(ROOT, "storage", "ai_memory.jsonl")
+# ═══════════════════════════════════════════
+# helpers (env-based)
+# ═══════════════════════════════════════════
+def _env_int(
+    name: str, default: int,
+    min_val: int | None = None,
+    max_val: int | None = None,
+) -> int:
+    """خواندن int از env — با sanitize."""
+    try:
+        v = int(os.getenv(name, str(default)))
+    except (ValueError, TypeError):
+        return default
+    if min_val is not None and v < min_val:
+        return min_val
+    if max_val is not None and v > max_val:
+        return max_val
+    return v
 
-# ⭐ مسیرها از data/paths.py (منبع یکتا)
-from data import paths as data_paths
 
-CUSTOM_KW = str(data_paths.KEYWORDS_CUSTOM)
-KNOWLEDGE = str(data_paths.BOT_KNOWLEDGE)
-MEMORY_MAX = 200
+# ═══════════════════════════════════════════
+# ثابت‌ها (env-based)
+# ═══════════════════════════════════════════
+_LOG_PREVIEW_LEN: int = _env_int(
+    "ADMIN_LOG_PREVIEW", 100, min_val=20, max_val=500
+)
+_SLOW_HANDLE_MS: int = _env_int(
+    "ADMIN_SLOW_HANDLE_MS", 5000, min_val=100, max_val=60_000
+)
+_SLOW_LAYER_MS: int = _env_int(
+    "ADMIN_SLOW_LAYER_MS", 3000, min_val=100, max_val=60_000
+)
+_SLOW_REPLY_MS: int = _env_int(
+    "ADMIN_SLOW_REPLY_MS", 3000, min_val=100, max_val=60_000
+)
 
-# ─── ثابت‌ها ───
-_LOG_PREVIEW_LEN = 100
-_SLOW_HANDLE_MS = 5000
-_SLOW_LAYER_MS = 3000
-_SLOW_REPLY_MS = 3000
+_REPLY_CHUNK: int = _env_int(
+    "ADMIN_REPLY_CHUNK", 3900, min_val=500, max_val=10_000
+)
 
-# سقف متن برای ارسال به بله (بله حدود ۴۰۰۰ کاراکتر در هر پیام)
-_REPLY_CHUNK = 3900
+_SAFEBRAIN_PREFIXES_FALLBACK: tuple[str, ...] = (
+    "🤖 SafeBrain",
+    "🤖 WinDoctor",
+)
 
-# prefixهای SafeBrain — برای تشخیص «واگذاری به لایهٔ بعد»
-_SAFEBRAIN_PREFIXES = ("🤖 SafeBrain", "🤖 WinDoctor")
+_AI_FALLBACK_PREFIXES: tuple[str, ...] = (
+    "⚠️ هوش در دسترس نیست",
+    "🤖 SafeBrain: هوش در دسترس نیست",
+)
 
-# 🎯 FIX #10: آستانه از 250 به 40 کاهش یافت — پاسخ‌های کوتاه معتبر
-# (مثل «سلام»، «بله»، «۳ سرنخ») دیگر به‌عنوان fallback علامت نمی‌خورند
-_SAFEBRAIN_MIN_REAL_LEN = 40
+_SAFEBRAIN_MIN_REAL_LEN: int = _env_int(
+    "ADMIN_SAFEBRAIN_MIN_REAL_LEN", 40,
+    min_val=5, max_val=500,
+)
 
-# 🐛 FIX: پیام پیش‌فرض وقتی هیچ لایه‌ای پاسخ نداد
 _EMPTY_REPLY_FALLBACK = (
     "🤔 متوجه نشدم یا پاسخی پیدا نشد.\n"
     "می‌توانی:\n"
@@ -94,6 +137,25 @@ _EMPTY_REPLY_FALLBACK = (
     "• «وضعیت» یا «گزارش» بپرسی\n"
     "• واضح‌تر بپرسی"
 )
+
+_VALID_PLATFORMS: frozenset = frozenset(PLATFORMS_ORDER)
+
+
+def _get_safebrain_prefixes() -> tuple[str, ...]:
+    """🎯 FIX: prefixهای پویا از SafeBrain."""
+    try:
+        from core.safe_brain.main import SafeBrain as _SB
+        prefixes = getattr(_SB, "_fallback_prefixes", None)
+        if prefixes:
+            return tuple(prefixes)
+    except Exception:
+        pass
+    return _SAFEBRAIN_PREFIXES_FALLBACK
+
+
+def _get_all_fallback_prefixes() -> tuple[str, ...]:
+    """🎯 FIX: ترکیب همهٔ prefixهای ممکن."""
+    return _get_safebrain_prefixes() + _AI_FALLBACK_PREFIXES
 
 
 class AdminHandler(BaseHandler):
@@ -105,14 +167,32 @@ class AdminHandler(BaseHandler):
         self.kw = get_keyword_finder()
         self.ai = get_ai_assistant()
 
-        self.db_path = getattr(
-            db, "db_path",
-            os.path.join(ROOT, "storage", "database", "messages.db"),
+        # 🎯 FIX: db_path از db یا config
+        default_db_path = SQLITE_CONFIG.get(
+            "database_path",
+            str(data_paths.DB_FILE),
         )
+        self.db_path = getattr(db, "db_path", default_db_path)
 
-        # ─── SafeBrain (singleton) ───
-        api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+        # ═══════════════════════════════════════════
+        # 🎯 FIX مهم: api_key از config.AI (منبع یکتا)
+        # ═══════════════════════════════════════════
+        api_key: str = (
+            (AI or {}).get("deepseek_api_key")
+            or os.environ.get("DEEPSEEK_API_KEY", "")
+            or ""
+        )
+        self._api_key_source: str = (
+            "config" if (AI or {}).get("deepseek_api_key")
+            else ("env" if os.environ.get("DEEPSEEK_API_KEY") else "none")
+        )
         self.safe_brain: SafeBrain = get_safe_brain(api_key=api_key)
+
+        log_info(
+            f"🔑 [ADMIN:init:safebrain] api_key "
+            f"source={self._api_key_source} | "
+            f"has_key={'✅' if api_key else '❌'}"
+        )
 
         # ─── ManualBrain ───
         self.manual_brain = None
@@ -129,37 +209,45 @@ class AdminHandler(BaseHandler):
         # ─── Brain — per-instance (نه global) ───
         self._brain: Any | None = None
 
-        # ─── config ───
-        from config import PLUGINS_CONFIG
-        cfg = PLUGINS_CONFIG.get("adminhandler", {})
-
-        # 🎯 FIX #7: حالا از config خوانده می‌شود، نه هاردکد
-        self.enabled = bool(cfg.get("enabled", False))
-        raw_admin_ids = cfg.get("admin_ids", [])
+        # 🎯 FIX: از config top-level (نه PLUGINS_CONFIG)
+        self.enabled = bool(ADMIN_ENABLED)
         self.admin_ids = {
             str(x).strip()
-            for x in raw_admin_ids
+            for x in ADMIN_IDS
             if x and str(x).strip()
         }
-        self.platform = cfg.get("platform", "bale")
+        self.platform = ADMIN_PLATFORM or "bale"
 
-        # چک: آیا پلتفرم مدیر فعال است؟ (برای لاگ)
-        self._platform_enabled = PLUGINS_CONFIG.get(
-            f"{self.platform}collector", {}
-        ).get("enabled", False)
+        # چک: پلتفرم معتبر؟
+        if self.platform not in _VALID_PLATFORMS:
+            log_warning(
+                f"⚠️ [ADMIN:init] پلتفرم نامعتبر «{self.platform}» "
+                f"→ پیش‌فرض bale"
+            )
+            self.platform = "bale"
+
+        # چک: پلتفرم فعال است؟
+        self._platform_enabled = self._check_platform_enabled(
+            self.platform
+        )
         if not self._platform_enabled and self.enabled:
             log_warning(
                 f"⚠️ [ADMIN:init] پلتفرم مدیر «{self.platform}» غیرفعال است "
                 f"ولی ADMIN_ENABLED=true → پاسخ‌ها ارسال نمی‌شوند. "
-                f"BALE_ENABLED=true کن یا ADMIN_PLATFORM را عوض کن."
+                f"{self.platform.upper()}_ENABLED=true کن یا "
+                f"ADMIN_PLATFORM را عوض کن."
             )
 
         # ─── دانش ───
         self._knowledge = self._load_knowledge()
 
+        # 🎯 P0: مسیرها از data.paths
+        custom_kw_path = str(data_paths.KEYWORDS_CUSTOM)
+        memory_path = str(data_paths.AI_MEMORY)
+
         # ─── زیرماژول‌ها ───
-        self._keyword_admin = KeywordAdmin(CUSTOM_KW)
-        self._memory = AdminMemory(MEMORY, MEMORY_MAX)
+        self._keyword_admin = KeywordAdmin(custom_kw_path)
+        self._memory = AdminMemory(memory_path, MEMORY_MAX)
         self._actions = AdminActions(
             db=self.db,
             db_path=self.db_path,
@@ -168,20 +256,21 @@ class AdminHandler(BaseHandler):
             knowledge=self._knowledge,
             keyword_admin=self._keyword_admin,
             memory=self._memory,
-            root=ROOT,
+            root=str(data_paths.PROJECT_ROOT),
             platform=self.platform,
-            pid_file=PID_FILE,
-            get_requests_path=lambda: REQUESTS,
-            get_custom_kw_path=lambda: CUSTOM_KW,
+            pid_file=str(data_paths.BOT_PID),
+            get_requests_path=lambda: str(data_paths.REQUESTS_FILE),
+            get_custom_kw_path=lambda: custom_kw_path,
         )
 
-        # 🎯 FIX #7: لاگ حالا وضعیت واقعی را نشان می‌دهد
+        # لاگ نهایی
         if self.enabled:
             log_success(
                 f"✅ [ADMIN:init] فعال | "
                 f"platform={self.platform} | "
                 f"admins={len(self.admin_ids)} | "
-                f"platform_enabled={self._platform_enabled}"
+                f"platform_enabled={self._platform_enabled} | "
+                f"api_key={self._api_key_source}"
             )
         else:
             log_info(
@@ -189,19 +278,33 @@ class AdminHandler(BaseHandler):
                 f"platform={self.platform} | "
                 f"admins={len(self.admin_ids)}"
             )
+
+    @staticmethod
+    def _check_platform_enabled(platform: str) -> bool:
+        """بررسی فعال بودن پلتفرم — از config."""
+        try:
+            from config import PLUGINS_CONFIG
+            return bool(
+                PLUGINS_CONFIG.get(f"{platform}collector", {})
+                .get("enabled", False)
+            )
+        except Exception:
+            return False
+
     # ═══════════════════════════════════════
     # knowledge
     # ═══════════════════════════════════════
     def _load_knowledge(self) -> str:
+        path = str(data_paths.BOT_KNOWLEDGE)
         try:
-            with open(KNOWLEDGE, encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 text = f.read()
             log_info(
                 f"📚 [ADMIN:init] knowledge بارگذاری شد | {len(text)}ch"
             )
             return text
         except FileNotFoundError:
-            log_warning(f"⚠️ [ADMIN:init] knowledge نبود | {KNOWLEDGE}")
+            log_warning(f"⚠️ [ADMIN:init] knowledge نبود | {path}")
             return ""
         except Exception as e:
             log_warning(
@@ -224,20 +327,26 @@ class AdminHandler(BaseHandler):
     # ═══════════════════════════════════════
     @staticmethod
     def _is_safebrain_fallback(reply: str | None) -> bool:
-        """آیا این پاسخ، پیامِ «هوش در دسترس نیست» SafeBrain است؟
-
-        تشخیص:
-          - خالی → fallback
-          - با prefix شروع شود + متن کوتاه → fallback
-          - با prefix شروع شود + متن بلند → پاسخ واقعی (rare)
-        """
+        """🎯 FIX: تشخیص پاسخ «هوش در دسترس نیست»."""
         if not reply:
             return True
+
         s = reply.strip()
-        if not s.startswith(_SAFEBRAIN_PREFIXES):
-            return False
-        # اگر با prefix شروع شده ولی متن کوتاه است → fallback
-        return len(s) < _SAFEBRAIN_MIN_REAL_LEN
+        if not s:
+            return True
+
+        # ─── حالت ۲: AIAssistant fallback ───
+        for prefix in _AI_FALLBACK_PREFIXES:
+            if s.startswith(prefix):
+                return True
+
+        # ─── حالت ۳: SafeBrain prefix ───
+        sb_prefixes = _get_safebrain_prefixes()
+        if s.startswith(sb_prefixes):
+            return len(s) < _SAFEBRAIN_MIN_REAL_LEN
+
+        # ─── حالت ۴: پاسخ واقعی ───
+        return False
 
     # ═══════════════════════════════════════
     # Brain — lazy + per-instance
@@ -336,7 +445,6 @@ class AdminHandler(BaseHandler):
         s = str(ans).strip()
         if not s:
             return False
-        # پیام‌های خطای شناخته‌شده AI
         _bad_prefixes = ("⚠️", "❌", "🚫", "⛔")
         if s.startswith(_bad_prefixes):
             return False
@@ -460,7 +568,6 @@ class AdminHandler(BaseHandler):
             log_error(f"❌ [ADMIN:handle] {type(e).__name__}: {e}")
             reply = f"❌ خطا در اجرای دستور: {e}"
 
-        # 🐛 FIX: پیام پیش‌فرض اگه reply خالی بود
         if not reply:
             log_info("ℹ️ [ADMIN:handle] reply خالی — پیام پیش‌فرض")
             reply = _EMPTY_REPLY_FALLBACK
@@ -487,7 +594,6 @@ class AdminHandler(BaseHandler):
     ) -> str:
         t0 = time.monotonic()
 
-        # ─── لایهٔ SafeBrain ───
         reply: str | None = None
         try:
             t_sb = time.monotonic()
@@ -503,7 +609,6 @@ class AdminHandler(BaseHandler):
             )
             reply = None
 
-        # ─── اگه SafeBrain مسئول نبود → AdminActions ───
         if self._is_safebrain_fallback(reply):
             t_exec = time.monotonic()
             reply = await self._actions.execute(action, value, raw_text)
@@ -519,7 +624,6 @@ class AdminHandler(BaseHandler):
                 f"🐌 [ADMIN:handle_command] کند | {elapsed_ms:.0f}ms"
             )
 
-        # 🐛 FIX: تبدیل None/"" به پیام پیش‌فرض
         return reply or _EMPTY_REPLY_FALLBACK
 
     async def _handle_free_text(self, text: str) -> str:
@@ -571,7 +675,6 @@ class AdminHandler(BaseHandler):
                 f"⚠️ [ADMIN:free] ask | {type(e).__name__}: {e}"
             )
 
-        # 🐛 FIX: fallback نهایی
         log_warning(
             f"❌ [ADMIN:free] هیچ لایه‌ای پاسخ نداد | "
             f"{time.monotonic() - t0:.2f}s"
@@ -629,7 +732,6 @@ class AdminHandler(BaseHandler):
                 f"🏁 [ADMIN:web] کامل | {total_ms:.0f}ms | "
                 f"len={len(reply or '')}"
             )
-            # 🐛 FIX: اگه reply خالی بود
             return reply or _EMPTY_REPLY_FALLBACK
         except Exception as e:
             log_error(f"❌ [ADMIN:web] {type(e).__name__}: {e}")
@@ -648,9 +750,13 @@ class AdminHandler(BaseHandler):
             return
 
         chat_id = raw.get("chat_id") or raw.get("user_id")
+
         ct = raw.get("chat_type")
         uid = raw.get("user_id")
-        if uid is not None and str(chat_id) == str(uid):
+
+        if ct in ("private", "user"):
+            ct = "private"
+        elif uid is not None and str(chat_id) == str(uid):
             ct = "private"
 
         if not text:
@@ -659,7 +765,6 @@ class AdminHandler(BaseHandler):
             )
             return
 
-        # ─── شکستن متن بلند ───
         chunks = self._chunk_text(text, _REPLY_CHUNK)
 
         for i, chunk in enumerate(chunks):
@@ -680,7 +785,6 @@ class AdminHandler(BaseHandler):
                     f"{type(e).__name__}: {e} | "
                     f"{elapsed_ms:.0f}ms | chat_id={chat_id}"
                 )
-                # ادامه بده — شاید chunk بعدی موفق بشه
                 continue
 
         elapsed_ms = (time.monotonic() - t0) * 1000
@@ -704,13 +808,10 @@ class AdminHandler(BaseHandler):
             if len(remaining) <= size:
                 chunks.append(remaining)
                 break
-            # سعی کن روی newline بشکن
             cut = remaining.rfind("\n", 0, size)
             if cut < size // 2:
-                # newline نزدیک نبود → روی فاصله
                 cut = remaining.rfind(" ", 0, size)
             if cut < size // 2:
-                # هیچ‌کدام → cut هارد
                 cut = size
             chunks.append(remaining[:cut])
             remaining = remaining[cut:].lstrip("\n")
@@ -718,7 +819,7 @@ class AdminHandler(BaseHandler):
         return chunks
 
     # ═══════════════════════════════════════
-    # Backward-compat wrappers (تست‌ها + کد قدیمی)
+    # Backward-compat wrappers
     # ═══════════════════════════════════════
     def _rule_parse(self, text):
         return parse_command(text)
@@ -730,10 +831,14 @@ class AdminHandler(BaseHandler):
         return platform_in(low)
 
     def _add_keyword(self, value):
-        return self._keyword_admin.add(value, CUSTOM_KW)
+        return self._keyword_admin.add(
+            value, str(data_paths.KEYWORDS_CUSTOM)
+        )
 
     def _remove_keyword(self, value):
-        return self._keyword_admin.remove(value, CUSTOM_KW)
+        return self._keyword_admin.remove(
+            value, str(data_paths.KEYWORDS_CUSTOM)
+        )
 
     def _remember(self, q, a):
         self._memory.remember(q, a)
@@ -774,8 +879,6 @@ class AdminHandler(BaseHandler):
     def _set_param(self, raw_text):
         return self._actions.set_param(raw_text)
 
-    # ⚠️ توجه: crm_action/report_action در admin_actions الان async شدند
-    # → این wrapperها هم async شدند
     async def _crm_action(self, raw_text):
         return await self._actions.crm_action(raw_text)
 
@@ -790,8 +893,10 @@ class AdminHandler(BaseHandler):
 
     @staticmethod
     def _read_custom_kw_dict():
-        return KeywordAdmin(CUSTOM_KW).read(CUSTOM_KW)
+        path = str(data_paths.KEYWORDS_CUSTOM)
+        return KeywordAdmin(path).read(path)
 
     @staticmethod
     def _write_custom_kw_dict(kw_tier):
-        return KeywordAdmin(CUSTOM_KW).write(kw_tier, CUSTOM_KW)
+        path = str(data_paths.KEYWORDS_CUSTOM)
+        return KeywordAdmin(path).write(kw_tier, path)

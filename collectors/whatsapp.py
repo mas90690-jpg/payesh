@@ -265,6 +265,23 @@ class WhatsAppCollector(BaseCollector):
                         log_info(f"   ⏳ [whatsapp] {attempt+1}/20 ...")
 
                 if login_confirmed:
+                    # 🎯 FIX: انتظار صریح برای لود شدن chat-list
+                    log_info("⏳ [whatsapp] انتظار برای لود شدن لیست چت (۱۵s)...")
+                    chatlist_ready = False
+                    for sel in CHATLIST_MARKERS + CHAT_ITEM_SELECTORS:
+                        try:
+                            await self._page.wait_for_selector(
+                                sel, timeout=15000, state="visible"
+                            )
+                            log_success(f"✅ chat-list آماده شد | selector={sel}")
+                            chatlist_ready = True
+                            break
+                        except Exception:
+                            continue
+
+                    if not chatlist_ready:
+                        log_warning("⚠️ chat-list پیدا نشد ولی ادامه می‌دهیم")
+
                     self._connected = True
                     self._set_status(ConnectionStatus.CONNECTED)
                     log_success(
@@ -557,16 +574,23 @@ class WhatsAppCollector(BaseCollector):
         page = self._page
         chat_items = []
         used_sel = ""
+
+        # 🎯 FIX: لاگ تشخیصی — ببینیم کدام سلکتور چقدر match می‌کند
+        log_info("🔍 [whatsapp:probe] بررسی سلکتورهای لیست چت...")
         for sel in CHAT_ITEM_SELECTORS:
             try:
-                chat_items = await page.query_selector_all(sel)
-                if chat_items:
+                cnt = await page.locator(sel).count()
+                log_info(f"   probe: {sel} → {cnt}")
+                if cnt > 0 and not chat_items:
+                    chat_items = await page.query_selector_all(sel)
                     used_sel = sel
-                    break
-            except Exception:
-                continue
+            except Exception as e:
+                log_info(f"   probe: {sel} → خطا: {str(e)[:60]}")
 
         if not chat_items:
+            log_warning(
+                "⚠️ [whatsapp] هیچ چتی در لیست پیدا نشد — DOM dump برای بررسی"
+            )
             try:
                 await self.dump_dom()
             except Exception:
@@ -688,7 +712,7 @@ class WhatsAppCollector(BaseCollector):
                 # شناسهٔ پایدار: اگر msgId خالی داشت، ازش استفاده کن؛ وگرنه md5
                 if not mid:
                     # 🎯 FIX: chat_name را هم داخل hash بیاور
-                    mid = hashlib.md5(
+                    mid = hashlib.sha256(
                         f"{chat_name}:{text}".encode("utf-8")
                     ).hexdigest()[:16]
 

@@ -2,6 +2,10 @@
 """
 تست کامل اینستاگرام — Pipeline end-to-end (فقط فالوورها).
 
+نسخهٔ ۱.۱ (این نسخه):
+  - ⏭️ skip منطقی: اگر پلتفرم خاموش بود → skip (نه fail) ← v1.1
+  - ✅ حفظ همهٔ مراحل نسخهٔ ۱.
+
 پیش‌نیازها:
   - INSTAGRAM_ENABLED=true
   - نشست ذخیره‌شده در storage/sessions/instagram/
@@ -48,15 +52,18 @@ async def main(headless: bool = False, max_posts: int = 5):
 
     report.add(
         "env.enabled",
-        "ok" if env_info["enabled"] else "fail",
-        f"INSTAGRAM_ENABLED={env_info['enabled']}",
+        "ok" if env_info["enabled"] else "skip",
+        f"INSTAGRAM_ENABLED={env_info['enabled']} (پیش‌فرض خاموش)",
     )
+
     if not env_info["enabled"]:
-        print(f"{C.FAIL}❌ اینستاگرام غیرفعال — تست لغو{C.END}")
-        print(f"   💡 در .env بذار: INSTAGRAM_ENABLED=true")
+        print(
+            f"{C.INFO}⏭️ اینستاگرام غیرفعال (skip) — "
+            f"برای اجرا: INSTAGRAM_ENABLED=true{C.END}"
+        )
         report.print_summary()
         report.save()
-        return False
+        return True
 
     report.add(
         "env.session_path", "ok",
@@ -75,7 +82,7 @@ async def main(headless: bool = False, max_posts: int = 5):
         print(f"\n{C.FAIL}❌ نشست Instagram وجود ندارد{C.END}")
         print(f"   راه‌حل:")
         print(f"     ۱) BROWSER_HEADLESS=false در .env")
-        print(f"     ۲) python login.py → گزینهٔ ۸")
+        print(f"     ۲) python login.py → گزینهٔ ۷")
         print(f"     ۳) در مرورگر لاگین کن")
         report.print_summary()
         report.save()
@@ -132,7 +139,7 @@ async def main(headless: bool = False, max_posts: int = 5):
         )
         if not ok:
             print(f"\n{C.WARN}⚠️ اتصال Instagram شکست خورد{C.END}")
-            print(f"   راه‌حل: python login.py → گزینهٔ ۸")
+            print(f"   راه‌حل: python login.py → گزینهٔ ۷")
             print(f"   ⚠️ در ایران VPN لازم است")
             await safe_disconnect(collector, report)
             await pipeline.stop()

@@ -10,15 +10,48 @@ services:
     container_name: srooyesh-monitor
     restart: unless-stopped          # اگر کرش کرد یا سرور ری‌استارت شد، خودکار بالا می‌آید
     env_file: .env
+
+    # 🎯 پورت OBS (health/metrics/chat) برای دسترسی از بیرون
+    ports:
+      - "${OBS_PORT:-8787}:${OBS_PORT:-8787}"
+
     volumes:
       # همهٔ نشست‌ها/دیتابیس/گزارش‌ها/مدیا بیرون از کانتینر می‌مانند (با ری‌بیلد پاک نمی‌شوند)
       - ./storage:/app/storage
       - ./data:/app/data
-      - ./.env:/app/.env:ro
-    # برای واتساپ در ایران ممکن است به پراکسی/VPN نیاز باشد:
+      # ⚠️ .env باید قابل‌نوشتن باشد — چون `set PARAM=VALUE` از ChatOps آن را
+      #    روی دیسک به‌روز می‌کند (admin_actions._update_env).
+      - ./.env:/app/.env
+
+    # برای واتساپ/تلگرام در ایران ممکن است به پراکسی/VPN نیاز باشد:
     # environment:
     #   - HTTPS_PROXY=http://host.docker.internal:PORT
-    shm_size: "1gb"                  # مرورگر chromium به حافظهٔ اشتراکی بیشتری نیاز دارد
+
+    environment:
+      - TZ=Asia/Tehran                 # ← زمان محلی برای گزارش‌ها و لاگ‌ها
+      - PYTHONUNBUFFERED=1             # ← لاگ بدون buffering (لحظه‌ای)
+
+    # 🔧 برای پشتیبانی از host.docker.internal روی Linux Docker Engine
+    #    (روی Docker Desktop ویندوز/مک خودکار است)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    shm_size: "1gb"                    # مرورگر chromium به حافظهٔ اشتراکی بیشتری نیاز دارد
+
+    # 🎯 چک سلامت خودکار (اگر /health جواب ندهد، restart می‌شود)
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:${OBS_PORT:-8787}/health', timeout=5)\" || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s              # فرصت برای راه‌اندازی مرورگرها
+
+    # 🎯 چرخش لاگ Docker (جلوگیری از بزرگ شدن بی‌نهایت)
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
 
 # ⚠️ ورود اولِ هر پیام‌رسان (کد پیامک/QR) باید یک‌بار خارج از داکر با `python login.py`
 #    انجام شود و سپس پوشهٔ storage/sessions روی سرور کپی شود. جزئیات در DEPLOY.md

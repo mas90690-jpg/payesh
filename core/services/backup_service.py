@@ -1,39 +1,38 @@
-# core/services/backup_service.py
-"""
-سیستم پشتیبان‌گیری هوشمند.
+"""سیستم پشتیبان‌گیری هوشمند.
 
 قابلیت‌ها:
   - backup_daily: کپی + zip دیتابیس (سبک، برای حفظ روزانه)
-  - backup_full:  کپی کد + دیتابیس در یک zip (برای snapshot کامل)
-  - check_code_changes: مقایسه hash (mtime+size) فایل‌ها → تشخیص تغییر
-  - run_periodic: حلقهٔ hourly که خودش تصمیم می‌گیرد چه زمانی backup بزند
+  - backup_full:  کپی کد + دیتابیس در یک zip (snapshot کامل)
+  - check_code_changes: مقایسه hash (mtime+size) → تغییرات
+  - run_periodic: حلقهٔ hourly که خودش تصمیم می‌گیرد
   - cleanup: چرخش بکاپ‌های قدیمی
 
-تنظیمات از .env:
-  DAILY_BACKUP_HOURS   (پیش‌فرض 24)  → فاصلهٔ backup روزانه
-  KEEP_DAILY_BACKUPS   (پیش‌فرض 30)  → حداکثر بکاپ روزانه نگه‌داشته‌شده
-  KEEP_FULL_BACKUPS    (پیش‌فرض 10)  → حداکثر بکاپ کامل
-  FULL_BACKUP_DAYS     (پیش‌فرض 7)   → فاصلهٔ backup کامل (روز)
-  BACKUP_POKE_SECONDS  (پیش‌فرض 3600) → فاصلهٔ حلقهٔ بررسی (ثانیه)
-
-نسخهٔ ۵ (این نسخه):
-  - 🔴 FIX امنیتی مهم: چک فایل‌های حساس حالا با تابع
-    `_is_sensitive_filename()` انجام می‌شود (به‌جای prefix با نقطه).
-
-    باگ قبلی: `_IGNORE_PREFIXES` شامل `"secrets."` و `"credentials."`
-    بود (با نقطه). ولی این فایل‌ها از backup رد نمی‌شدند:
-      ✗ secrets_backup.json    (با _ نه .)
-      ✗ credentials_old.json   (با _ نه .)
-      ✗ auth_token.txt         (اصلاً پوشش نداشت)
-      ✗ token.json             (اصلاً پوشش نداشت)
-      ✗ api_key.txt            (اصلاً پوشش نداشت)
-    حالا همه پوشش داده می‌شوند.
-
-  - 🎯 استثنا: فایل‌های نمونه (.example, .sample, .template) مجاز
-    هستند (چون معمولاً حاوی secret نیستند و برای backup کامل مفیدن).
-    مثال: `.env.example` کپی می‌شود ✅
-
-  - ✅ حفظ همهٔ FIXهای نسخهٔ ۴.
+نسخهٔ ۶ (این نسخه):
+  - 🐛 FIX: `DB_PATH` حالا از `data.paths.DB_FILE` می‌آید.
+  - 🐛 FIX: `BACKUP_DIR` حالا از `data.paths.BACKUPS_DIR`.
+  - 🐛 FIX: `_IGNORE_EXTENSIONS` + `.db-journal`.
+  - 🐛 FIX: `DAILY_BACKUP_HOURS`, `KEEP_*`, `FULL_BACKUP_DAYS`,
+    `POKE_INTERVAL_SECONDS` حالا با `_env_int` (sanitize).
+  - 🐛 FIX: `_SLOW_BACKUP_MS`, `_SLOW_HASH_MS` حالا env-based.
+  - 🐛 FIX: `_save_stats`, `_save_hashes`, `_mark_*_done` حالا
+    atomic + fsync + cleanup tmp.
+  - 🐛 FIX: `_get_code_files` حالا `_IGNORE_FILES` را قبل از
+    `_is_sensitive_filename` چک می‌کند (پرفورمنس).
+  - 🐛 FIX: `_compress_folder` حالا `zipfile.BadZipFile` را
+    handle می‌کند.
+  - 🐛 FIX: `_should_backup_daily` / `_should_backup_full` حالا
+    clamp مقادیر منفی.
+  - 🐛 FIX: `_cleanup_old` حالا `min=1` برای keep.
+  - 🐛 FIX: `_is_db_valid` حالا timeout دارد.
+  - 🐛 FIX: `run_periodic` حالا `_stop_event` دارد
+    (بیداری سریع در stop).
+  - 🐛 FIX: `start_backup_service` حالا reference task را
+    نگه می‌دارد.
+  - 🎯 `BACKUP_TYPE_DAILY`, `BACKUP_TYPE_FULL` constants.
+  - 🎯 `get_stats()` کامل‌تر.
+  - 🎯 `__repr__` برای BackupService.
+  - 🎯 `__all__` export.
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۵.
 """
 from __future__ import annotations
 
@@ -42,37 +41,104 @@ import json
 import os
 import shutil
 import sqlite3
+import threading
 import time
 import zipfile
 from datetime import datetime
+from typing import Any
 
-from config import BASE_DIR, DB_DIR, STORAGE_DIR
-from core.kernel.logger import log_error, log_info, log_success, log_warning
+from core.kernel.logger import (
+    log_error,
+    log_info,
+    log_success,
+    log_warning,
+)
+
 
 # ═══════════════════════════════════════════
-# تنظیمات (از env)
+# helpers
 # ═══════════════════════════════════════════
-DAILY_BACKUP_HOURS = max(1, int(os.environ.get("DAILY_BACKUP_HOURS", 24)))
-KEEP_DAILY_BACKUPS = max(1, int(os.environ.get("KEEP_DAILY_BACKUPS", 30)))
-KEEP_FULL_BACKUPS = max(1, int(os.environ.get("KEEP_FULL_BACKUPS", 10)))
-FULL_BACKUP_DAYS = max(1, int(os.environ.get("FULL_BACKUP_DAYS", 7)))
+def _env_int(
+    name: str, default: int,
+    min_val: int | None = None,
+    max_val: int | None = None,
+) -> int:
+    """خواندن int از env — با sanitize."""
+    try:
+        v = int(os.getenv(name, str(default)))
+    except (ValueError, TypeError):
+        return default
+    if min_val is not None and v < min_val:
+        return min_val
+    if max_val is not None and v > max_val:
+        return max_val
+    return v
 
-# فاصلهٔ حلقهٔ periodic (برای تست‌ها قابل override)
-POKE_INTERVAL_SECONDS = int(os.environ.get("BACKUP_POKE_SECONDS", 3600))
+
+# ═══════════════════════════════════════════
+# مسیرها (از data.paths — منبع یکتا)
+# ═══════════════════════════════════════════
+try:
+    from data import paths as _data_paths
+    DB_PATH: str = str(_data_paths.DB_FILE)
+    BACKUP_DIR: str = str(_data_paths.BACKUPS_DIR)
+except Exception:
+    from config import DB_DIR, STORAGE_DIR
+    DB_PATH = os.path.join(str(DB_DIR), "messages.db")
+    BACKUP_DIR = os.path.join(str(STORAGE_DIR), "backups")
+
+try:
+    from config import BASE_DIR
+except Exception:
+    BASE_DIR = os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__))
+    )
+
+
+# ═══════════════════════════════════════════
+# تنظیمات (env-based)
+# ═══════════════════════════════════════════
+DAILY_BACKUP_HOURS: int = _env_int(
+    "DAILY_BACKUP_HOURS", 24,
+    min_val=1, max_val=720,
+)
+KEEP_DAILY_BACKUPS: int = _env_int(
+    "KEEP_DAILY_BACKUPS", 30,
+    min_val=1, max_val=1000,
+)
+KEEP_FULL_BACKUPS: int = _env_int(
+    "KEEP_FULL_BACKUPS", 10,
+    min_val=1, max_val=100,
+)
+FULL_BACKUP_DAYS: int = _env_int(
+    "FULL_BACKUP_DAYS", 7,
+    min_val=1, max_val=365,
+)
+POKE_INTERVAL_SECONDS: int = _env_int(
+    "BACKUP_POKE_SECONDS", 3600,
+    min_val=60, max_val=86400,
+)
 
 # آستانه‌های هشدار (میلی‌ثانیه)
-_SLOW_BACKUP_MS = 30_000
-_SLOW_HASH_MS = 5_000
+_SLOW_BACKUP_MS: int = _env_int(
+    "BACKUP_SLOW_MS", 30_000,
+    min_val=1000, max_val=600_000,
+)
+_SLOW_HASH_MS: int = _env_int(
+    "BACKUP_SLOW_HASH_MS", 5_000,
+    min_val=100, max_val=60_000,
+)
+_DB_INTEGRITY_TIMEOUT_S: float = 30.0
 
-# مسیرها
-DB_PATH = os.path.join(DB_DIR, "messages.db")
-BACKUP_DIR = os.path.join(STORAGE_DIR, "backups")
+# 🎯 نوع بکاپ
+BACKUP_TYPE_DAILY = "daily"
+BACKUP_TYPE_FULL = "full"
 
 
 # ═══════════════════════════════════════════
-# 🔴 لیست‌های امنیتی (فایل‌های حساس)
+# لیست‌های امنیتی (فایل‌های حساس)
 # ═══════════════════════════════════════════
-_IGNORE_DIRS: frozenset = frozenset({
+_IGNORE_DIRS: frozenset[str] = frozenset({
     "__pycache__", "backups", "storage", "data", ".git",
     "venv", ".venv", "env", ".env",
     "reports", "logs", "cache", "sessions", "media",
@@ -80,42 +146,34 @@ _IGNORE_DIRS: frozenset = frozenset({
     "node_modules", ".idea", ".vscode",
 })
 
-_IGNORE_EXTENSIONS: frozenset = frozenset({
+_IGNORE_EXTENSIONS: frozenset[str] = frozenset({
+    # باینری Python
     ".pyc", ".pyo", ".pyd",
-    ".db", ".db-wal", ".db-shm", ".sqlite", ".sqlite3",
+    # دیتابیس
+    ".db", ".db-wal", ".db-shm", ".db-journal",
+    ".sqlite", ".sqlite3",
+    # لاگ/zip/pid
     ".log", ".bale", ".zip", ".7z", ".rar", ".pid",
-    # 🔴 پسوندهای حساس (کلید/گواهی)
-    ".key", ".pem", ".crt", ".p12", ".pfx", ".jks", ".keystore",
+    # 🔴 کلید/گواهی
+    ".key", ".pem", ".crt", ".p12", ".pfx",
+    ".jks", ".keystore",
 })
 
-_IGNORE_FILES: frozenset = frozenset({
+_IGNORE_FILES: frozenset[str] = frozenset({
     # فایل‌های خود backup
-    "hashes.json", "last_backup.txt", "last_full_backup.txt",
-    "bot.pid", "stats.json", "products_list.txt", "messages.txt",
+    "hashes.json", "last_backup.txt",
+    "last_full_backup.txt", "bot.pid",
+    "stats.json", "products_list.txt", "messages.txt",
     # 🔴 فایل‌های حساس دقیق
     ".env",
     "secrets.json", "credentials.json", "auth.json",
     ".git-credentials", ".netrc", "id_rsa", "id_dsa",
     "known_hosts", "config.json",
+    ".pgpass",  # 🔴 جدید
 })
 
-# 🔴 «stems» حساس — چک با تابع _is_sensitive_filename
-# هر stem: نام دقیق، یا با `.` یا با `_` ادامه می‌یابد
-#
-# مثال‌هایی که با این لیست پوشش داده می‌شوند:
-#   `.env`               → مطابقت دقیق
-#   `.env.local`         → `.env.` prefix
-#   `.env_backup`        → `.env_` prefix
-#   `secrets.json`       → `secrets.` prefix
-#   `secrets_backup.json`→ `secrets_` prefix
-#   `credentials_old.json`→ `credentials_` prefix
-#   `secret_key.txt`     → `secret_` prefix
-#   `private_config.json`→ `private_` prefix
-#   `auth_token.txt`     → `auth_` prefix
-#   `token.json`         → `token.` prefix
-#   `api_key.txt`        → `api_key.` prefix
-#   `apikey.txt`         → `apikey.` prefix
-_SENSITIVE_STEMS: tuple = (
+# 🔴 stems حساس
+_SENSITIVE_STEMS: tuple[str, ...] = (
     ".env",
     "secrets",
     "secret",
@@ -125,12 +183,13 @@ _SENSITIVE_STEMS: tuple = (
     "token",
     "api_key",
     "apikey",
+    ".pgpass",  # 🔴 جدید
+    "id_rsa",   # 🔴 جدید
+    "id_dsa",   # 🔴 جدید
 )
 
-# 🔴 پسوندهای فایل‌های «نمونه» — مجاز هستند
-# (این‌ها حاوی secret واقعی نیستند، فقط قالب هستن)
-# مثال: `.env.example`, `secrets.sample`, `config.template`
-_ALLOWED_SAMPLE_SUFFIXES: tuple = (
+# 🔴 پسوندهای «نمونه» — مجاز
+_ALLOWED_SAMPLE_SUFFIXES: tuple[str, ...] = (
     ".example",
     ".sample",
     ".template",
@@ -140,23 +199,14 @@ _ALLOWED_SAMPLE_SUFFIXES: tuple = (
 
 
 def _is_sensitive_filename(name: str) -> bool:
-    """
-    آیا نام فایل حساس است؟ (نباید در backup کپی شود)
-
-    🔴 FIX نسخهٔ ۵: این تابع جایگزین منطق قدیمیِ prefix-based شد.
+    """آیا نام فایل حساس است؟ (نباید در backup کپی شود)
 
     منطق:
-      ۱) اگه فایل نمونه باشد (ends with .example/.sample/...) → False
-      ۲) اگه نام دقیقاً یکی از stemها باشد → True
-      ۳) اگه با `{stem}.` شروع شود → True
-      ۴) اگه با `{stem}_` شروع شود → True
+      ۱) فایل نمونه (ends with .example/.sample/...) → False
+      ۲) نام دقیقاً یکی از stemها → True
+      ۳) با `{stem}.` شروع → True
+      ۴) با `{stem}_` شروع → True
       ۵) وگرنه → False
-
-    Args:
-        name: نام فایل (بدون مسیر).
-
-    Returns:
-        True اگه حساس است (نباید backup شود).
     """
     if not name:
         return False
@@ -181,26 +231,106 @@ def _is_sensitive_filename(name: str) -> bool:
 
 
 # ═══════════════════════════════════════════
+# helpers (atomic write)
+# ═══════════════════════════════════════════
+def _atomic_write_text(
+    path: str,
+    content: str,
+    encoding: str = "utf-8",
+) -> bool:
+    """🎯 FIX: نوشتن atomic + fsync + cleanup tmp."""
+    tmp = path + ".tmp"
+
+    try:
+        parent = os.path.dirname(path)
+        if parent:
+            try:
+                os.makedirs(parent, exist_ok=True)
+            except Exception:
+                pass
+
+        with open(tmp, "w", encoding=encoding) as f:
+            f.write(content)
+            try:
+                f.flush()
+                os.fsync(f.fileno())
+            except (AttributeError, OSError):
+                pass
+
+        os.replace(tmp, path)
+
+        # dir fsync (POSIX)
+        if parent:
+            try:
+                dir_fd = os.open(parent, os.O_DIRECTORY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except (AttributeError, OSError):
+                pass
+
+        return True
+    except Exception:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+        return False
+
+
+def _atomic_write_json(path: str, data: Any) -> bool:
+    """🎯 FIX: نوشتن atomic JSON."""
+    try:
+        content = json.dumps(
+            data, indent=2, ensure_ascii=False, default=str
+        )
+    except Exception as e:
+        log_warning(
+            f"⚠️ [BACKUP:json] dumps | {type(e).__name__}: {e}"
+        )
+        return False
+    return _atomic_write_text(path, content)
+
+
+# ═══════════════════════════════════════════
 # BackupService
 # ═══════════════════════════════════════════
 class BackupService:
     """سرویس پشتیبان‌گیری خودکار."""
 
     def __init__(self):
-        self.daily_dir = os.path.join(BACKUP_DIR, "daily")
-        self.full_dir = os.path.join(BACKUP_DIR, "full")
-        self.hash_file = os.path.join(BACKUP_DIR, "hashes.json")
-        self.last_backup_file = os.path.join(BACKUP_DIR, "last_backup.txt")
+        self.daily_dir = os.path.join(
+            BACKUP_DIR, BACKUP_TYPE_DAILY
+        )
+        self.full_dir = os.path.join(
+            BACKUP_DIR, BACKUP_TYPE_FULL
+        )
+        self.hash_file = os.path.join(
+            BACKUP_DIR, "hashes.json"
+        )
+        self.last_backup_file = os.path.join(
+            BACKUP_DIR, "last_backup.txt"
+        )
         self.last_full_backup_file = os.path.join(
             BACKUP_DIR, "last_full_backup.txt"
         )
-        self.stats_file = os.path.join(BACKUP_DIR, "stats.json")
+        self.stats_file = os.path.join(
+            BACKUP_DIR, "stats.json"
+        )
+
         self._running = True
+        self._stop_event: asyncio.Event | None = None
+        self._pending_tasks: list[asyncio.Task] = []
+        self._lock = threading.Lock()
 
         log_info(
-            f"🔧 [BACKUP:init] BackupService ساخته شد | "
-            f"daily_h={DAILY_BACKUP_HOURS} keep_daily={KEEP_DAILY_BACKUPS} | "
-            f"full_days={FULL_BACKUP_DAYS} keep_full={KEEP_FULL_BACKUPS} | "
+            f"🔧 [BACKUP:init] آماده | "
+            f"daily_h={DAILY_BACKUP_HOURS} "
+            f"keep_daily={KEEP_DAILY_BACKUPS} | "
+            f"full_days={FULL_BACKUP_DAYS} "
+            f"keep_full={KEEP_FULL_BACKUPS} | "
             f"poke={POKE_INTERVAL_SECONDS}s | "
             f"DB={DB_PATH}"
         )
@@ -209,6 +339,7 @@ class BackupService:
     # init
     # ═══════════════════════════════════════════
     def init(self) -> None:
+        """ساخت پوشه‌ها + فایل‌های اولیه."""
         try:
             os.makedirs(BACKUP_DIR, exist_ok=True)
             os.makedirs(self.daily_dir, exist_ok=True)
@@ -219,7 +350,8 @@ class BackupService:
                 self._save_stats({})
             log_success(
                 f"✅ [BACKUP:init] آماده | "
-                f"daily_dir={self.daily_dir} | full_dir={self.full_dir}"
+                f"daily_dir={self.daily_dir} | "
+                f"full_dir={self.full_dir}"
             )
         except Exception as e:
             log_error(
@@ -228,37 +360,40 @@ class BackupService:
             raise
 
     # ═══════════════════════════════════════════
-    # stats / hashes (با error handling)
+    # stats / hashes (atomic)
     # ═══════════════════════════════════════════
-    def _save_stats(self, stats: dict) -> None:
-        try:
-            with open(self.stats_file, "w", encoding="utf-8") as f:
-                json.dump(stats, f, indent=2, ensure_ascii=False, default=str)
-        except Exception as e:
+    def _save_stats(self, stats: dict[str, Any]) -> None:
+        ok = _atomic_write_json(self.stats_file, stats)
+        if not ok:
             log_warning(
-                f"⚠️ [BACKUP:stats] ذخیره | {type(e).__name__}: {e}"
+                f"⚠️ [BACKUP:stats] ذخیره ناموفق"
             )
 
-    def _load_stats(self) -> dict:
+    def _load_stats(self) -> dict[str, Any]:
         if not os.path.exists(self.stats_file):
             return {}
         try:
             with open(self.stats_file, encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
         except json.JSONDecodeError as e:
             log_warning(
                 f"⚠️ [BACKUP:stats] JSON نامعتبر | "
-                f"line={e.lineno} | {e.msg} — {{}} استفاده می‌شود"
+                f"line={e.lineno} — {{}}"
             )
             return {}
         except Exception as e:
             log_warning(
-                f"⚠️ [BACKUP:stats] خواندن | {type(e).__name__}: {e}"
+                f"⚠️ [BACKUP:stats] خواندن | "
+                f"{type(e).__name__}: {e}"
             )
             return {}
 
     def _update_stats(
-        self, backup_type: str, backup_path: str, size: int
+        self,
+        backup_type: str,
+        backup_path: str,
+        size: int,
     ) -> None:
         try:
             stats = self._load_stats()
@@ -271,7 +406,8 @@ class BackupService:
             self._save_stats(stats)
         except Exception as e:
             log_warning(
-                f"⚠️ [BACKUP:stats] update | {type(e).__name__}: {e}"
+                f"⚠️ [BACKUP:stats] update | "
+                f"{type(e).__name__}: {e}"
             )
 
     def _get_file_hash(self, filepath: str) -> str | None:
@@ -287,46 +423,43 @@ class BackupService:
             )
             return None
 
-    def _load_hashes(self) -> dict:
+    def _load_hashes(self) -> dict[str, str]:
         if not os.path.exists(self.hash_file):
             return {}
         try:
             with open(self.hash_file, encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
         except json.JSONDecodeError as e:
             log_warning(
                 f"⚠️ [BACKUP:hashes] JSON نامعتبر | "
-                f"line={e.lineno} — {{}} استفاده می‌شود"
+                f"line={e.lineno} — {{}}"
             )
             return {}
         except Exception as e:
             log_warning(
-                f"⚠️ [BACKUP:hashes] خواندن | {type(e).__name__}: {e}"
+                f"⚠️ [BACKUP:hashes] خواندن | "
+                f"{type(e).__name__}: {e}"
             )
             return {}
 
-    def _save_hashes(self, hashes: dict) -> None:
-        try:
-            with open(self.hash_file, "w", encoding="utf-8") as f:
-                json.dump(hashes, f, indent=2, ensure_ascii=False)
-        except Exception as e:
+    def _save_hashes(self, hashes: dict[str, str]) -> None:
+        ok = _atomic_write_json(self.hash_file, hashes)
+        if not ok:
             log_warning(
-                f"⚠️ [BACKUP:hashes] ذخیره | {type(e).__name__}: {e}"
+                f"⚠️ [BACKUP:hashes] ذخیره ناموفق"
             )
 
     # ═══════════════════════════════════════════
-    # 🔴 فایل‌های کد (با گارد امنیتی)
+    # فایل‌های کد (با گارد امنیتی)
     # ═══════════════════════════════════════════
     def _get_code_files(self) -> list[str]:
-        """
-        لیست فایل‌های کد که باید در backup کامل کپی شوند.
+        """لیست فایل‌های کد برای backup کامل.
 
-        🔴 امنیت (نسخهٔ ۵):
-          - فایل‌های حساس (با `_is_sensitive_filename`) رد می‌شوند.
-            این شامل: `.env.*`, `secrets*`, `credentials*`,
-            `secret*`, `private*`, `auth*`, `token*`, `api_key*`
-          - فایل‌های نمونه (.example, .sample, ...) مجاز هستند.
-          - دایرکتوری‌های حساس (venv, .git, storage, ...) رد می‌شوند.
+        امنیت:
+          - فایل‌های حساس (`_is_sensitive_filename`) رد می‌شوند.
+          - فایل‌های نمونه مجاز هستند.
+          - دایرکتوری‌های حساس رد می‌شوند.
         """
         code_files: list[str] = []
         skipped_security = 0
@@ -335,21 +468,23 @@ class BackupService:
 
         try:
             for root, dirs, files in os.walk(BASE_DIR):
-                # 🔴 فیلتر دایرکتوری‌های حساس
-                dirs[:] = [d for d in dirs if d not in _IGNORE_DIRS]
+                # فیلتر دایرکتوری
+                dirs[:] = [
+                    d for d in dirs if d not in _IGNORE_DIRS
+                ]
 
                 for file in files:
-                    # 🔴 چک stemهای حساس (نسخهٔ ۵ — تابع)
-                    if _is_sensitive_filename(file):
-                        skipped_security += 1
-                        continue
-
-                    # چک نام فایل حساس (exact)
+                    # ─── چک نام دقیق (سریع‌تر) ───
                     if file in _IGNORE_FILES:
                         skipped_name += 1
                         continue
 
-                    # چک پسوند حساس
+                    # ─── چک stem حساس ───
+                    if _is_sensitive_filename(file):
+                        skipped_security += 1
+                        continue
+
+                    # ─── چک پسوند ───
                     if any(
                         file.endswith(ext)
                         for ext in _IGNORE_EXTENSIONS
@@ -357,17 +492,17 @@ class BackupService:
                         skipped_ext += 1
                         continue
 
-                    # فقط فایل‌های مجاز
+                    # ─── فقط فایل‌های مجاز ───
                     if file.endswith((
                         ".py", ".json", ".ini", ".txt",
                         ".bat", ".md", ".yml", ".yaml",
                     )):
                         rel = os.path.relpath(
-                            os.path.join(root, file), BASE_DIR
+                            os.path.join(root, file),
+                            BASE_DIR,
                         )
                         code_files.append(rel)
 
-            # لاگ خلاصه (فقط اگر فایلی skip شده)
             if skipped_security or skipped_name or skipped_ext:
                 log_info(
                     f"🔒 [BACKUP:code] skip | "
@@ -378,7 +513,8 @@ class BackupService:
                 )
         except Exception as e:
             log_error(
-                f"❌ [BACKUP:code] walk | {type(e).__name__}: {e}"
+                f"❌ [BACKUP:code] walk | "
+                f"{type(e).__name__}: {e}"
             )
         return sorted(set(code_files))
 
@@ -388,47 +524,72 @@ class BackupService:
     def _is_db_valid(self) -> bool:
         """بررسی سلامت دیتابیس با PRAGMA integrity_check."""
         if not os.path.exists(DB_PATH):
-            log_warning(f"⚠️ [BACKUP:db] فایل نیست: {DB_PATH}")
+            log_warning(
+                f"⚠️ [BACKUP:db] فایل نیست: {DB_PATH}"
+            )
             return False
+
+        conn = None
         try:
-            conn = sqlite3.connect(DB_PATH)
-            try:
-                result = conn.execute("PRAGMA integrity_check").fetchone()
-            finally:
-                conn.close()
+            conn = sqlite3.connect(
+                DB_PATH, timeout=_DB_INTEGRITY_TIMEOUT_S
+            )
+            result = conn.execute(
+                "PRAGMA integrity_check"
+            ).fetchone()
             ok = result and result[0] == "ok"
             if not ok:
                 log_error(
-                    f"❌ [BACKUP:db] integrity_check | result={result!r}"
+                    f"❌ [BACKUP:db] integrity_check | "
+                    f"result={result!r}"
                 )
             return bool(ok)
         except Exception as e:
             log_error(
-                f"❌ [BACKUP:db] integrity | {type(e).__name__}: {e}"
+                f"❌ [BACKUP:db] integrity | "
+                f"{type(e).__name__}: {e}"
             )
             return False
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     def _get_db_size(self) -> int:
-        return os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
+        return (
+            os.path.getsize(DB_PATH)
+            if os.path.exists(DB_PATH) else 0
+        )
 
     # ═══════════════════════════════════════════
     # compress
     # ═══════════════════════════════════════════
-    def _compress_folder(self, source_dir: str, zip_path: str) -> bool:
-        """فشرده‌سازی یک پوشه در zip. Returns: True/False."""
+    def _compress_folder(
+        self, source_dir: str, zip_path: str
+    ) -> bool:
+        """فشرده‌سازی پوشه در zip."""
         t0 = time.monotonic()
         file_count = 0
         total_bytes = 0
+
         try:
-            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            with zipfile.ZipFile(
+                zip_path, "w", zipfile.ZIP_DEFLATED
+            ) as zf:
                 for root, _, files in os.walk(source_dir):
                     for file in files:
                         full_path = os.path.join(root, file)
-                        arcname = os.path.relpath(full_path, source_dir)
+                        arcname = os.path.relpath(
+                            full_path, source_dir
+                        )
                         try:
                             zf.write(full_path, arcname)
                             file_count += 1
-                            total_bytes += os.path.getsize(full_path)
+                            total_bytes += os.path.getsize(
+                                full_path
+                            )
                         except FileNotFoundError:
                             continue
                         except Exception as e:
@@ -436,12 +597,15 @@ class BackupService:
                                 f"⚠️ [BACKUP:compress] {file} | "
                                 f"{type(e).__name__}: {e}"
                             )
+
             elapsed_ms = (time.monotonic() - t0) * 1000
             zip_size = (
                 os.path.getsize(zip_path)
                 if os.path.exists(zip_path) else 0
             )
-            ratio = (zip_size / total_bytes) if total_bytes else 0
+            ratio = (
+                (zip_size / total_bytes) if total_bytes else 0
+            )
             log_success(
                 f"🗜️ [BACKUP:compress] {file_count} فایل | "
                 f"raw={total_bytes/1024:.1f}KB → "
@@ -449,9 +613,16 @@ class BackupService:
                 f"(ratio={ratio:.2f}) | {elapsed_ms:.0f}ms"
             )
             return True
+        except zipfile.BadZipFile as e:
+            log_error(
+                f"❌ [BACKUP:compress] BadZipFile | {e} | "
+                f"source={source_dir}"
+            )
+            return False
         except Exception as e:
             log_error(
-                f"❌ [BACKUP:compress] {type(e).__name__}: {e} | "
+                f"❌ [BACKUP:compress] "
+                f"{type(e).__name__}: {e} | "
                 f"source={source_dir}"
             )
             return False
@@ -465,13 +636,20 @@ class BackupService:
         log_info("▶️ [BACKUP:daily] شروع")
 
         if not os.path.exists(DB_PATH):
-            log_warning(f"⚠️ [BACKUP:daily] فایل DB نیست: {DB_PATH}")
-            return None
-        if not self._is_db_valid():
-            log_error("❌ [BACKUP:daily] DB خراب — پشتیبان‌گیری رد شد")
+            log_warning(
+                f"⚠️ [BACKUP:daily] فایل DB نیست: {DB_PATH}"
+            )
             return None
 
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        if not self._is_db_valid():
+            log_error(
+                "❌ [BACKUP:daily] DB خراب — رد شد"
+            )
+            return None
+
+        timestamp = datetime.now().strftime(
+            "%Y-%m-%d_%H-%M-%S_%f"
+        )
         backup_folder = os.path.join(
             self.daily_dir, f"db_backup_{timestamp}"
         )
@@ -480,49 +658,66 @@ class BackupService:
             os.makedirs(backup_folder, exist_ok=True)
             src_size = self._get_db_size()
 
+            # ─── کپی ───
             t_copy = time.monotonic()
-            shutil.copy2(DB_PATH, os.path.join(backup_folder, "messages.db"))
+            shutil.copy2(
+                DB_PATH,
+                os.path.join(backup_folder, "messages.db"),
+            )
             copy_ms = (time.monotonic() - t_copy) * 1000
 
-            # گزارش داخل پوشه
-            report_path = os.path.join(backup_folder, "INFO.txt")
-            with open(report_path, "w", encoding="utf-8") as f:
-                f.write(f"پشتیبان روزانه دیتابیس - {timestamp}\n")
-                f.write(f"حجم: {src_size:,} bytes\n")
-                f.write(
-                    f"تاریخ: "
-                    f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                )
+            # ─── INFO ───
+            info_content = (
+                f"پشتیبان روزانه دیتابیس - {timestamp}\n"
+                f"حجم: {src_size:,} bytes\n"
+                f"تاریخ: "
+                f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            )
+            _atomic_write_text(
+                os.path.join(backup_folder, "INFO.txt"),
+                info_content,
+            )
 
+            # ─── zip ───
             zip_path = os.path.join(
                 self.daily_dir, f"db_backup_{timestamp}.zip"
             )
-            if not self._compress_folder(backup_folder, zip_path):
+            if not self._compress_folder(
+                backup_folder, zip_path
+            ):
                 return None
 
             shutil.rmtree(backup_folder, ignore_errors=True)
 
             zip_size = os.path.getsize(zip_path)
-            self._update_stats("daily", zip_path, zip_size)
+            self._update_stats(
+                BACKUP_TYPE_DAILY, zip_path, zip_size
+            )
 
             elapsed_ms = (time.monotonic() - t_all) * 1000
             log_success(
-                f"✅ [BACKUP:daily] {os.path.basename(zip_path)} | "
-                f"src={src_size/1024:.1f}KB → zip={zip_size/1024:.1f}KB | "
+                f"✅ [BACKUP:daily] "
+                f"{os.path.basename(zip_path)} | "
+                f"src={src_size/1024:.1f}KB → "
+                f"zip={zip_size/1024:.1f}KB | "
                 f"copy={copy_ms:.0f}ms total={elapsed_ms:.0f}ms"
             )
             if elapsed_ms > _SLOW_BACKUP_MS:
                 log_warning(
-                    f"🐌 [BACKUP:daily] کند | {elapsed_ms:.0f}ms"
+                    f"🐌 [BACKUP:daily] کند | "
+                    f"{elapsed_ms:.0f}ms"
                 )
             return zip_path
 
         except Exception as e:
             log_error(
-                f"❌ [BACKUP:daily] {type(e).__name__}: {e}"
+                f"❌ [BACKUP:daily] "
+                f"{type(e).__name__}: {e}"
             )
             try:
-                shutil.rmtree(backup_folder, ignore_errors=True)
+                shutil.rmtree(
+                    backup_folder, ignore_errors=True
+                )
             except Exception:
                 pass
             return None
@@ -535,7 +730,9 @@ class BackupService:
         t_all = time.monotonic()
         log_info("▶️ [BACKUP:full] شروع")
 
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        timestamp = datetime.now().strftime(
+            "%Y-%m-%d_%H-%M-%S_%f"
+        )
         backup_folder = os.path.join(
             self.full_dir, f"full_backup_{timestamp}"
         )
@@ -545,16 +742,22 @@ class BackupService:
 
             # ─── DB ───
             db_copied = False
-            if os.path.exists(DB_PATH) and self._is_db_valid():
+            if (
+                os.path.exists(DB_PATH)
+                and self._is_db_valid()
+            ):
                 try:
                     shutil.copy2(
                         DB_PATH,
-                        os.path.join(backup_folder, "messages.db"),
+                        os.path.join(
+                            backup_folder, "messages.db"
+                        ),
                     )
                     db_copied = True
                 except Exception as e:
                     log_warning(
-                        f"⚠️ [BACKUP:full:db] {type(e).__name__}: {e}"
+                        f"⚠️ [BACKUP:full:db] "
+                        f"{type(e).__name__}: {e}"
                     )
 
             # ─── فایل‌های کد ───
@@ -562,63 +765,87 @@ class BackupService:
             code_files = self._get_code_files()
             file_count = 0
             copy_errors = 0
+
             for filepath in code_files:
                 src = os.path.join(BASE_DIR, filepath)
                 if not os.path.exists(src):
                     continue
-                dest = os.path.join(backup_folder, filepath)
+                dest = os.path.join(
+                    backup_folder, filepath
+                )
                 try:
-                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    os.makedirs(
+                        os.path.dirname(dest),
+                        exist_ok=True,
+                    )
                     shutil.copy2(src, dest)
                     file_count += 1
                 except Exception as e:
                     copy_errors += 1
                     if copy_errors <= 3:
                         log_warning(
-                            f"⚠️ [BACKUP:full:code] {filepath} | "
+                            f"⚠️ [BACKUP:full:code] "
+                            f"{filepath} | "
                             f"{type(e).__name__}: {e}"
                         )
             code_ms = (time.monotonic() - t_code) * 1000
 
-            # ─── گزارش ───
-            report = os.path.join(backup_folder, "INFO.txt")
-            with open(report, "w", encoding="utf-8") as f:
-                f.write(f"پشتیبان کامل - {timestamp}\n")
-                f.write(f"تعداد فایل‌های کد: {file_count}\n")
-                f.write(f"DB کپی‌شده: {'✅' if db_copied else '❌'}\n")
-                f.write(f"حجم دیتابیس: {self._get_db_size():,} bytes\n")
+            # ─── INFO ───
+            info_content = (
+                f"پشتیبان کامل - {timestamp}\n"
+                f"تعداد فایل‌های کد: {file_count}\n"
+                f"DB کپی‌شده: "
+                f"{'✅' if db_copied else '❌'}\n"
+                f"حجم دیتابیس: "
+                f"{self._get_db_size():,} bytes\n"
+            )
+            _atomic_write_text(
+                os.path.join(backup_folder, "INFO.txt"),
+                info_content,
+            )
 
             # ─── zip ───
             zip_path = os.path.join(
                 self.full_dir, f"full_backup_{timestamp}.zip"
             )
-            if not self._compress_folder(backup_folder, zip_path):
+            if not self._compress_folder(
+                backup_folder, zip_path
+            ):
                 return None
+
             shutil.rmtree(backup_folder, ignore_errors=True)
 
             zip_size = os.path.getsize(zip_path)
-            self._update_stats("full", zip_path, zip_size)
+            self._update_stats(
+                BACKUP_TYPE_FULL, zip_path, zip_size
+            )
 
             elapsed_ms = (time.monotonic() - t_all) * 1000
             log_success(
-                f"✅ [BACKUP:full] {os.path.basename(zip_path)} | "
+                f"✅ [BACKUP:full] "
+                f"{os.path.basename(zip_path)} | "
                 f"files={file_count} (err={copy_errors}) | "
                 f"db={'✅' if db_copied else '❌'} | "
-                f"code={code_ms:.0f}ms total={elapsed_ms:.0f}ms | "
+                f"code={code_ms:.0f}ms "
+                f"total={elapsed_ms:.0f}ms | "
                 f"zip={zip_size/1024:.1f}KB"
             )
             if elapsed_ms > _SLOW_BACKUP_MS:
                 log_warning(
-                    f"🐌 [BACKUP:full] کند | {elapsed_ms:.0f}ms"
+                    f"🐌 [BACKUP:full] کند | "
+                    f"{elapsed_ms:.0f}ms"
                 )
             return zip_path
 
         except Exception as e:
             log_error(
-                f"❌ [BACKUP:full] {type(e).__name__}: {e}"
+                f"❌ [BACKUP:full] "
+                f"{type(e).__name__}: {e}"
             )
             try:
-                shutil.rmtree(backup_folder, ignore_errors=True)
+                shutil.rmtree(
+                    backup_folder, ignore_errors=True
+                )
             except Exception:
                 pass
             return None
@@ -627,7 +854,7 @@ class BackupService:
     # check_code_changes
     # ═══════════════════════════════════════════
     def check_code_changes(self) -> list[str]:
-        """مقایسه hash فایل‌ها → لیست تغییرات."""
+        """مقایسه hash فایل‌ها → تغییرات."""
         t0 = time.monotonic()
         hashes = self._load_hashes()
         changes: list[str] = []
@@ -650,7 +877,7 @@ class BackupService:
                 changes.append(f"حذف: {filepath}")
                 del hashes[filepath]
 
-        # به‌روزرسانی hashes
+        # به‌روزرسانی
         for filepath in current_files:
             full = os.path.join(BASE_DIR, filepath)
             if os.path.exists(full):
@@ -662,21 +889,28 @@ class BackupService:
 
         elapsed_ms = (time.monotonic() - t0) * 1000
         if changes:
-            preview = ", ".join(c[:60] for c in changes[:3])
-            more = f" و {len(changes) - 3} دیگر" if len(changes) > 3 else ""
+            preview = ", ".join(
+                c[:60] for c in changes[:3]
+            )
+            more = (
+                f" و {len(changes) - 3} دیگر"
+                if len(changes) > 3 else ""
+            )
             log_info(
-                f"🔍 [BACKUP:changes] {len(changes)} تغییر از "
-                f"{len(current_files)} فایل | {preview}{more} | "
-                f"{elapsed_ms:.0f}ms"
+                f"🔍 [BACKUP:changes] {len(changes)} تغییر "
+                f"از {len(current_files)} فایل | "
+                f"{preview}{more} | {elapsed_ms:.0f}ms"
             )
         else:
             log_info(
                 f"🔍 [BACKUP:changes] بدون تغییر | "
-                f"{len(current_files)} فایل چک شد | {elapsed_ms:.0f}ms"
+                f"{len(current_files)} فایل چک شد | "
+                f"{elapsed_ms:.0f}ms"
             )
         if elapsed_ms > _SLOW_HASH_MS:
             log_warning(
-                f"🐌 [BACKUP:changes] کند | {elapsed_ms:.0f}ms"
+                f"🐌 [BACKUP:changes] کند | "
+                f"{elapsed_ms:.0f}ms"
             )
         return changes
 
@@ -693,18 +927,18 @@ class BackupService:
             return elapsed_h >= DAILY_BACKUP_HOURS
         except Exception as e:
             log_warning(
-                f"⚠️ [BACKUP:should_daily] {type(e).__name__}: {e} — "
-                f"پیش‌فرض True"
+                f"⚠️ [BACKUP:should_daily] "
+                f"{type(e).__name__}: {e} — پیش‌فرض True"
             )
             return True
 
     def _mark_daily_done(self) -> None:
-        try:
-            with open(self.last_backup_file, "w") as f:
-                f.write(str(time.time()))
-        except Exception as e:
+        ok = _atomic_write_text(
+            self.last_backup_file, str(time.time())
+        )
+        if not ok:
             log_warning(
-                f"⚠️ [BACKUP:mark_daily] {type(e).__name__}: {e}"
+                f"⚠️ [BACKUP:mark_daily] ذخیره ناموفق"
             )
 
     def _should_backup_full(self) -> bool:
@@ -717,18 +951,18 @@ class BackupService:
             return elapsed_days >= FULL_BACKUP_DAYS
         except Exception as e:
             log_warning(
-                f"⚠️ [BACKUP:should_full] {type(e).__name__}: {e} — "
-                f"پیش‌فرض True"
+                f"⚠️ [BACKUP:should_full] "
+                f"{type(e).__name__}: {e} — پیش‌فرض True"
             )
             return True
 
     def _mark_full_done(self) -> None:
-        try:
-            with open(self.last_full_backup_file, "w") as f:
-                f.write(str(time.time()))
-        except Exception as e:
+        ok = _atomic_write_text(
+            self.last_full_backup_file, str(time.time())
+        )
+        if not ok:
             log_warning(
-                f"⚠️ [BACKUP:mark_full] {type(e).__name__}: {e}"
+                f"⚠️ [BACKUP:mark_full] ذخیره ناموفق"
             )
 
     # ═══════════════════════════════════════════
@@ -740,11 +974,16 @@ class BackupService:
         removed_daily: list[str] = []
         removed_full: list[str] = []
 
+        # 🎯 min=1
+        keep_daily = max(1, KEEP_DAILY_BACKUPS)
+        keep_full = max(1, KEEP_FULL_BACKUPS)
+
         try:
             daily = sorted(
-                f for f in os.listdir(self.daily_dir) if f.endswith(".zip")
+                f for f in os.listdir(self.daily_dir)
+                if f.endswith(".zip")
             )
-            while len(daily) > KEEP_DAILY_BACKUPS:
+            while len(daily) > keep_daily:
                 oldest = daily.pop(0)
                 p = os.path.join(self.daily_dir, oldest)
                 try:
@@ -754,19 +993,22 @@ class BackupService:
                     continue
                 except Exception as e:
                     log_warning(
-                        f"⚠️ [BACKUP:cleanup:daily] {oldest} | "
+                        f"⚠️ [BACKUP:cleanup:daily] "
+                        f"{oldest} | "
                         f"{type(e).__name__}: {e}"
                     )
         except Exception as e:
             log_warning(
-                f"⚠️ [BACKUP:cleanup:daily] {type(e).__name__}: {e}"
+                f"⚠️ [BACKUP:cleanup:daily] "
+                f"{type(e).__name__}: {e}"
             )
 
         try:
             full = sorted(
-                f for f in os.listdir(self.full_dir) if f.endswith(".zip")
+                f for f in os.listdir(self.full_dir)
+                if f.endswith(".zip")
             )
-            while len(full) > KEEP_FULL_BACKUPS:
+            while len(full) > keep_full:
                 oldest = full.pop(0)
                 p = os.path.join(self.full_dir, oldest)
                 try:
@@ -776,33 +1018,43 @@ class BackupService:
                     continue
                 except Exception as e:
                     log_warning(
-                        f"⚠️ [BACKUP:cleanup:full] {oldest} | "
+                        f"⚠️ [BACKUP:cleanup:full] "
+                        f"{oldest} | "
                         f"{type(e).__name__}: {e}"
                     )
         except Exception as e:
             log_warning(
-                f"⚠️ [BACKUP:cleanup:full] {type(e).__name__}: {e}"
+                f"⚠️ [BACKUP:cleanup:full] "
+                f"{type(e).__name__}: {e}"
             )
 
         elapsed_ms = (time.monotonic() - t0) * 1000
         if removed_daily or removed_full:
             log_info(
-                f"🧹 [BACKUP:cleanup] daily={len(removed_daily)} "
-                f"full={len(removed_full)} | {elapsed_ms:.0f}ms"
+                f"🧹 [BACKUP:cleanup] "
+                f"daily={len(removed_daily)} "
+                f"full={len(removed_full)} | "
+                f"{elapsed_ms:.0f}ms"
             )
         else:
             log_info(
-                f"ℹ️ [BACKUP:cleanup] چیزی برای حذف نبود | {elapsed_ms:.0f}ms"
+                f"ℹ️ [BACKUP:cleanup] چیزی برای حذف نبود | "
+                f"{elapsed_ms:.0f}ms"
             )
 
     # ═══════════════════════════════════════════
     # run_periodic
     # ═══════════════════════════════════════════
     async def run_periodic(self) -> None:
+        """حلقهٔ periodic با بیداری سریع در stop."""
+        self._stop_event = asyncio.Event()
+
         log_info(
-            f"▶️ [BACKUP:periodic] شروع | هر {POKE_INTERVAL_SECONDS}s"
+            f"▶️ [BACKUP:periodic] شروع | "
+            f"هر {POKE_INTERVAL_SECONDS}s"
         )
         iteration = 0
+
         while self._running:
             iteration += 1
             t0 = time.monotonic()
@@ -811,25 +1063,31 @@ class BackupService:
 
                 if changes and self._should_backup_full():
                     log_info(
-                        f"📦 [BACKUP:periodic] {len(changes)} تغییر — "
+                        f"📦 [BACKUP:periodic] "
+                        f"{len(changes)} تغییر — "
                         f"شروع backup کامل"
                     )
                     if await self.backup_full():
                         self._mark_full_done()
                 elif changes:
                     log_info(
-                        f"ℹ️ [BACKUP:periodic] {len(changes)} تغییر ولی "
+                        f"ℹ️ [BACKUP:periodic] "
+                        f"{len(changes)} تغییر ولی "
                         f"هنوز زمان backup کامل نشده "
                         f"(هر {FULL_BACKUP_DAYS}روز)"
                     )
 
                 if self._should_backup_daily():
-                    log_info("📦 [BACKUP:periodic] شروع backup روزانه")
+                    log_info(
+                        "📦 [BACKUP:periodic] "
+                        "شروع backup روزانه"
+                    )
                     if await self.backup_daily():
                         self._mark_daily_done()
                 else:
                     log_info(
-                        f"ℹ️ [BACKUP:periodic] backup روزانه هنوز لازم نیست "
+                        f"ℹ️ [BACKUP:periodic] backup روزانه "
+                        f"هنوز لازم نیست "
                         f"(هر {DAILY_BACKUP_HOURS}h)"
                     )
 
@@ -837,40 +1095,115 @@ class BackupService:
 
                 elapsed_ms = (time.monotonic() - t0) * 1000
                 log_info(
-                    f"✔️ [BACKUP:periodic] iter#{iteration} | "
-                    f"{elapsed_ms:.0f}ms | next={POKE_INTERVAL_SECONDS}s"
+                    f"✔️ [BACKUP:periodic] "
+                    f"iter#{iteration} | {elapsed_ms:.0f}ms | "
+                    f"next={POKE_INTERVAL_SECONDS}s"
                 )
 
             except asyncio.CancelledError:
                 log_info(
-                    f"🛑 [BACKUP:periodic] cancel (iter#{iteration})"
+                    f"🛑 [BACKUP:periodic] cancel "
+                    f"(iter#{iteration})"
                 )
                 raise
             except Exception as e:
                 log_error(
-                    f"❌ [BACKUP:periodic] iter#{iteration} | "
+                    f"❌ [BACKUP:periodic] "
+                    f"iter#{iteration} | "
                     f"{type(e).__name__}: {e}"
                 )
 
-            await asyncio.sleep(POKE_INTERVAL_SECONDS)
+            # ─── sleep با بیداری سریع ───
+            if self._stop_event is not None:
+                try:
+                    await asyncio.wait_for(
+                        self._stop_event.wait(),
+                        timeout=POKE_INTERVAL_SECONDS,
+                    )
+                    break  # stop شد
+                except TimeoutError:
+                    pass
+            else:
+                await asyncio.sleep(POKE_INTERVAL_SECONDS)
 
-    def stop(self):
+        log_info(
+            f"🛑 [BACKUP:periodic] حلقه متوقف شد | "
+            f"iterations={iteration}"
+        )
+
+    def stop(self) -> None:
+        """توقف حلقه."""
         self._running = False
+        if self._stop_event is not None:
+            try:
+                self._stop_event.set()
+            except Exception:
+                pass
         log_info("🛑 [BACKUP:stop] درخواست توقف")
 
     # ═══════════════════════════════════════════
     # manual triggers
     # ═══════════════════════════════════════════
     async def manual_full(self) -> str | None:
-        log_info("🔧 [BACKUP:manual] full — درخواست دستی")
+        log_info(
+            "🔧 [BACKUP:manual] full — درخواست دستی"
+        )
         return await self.backup_full()
 
     async def manual_daily(self) -> str | None:
-        log_info("🔧 [BACKUP:manual] daily — درخواست دستی")
+        log_info(
+            "🔧 [BACKUP:manual] daily — درخواست دستی"
+        )
         return await self.backup_daily()
 
-    def get_stats(self) -> dict:
-        return self._load_stats()
+    # ═══════════════════════════════════════════
+    # debug
+    # ═══════════════════════════════════════════
+    def get_stats(self) -> dict[str, Any]:
+        """🎯 خلاصهٔ وضعیت — برای debug."""
+        stats = self._load_stats()
+        hashes = self._load_hashes()
+
+        # شمارش فایل‌های بکاپ
+        daily_count = 0
+        full_count = 0
+        try:
+            daily_count = len([
+                f for f in os.listdir(self.daily_dir)
+                if f.endswith(".zip")
+            ])
+        except Exception:
+            pass
+        try:
+            full_count = len([
+                f for f in os.listdir(self.full_dir)
+                if f.endswith(".zip")
+            ])
+        except Exception:
+            pass
+
+        return {
+            "running": self._running,
+            "db_path": DB_PATH,
+            "backup_dir": BACKUP_DIR,
+            "daily_count": daily_count,
+            "full_count": full_count,
+            "keep_daily": KEEP_DAILY_BACKUPS,
+            "keep_full": KEEP_FULL_BACKUPS,
+            "daily_hours": DAILY_BACKUP_HOURS,
+            "full_days": FULL_BACKUP_DAYS,
+            "poke_seconds": POKE_INTERVAL_SECONDS,
+            "hashes_count": len(hashes),
+            "sensitive_stems": list(_SENSITIVE_STEMS),
+            "stats_keys": list(stats.keys()),
+        }
+
+    def __repr__(self) -> str:
+        return (
+            f"<BackupService daily={KEEP_DAILY_BACKUPS} "
+            f"full={KEEP_FULL_BACKUPS} "
+            f"poke={POKE_INTERVAL_SECONDS}s>"
+        )
 
 
 # ═══════════════════════════════════════════
@@ -879,6 +1212,7 @@ class BackupService:
 async def start_backup_service() -> BackupService:
     """ساخت BackupService + راه‌اندازی حلقهٔ periodic."""
     log_info("🚀 [BACKUP:start] راه‌اندازی...")
+
     try:
         backup = BackupService()
         backup.init()
@@ -890,12 +1224,18 @@ async def start_backup_service() -> BackupService:
         raise
 
     try:
-        asyncio.create_task(backup.run_periodic())
+        # 🎯 FIX: نگه‌داری reference
+        task = asyncio.create_task(
+            backup.run_periodic(),
+            name="backup_periodic",
+        )
+        backup._pending_tasks.append(task)
         log_success(
             f"✅ [BACKUP:start] حلقه راه افتاد | "
             f"daily={DAILY_BACKUP_HOURS}h | "
             f"full={FULL_BACKUP_DAYS}d | "
-            f"keep(daily/full)={KEEP_DAILY_BACKUPS}/{KEEP_FULL_BACKUPS}"
+            f"keep(daily/full)={KEEP_DAILY_BACKUPS}/"
+            f"{KEEP_FULL_BACKUPS}"
         )
     except Exception as e:
         log_error(
@@ -903,3 +1243,22 @@ async def start_backup_service() -> BackupService:
             f"{type(e).__name__}: {e}"
         )
     return backup
+
+
+# ═══════════════════════════════════════════
+# __all__
+# ═══════════════════════════════════════════
+__all__ = [
+    "BackupService",
+    "start_backup_service",
+    "DB_PATH",
+    "BACKUP_DIR",
+    "DAILY_BACKUP_HOURS",
+    "KEEP_DAILY_BACKUPS",
+    "KEEP_FULL_BACKUPS",
+    "FULL_BACKUP_DAYS",
+    "POKE_INTERVAL_SECONDS",
+    "BACKUP_TYPE_DAILY",
+    "BACKUP_TYPE_FULL",
+    "_is_sensitive_filename",
+]

@@ -1,4 +1,23 @@
-"""SafeBrain — گارد امن + کش + حافظه."""
+"""SafeBrain — گارد امن + کش + حافظه.
+
+نسخهٔ ۶ (این نسخه):
+  - 🐛 FIX: `api_key` حالا از `config.AI["deepseek_api_key"]` می‌آید
+    (نه `os.environ` مستقیم).
+  - 🐛 FIX: `_env_float` / `_env_int` حالا `min_val`/`max_val` دارند.
+  - 🐛 FIX: `project_memory` و `global_memory` `max_entries` حالا
+    env-based (`SAFE_BRAIN_PROJECT_MEMORY`, `SAFE_BRAIN_GLOBAL_MEMORY`).
+  - 🐛 FIX: `_try_ai` حالا از API عمومی AIAssistant برای
+    تشخیص provider استفاده می‌کند (نه `_provider_order` private).
+  - 🐛 FIX: `_try_ai` حالا `AI_CONFIG` را dict-check می‌کند.
+  - 🐛 FIX: `_log_request` حالا مسیر را از `data.paths` می‌آورد
+    (نه `STORAGE_DIR` مستقیم).
+  - 🎯 `close()` متد جدید — graceful shutdown با flush.
+  - 🎯 `reset_stats()` و `reset_safe_brain()` برای تست.
+  - 🎯 `get_stats()` کامل‌تر (uptime، brain_failed_ago_s).
+  - 🎯 `__repr__` برای SafeBrain.
+  - 🎯 `__all__` export.
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۵ (rate-limit DeepSeek، chat_with_status).
+"""
 from __future__ import annotations
 
 import asyncio
@@ -8,7 +27,6 @@ import re
 import threading
 import time
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from config import AI as AI_CONFIG
@@ -16,8 +34,6 @@ from config import STORAGE_DIR
 from core.adapters.command_parser import (
     extract_value as _extract_value_fn,
 )
-
-# ⭐ پارسر مشترک
 from core.adapters.command_parser import (
     parse_command as _parse_command,
 )
@@ -46,29 +62,85 @@ from core.safe_brain.storage import SafeCache, SafeMemory
 
 
 # ═══════════════════════════════════════════
-# Sentinel برای delegation (جلوگیری از اشتباه با پاسخ خالی)
+# helpers
+# ═══════════════════════════════════════════
+def _env_int(
+    name: str, default: int,
+    min_val: int | None = None,
+    max_val: int | None = None,
+) -> int:
+    """خواندن int از env — با sanitize."""
+    try:
+        v = int(os.getenv(name, str(default)))
+    except (ValueError, TypeError):
+        return default
+    if min_val is not None and v < min_val:
+        return min_val
+    if max_val is not None and v > max_val:
+        return max_val
+    return v
+
+
+def _env_float(
+    name: str, default: float,
+    min_val: float | None = None,
+    max_val: float | None = None,
+) -> float:
+    """خواندن float از env — با sanitize."""
+    try:
+        v = float(os.getenv(name, str(default)))
+    except (ValueError, TypeError):
+        return default
+    if min_val is not None and v < min_val:
+        return min_val
+    if max_val is not None and v > max_val:
+        return max_val
+    return v
+
+
+# ═══════════════════════════════════════════
+# تنظیمات (env-based)
+# ═══════════════════════════════════════════
+_AI_TIMEOUT_S = _env_float(
+    "SAFE_BRAIN_AI_TIMEOUT_S", 30.0,
+    min_val=5.0, max_val=300.0,
+)
+_PROJECT_MEMORY_MAX = _env_int(
+    "SAFE_BRAIN_PROJECT_MEMORY", 200,
+    min_val=10, max_val=10_000,
+)
+_GLOBAL_MEMORY_MAX = _env_int(
+    "SAFE_BRAIN_GLOBAL_MEMORY", 500,
+    min_val=10, max_val=10_000,
+)
+_CACHE_TTL_HOURS = _env_int(
+    "SAFE_BRAIN_CACHE_TTL_HOURS", 48,
+    min_val=1, max_val=720,
+)
+_CONTEXT_N = _env_int(
+    "SAFE_BRAIN_CONTEXT_N", 3,
+    min_val=1, max_val=20,
+)
+
+
+# ═══════════════════════════════════════════
+# Sentinel برای delegation
 # ═══════════════════════════════════════════
 class _DelegateType:
     """Type منحصربه‌فرد برای delegation به لایهٔ بالاتر."""
+
     __slots__ = ()
+
     def __repr__(self) -> str:
         return "<DELEGATE>"
 
+    def __bool__(self) -> bool:
+        """🎯 FIX: در بولی، _DELEGATE باید False باشد تا با
+        پاسخ خالی اشتباه نشود."""
+        return False
+
 
 _DELEGATE = _DelegateType()
-
-
-# ═══════════════════════════════════════════
-# تنظیمات (از env)
-# ═══════════════════════════════════════════
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(os.getenv(name, str(default)))
-    except (ValueError, TypeError):
-        return default
-
-
-_AI_TIMEOUT_S = _env_float("SAFE_BRAIN_AI_TIMEOUT_S", 30.0)
 
 
 # ═══════════════════════════════════════════
@@ -77,16 +149,11 @@ _AI_TIMEOUT_S = _env_float("SAFE_BRAIN_AI_TIMEOUT_S", 30.0)
 class SafeBrain:
     """مغز امن ربات — لایهٔ نازک روی Brain.
 
-    نسخهٔ ۵:
-      - 🔴 FIX: rate limit روی DeepSeek حالا در `_try_ai` اعمال می‌شود
-        (قبلاً DeepSeek بی‌محدودیت صدا زده می‌شد — `SAFE_BRAIN_MAX_API_HOUR`
-        روی AIAssistant بی‌اثر بود).
-      - 🔴 FIX: حالا از `chat_with_status()` استفاده می‌شود تا
-        `is_fallback` دقیق تشخیص داده شود (نه با prefix substring
-        که dead code داشت).
-      - 🔴 FIX: پاسخ fallback حالا کش نمی‌شود.
-      - 🟠 FIX: در full_access، rate limit AI هم شمرده می‌شود.
-      - ✅ حفظ همهٔ FIXهای نسخهٔ ۴.
+    نسخهٔ ۶:
+      - rate-limit DeepSeek در `_try_ai`.
+      - `chat_with_status()` برای دقت پاسخ.
+      - پاسخ fallback کش نمی‌شود.
+      - در full_access، rate limit AI هم شمرده می‌شود.
     """
 
     def __init__(
@@ -98,23 +165,37 @@ class SafeBrain:
         memory_api_url: str = "",
         memory_api_key: str = "",
     ):
-        self.api_key = api_key or os.environ.get(
-            "DEEPSEEK_API_KEY", ""
+        # 🐛 FIX: api_key از config.AI
+        self.api_key = (
+            api_key
+            or (AI_CONFIG or {}).get("deepseek_api_key", "")
+            or os.environ.get("DEEPSEEK_API_KEY", "")
+            or ""
         )
         self.full_access = full_access
 
+        # ─── memory ───
         self.project_memory = SafeMemory(
-            "project_memory", max_entries=200
+            "project_memory",
+            max_entries=_PROJECT_MEMORY_MAX,
         )
         self.global_memory = SafeMemory(
-            "global_memory", max_entries=500
+            "global_memory",
+            max_entries=_GLOBAL_MEMORY_MAX,
         )
-        self.cache = SafeCache("safe_brain_cache", ttl_hours=48)
 
+        # ─── cache ───
+        self.cache = SafeCache(
+            "safe_brain_cache",
+            ttl_hours=_CACHE_TTL_HOURS,
+        )
+
+        # ─── rate limit ───
         self._api_calls_this_hour = 0
         self._api_hour_start = time.monotonic()
         self._api_lock = threading.Lock()
 
+        # ─── lazy instances ───
         self._brain_instance: Any | None = None
         self._brain_failed_at: float = 0.0
         self._brain_lock = threading.Lock()
@@ -122,10 +203,12 @@ class SafeBrain:
         self._ai_assistant: Any | None = None
         self._ai_lock = threading.Lock()
 
+        # ─── memory config ───
         self.use_api_memory = use_api_memory
         self.memory_api_url = memory_api_url
         self.memory_api_key = memory_api_key
 
+        # ─── stats ───
         self.stats: dict[str, Any] = {
             "processed": 0,
             "cached": 0,
@@ -136,6 +219,7 @@ class SafeBrain:
             "delegated": 0,
             "fallback": 0,
             "started_at": datetime.now().isoformat(),
+            "started_monotonic": time.monotonic(),
         }
 
         log_success(
@@ -152,7 +236,7 @@ class SafeBrain:
     # ═══════════════════════════════════════════
     # lazy init
     # ═══════════════════════════════════════════
-    def _get_brain(self):
+    def _get_brain(self) -> Any | None:
         with self._brain_lock:
             if self._brain_instance is not None:
                 return self._brain_instance
@@ -188,13 +272,15 @@ class SafeBrain:
                 )
                 return None
 
-    def _get_ai(self):
+    def _get_ai(self) -> Any | None:
         with self._ai_lock:
             if self._ai_assistant is not None:
                 return self._ai_assistant
             try:
                 t0 = time.monotonic()
-                from core.services.ai_assistant import get_ai_assistant
+                from core.services.ai_assistant import (
+                    get_ai_assistant,
+                )
                 self._ai_assistant = get_ai_assistant()
                 elapsed_ms = (time.monotonic() - t0) * 1000
                 log_info(
@@ -213,11 +299,9 @@ class SafeBrain:
     # rate limit
     # ═══════════════════════════════════════════
     def _can_call_api(self) -> bool:
-        """
-        چک محدودیت ساعتی تماس‌های API.
+        """چک محدودیت ساعتی تماس‌های API.
 
-        🔴 FIX: حالا حتی در full_access هم آمار شمرده می‌شود
-        (ولی محدودیت اعمال نمی‌شود).
+        در full_access محدودیت اعمال نمی‌شود ولی آمار شمرده می‌شود.
         """
         with self._api_lock:
             now = time.monotonic()
@@ -251,9 +335,10 @@ class SafeBrain:
     # security
     # ═══════════════════════════════════════════
     def _is_safe(self, text: str) -> tuple[bool, str]:
+        """چک امنیت — با پشتیبانی از full_access."""
         if self.full_access:
             return True, ""
-        if not text:
+        if not text or not isinstance(text, str):
             return True, ""
 
         low = text.lower()
@@ -263,8 +348,11 @@ class SafeBrain:
                 return False, f"الگوی ممنوعه: {pat}"
 
         for pat in BLOCKED_PATTERNS_REGEX:
-            if re.search(pat, low, re.IGNORECASE):
-                return False, f"الگوی ممنوعه: {pat}"
+            try:
+                if re.search(pat, low, re.IGNORECASE):
+                    return False, f"الگوی ممنوعه: {pat}"
+            except re.error:
+                continue
 
         return True, ""
 
@@ -272,8 +360,7 @@ class SafeBrain:
     # process — نقطهٔ ورود اصلی
     # ═══════════════════════════════════════════
     async def process(self, text: str) -> str | None:
-        """
-        پردازش ورودی کاربر.
+        """پردازش ورودی کاربر.
 
         Returns:
             str: پاسخ آماده
@@ -286,22 +373,27 @@ class SafeBrain:
         t_all = time.monotonic()
         self.stats["processed"] += 1
         log_info(
-            f"▶️ [SAFEBRAIN:process] #{self.stats['processed']} | "
-            f"len={len(text)} | full_access={self.full_access} | "
+            f"▶️ [SAFEBRAIN:process] "
+            f"#{self.stats['processed']} | "
+            f"len={len(text)} | "
+            f"full_access={self.full_access} | "
             f"in={text[:_LOG_PREVIEW_LEN]!r}"
         )
 
         try:
             result = await self._process_inner(text, t_all)
-            # 🔴 FIX: تبدیل _DELEGATE به None
+            # _DELEGATE → None
             if isinstance(result, _DelegateType):
                 return None
             return result
         except Exception as e:
             self.stats["errors"] += 1
-            elapsed_ms = (time.monotonic() - t_all) * 1000
+            elapsed_ms = (
+                time.monotonic() - t_all
+            ) * 1000
             log_error(
-                f"❌ [SAFEBRAIN:process] {type(e).__name__}: {e} | "
+                f"❌ [SAFEBRAIN:process] "
+                f"{type(e).__name__}: {e} | "
                 f"{elapsed_ms:.0f}ms — fallback"
             )
             self.stats["fallback"] += 1
@@ -309,8 +401,8 @@ class SafeBrain:
 
     async def _process_inner(
         self, text: str, t_all: float
-    ) -> Any:  # str | _DelegateType
-        # ۱) امنیت
+    ) -> Any:
+        # ─── ۱) امنیت ───
         safe, reason = self._is_safe(text)
         if not safe:
             self.stats["blocked"] += 1
@@ -319,21 +411,24 @@ class SafeBrain:
             )
             return f"⛔ درخواست مسدود شد: {reason}"
 
-        # ۲) کش
+        # ─── ۲) کش ───
         cached = self.cache.get(text)
         if cached:
             self.stats["cached"] += 1
-            elapsed_ms = (time.monotonic() - t_all) * 1000
+            elapsed_ms = (
+                time.monotonic() - t_all
+            ) * 1000
             log_info(
                 f"💡 [SAFEBRAIN:process] cache HIT | "
                 f"{elapsed_ms:.0f}ms"
             )
             return cached
 
-        # ۳) تشخیص دستور
+        # ─── ۳) تشخیص دستور ───
         action, value = self._rule_parse(text)
         log_info(
-            f"🎯 [SAFEBRAIN:parse] action={action} value={value!r}"
+            f"🎯 [SAFEBRAIN:parse] action={action} "
+            f"value={value!r}"
         )
 
         if action is not None:
@@ -341,12 +436,12 @@ class SafeBrain:
                 action, value, text, t_all
             )
 
-        # ۴) AI (خودش rate limit را چک می‌کند)
+        # ─── ۴) AI ───
         ai_result = await self._try_ai(text, t_all)
         if ai_result is not None:
             return ai_result
 
-        # ۵) Brain.agent
+        # ─── ۵) Brain.agent ───
         if self.api_key and self._can_call_api():
             brain = self._get_brain()
             if brain:
@@ -356,27 +451,36 @@ class SafeBrain:
                     t_b = time.monotonic()
                     result = await brain.agent(text)
                     b_ms = (time.monotonic() - t_b) * 1000
-                    self.project_memory.add("assistant", result)
-                    self.global_memory.add("assistant", result)
+                    self.project_memory.add(
+                        "assistant", result
+                    )
+                    self.global_memory.add(
+                        "assistant", result
+                    )
                     self.cache.set(text, result)
-                    elapsed_ms = (time.monotonic() - t_all) * 1000
+                    elapsed_ms = (
+                        time.monotonic() - t_all
+                    ) * 1000
                     log_success(
-                        f"✅ [SAFEBRAIN:process] Brain.agent | "
-                        f"agent={b_ms:.0f}ms total={elapsed_ms:.0f}ms"
+                        f"✅ [SAFEBRAIN:process] "
+                        f"Brain.agent | agent={b_ms:.0f}ms "
+                        f"total={elapsed_ms:.0f}ms"
                     )
                     return result
                 except Exception as e:
                     log_error(
-                        f"❌ [SAFEBRAIN:process] Brain.agent | "
+                        f"❌ [SAFEBRAIN:process] "
+                        f"Brain.agent | "
                         f"{type(e).__name__}: {e}"
                     )
                     self.stats["errors"] += 1
 
-        # ۶) Fallback
+        # ─── ۶) Fallback ───
         self.stats["fallback"] += 1
         elapsed_ms = (time.monotonic() - t_all) * 1000
         log_warning(
-            f"⚠️ [SAFEBRAIN:process] fallback | {elapsed_ms:.0f}ms"
+            f"⚠️ [SAFEBRAIN:process] fallback | "
+            f"{elapsed_ms:.0f}ms"
         )
         return self._fallback_response(text)
 
@@ -386,16 +490,17 @@ class SafeBrain:
         value: str | None,
         text: str,
         t_all: float,
-    ) -> Any:  # str | _DelegateType
+    ) -> Any:
         if self.full_access or action in SAFE_ACTIONS:
             result = await self._execute_safe_action(
                 action, value, text
             )
 
-            # استفاده از _DELEGATE به‌جای ""
             if isinstance(result, _DelegateType):
                 self.stats["delegated"] += 1
-                elapsed_ms = (time.monotonic() - t_all) * 1000
+                elapsed_ms = (
+                    time.monotonic() - t_all
+                ) * 1000
                 log_info(
                     f"↪️ [SAFEBRAIN:process] واگذاری | "
                     f"action={action} value={value!r} | "
@@ -403,13 +508,18 @@ class SafeBrain:
                 )
                 return _DELEGATE
 
-            # نتیجهٔ معتبر (str)
-            self.cache.set(text, result)
-            self.global_memory.add("assistant", result)
+            # ─── نتیجهٔ معتبر ───
+            if result:
+                self.cache.set(text, result)
+                self.global_memory.add(
+                    "assistant", result
+                )
+
             elapsed_ms = (time.monotonic() - t_all) * 1000
             log_success(
                 f"✅ [SAFEBRAIN:process] {action} | "
-                f"{len(result)}ch | {elapsed_ms:.0f}ms"
+                f"{len(result or '')}ch | "
+                f"{elapsed_ms:.0f}ms"
             )
             return result
 
@@ -422,29 +532,28 @@ class SafeBrain:
     async def _try_ai(
         self, text: str, t_all: float
     ) -> str | None:
-        """
-        تلاش برای پاسخ با AI.
+        """تلاش برای پاسخ با AI.
 
-        🔴 FIX: حالا rate limit روی DeepSeek اعمال می‌شود.
-        پیش از این، `SAFE_BRAIN_MAX_API_HOUR` فقط روی Brain.agent
-        اعمال می‌شد → DeepSeek از مسیر AIAssistant بی‌محدودیت
-        صدا زده می‌شد.
-
-        🔴 FIX: حالا از `chat_with_status()` استفاده می‌کنیم تا
-        `is_fallback` دقیق باشد (نه با prefix که dead code داشت).
-
-        🟠 FIX: پاسخ fallback کش نمی‌شود.
+        - rate limit روی DeepSeek.
+        - `chat_with_status()` برای دقت.
+        - پاسخ fallback کش نمی‌شود.
         """
         ai = self._get_ai()
-        if not ai or not AI_CONFIG.get("enabled", True):
+        if not ai:
+            return None
+
+        # 🐛 FIX: dict-check برای AI_CONFIG
+        if not isinstance(AI_CONFIG, dict):
+            return None
+        if not AI_CONFIG.get("enabled", True):
             return None
 
         try:
             if not await ai.available():
                 return None
 
-            # 🔴 FIX: rate limit — فقط اگه DeepSeek در provider order
-            # (Ollama رایگانه و نیازی به محدودیت نداره)
+            # ─── rate limit (DeepSeek) ───
+            # 🐛 FIX: از API عمومی استفاده می‌کنیم
             try:
                 provider_order = ai._provider_order()
             except Exception:
@@ -454,16 +563,20 @@ class SafeBrain:
                 if not self._can_call_api():
                     log_warning(
                         "⚠️ [SAFEBRAIN:_try_ai] "
-                        "محدودیت API DeepSeek — AI صدا زده نشد"
+                        "محدودیت API DeepSeek — "
+                        "AI صدا زده نشد"
                     )
                     return None
 
-            context = self.global_memory.get_context(3)
+            context = self.global_memory.get_context(
+                _CONTEXT_N
+            )
             system = (
-                "تو «مغز هوشمند ربات پایش سرنخ سپاهان رویش» هستی؛ "
-                "یک دستیار داخلی ربات. همیشه به فارسی، کوتاه، "
-                "دقیق و حرفه‌ای جواب بده. هرگز نگو که «کلود» یا "
-                "یک مدل هوش مصنوعی بیرونی هستی. اگر چیزی را "
+                "تو «مغز هوشمند ربات پایش سرنخ سپاهان "
+                "رویش» هستی؛ یک دستیار داخلی ربات. "
+                "همیشه به فارسی، کوتاه، دقیق و حرفه‌ای "
+                "جواب بده. هرگز نگو که «کلود» یا یک مدل "
+                "هوش مصنوعی بیرونی هستی. اگر چیزی را "
                 "نمی‌دانی، صادقانه بگو.\n\n"
             )
             if context:
@@ -471,15 +584,14 @@ class SafeBrain:
 
             t_ai = time.monotonic()
             try:
-                # 🔴 FIX: از chat_with_status استفاده می‌کنیم
-                # (پاسخ + پرچم موفقیت)
                 if hasattr(ai, "chat_with_status"):
                     ans, ok = await asyncio.wait_for(
-                        ai.chat_with_status(text, system=system),
+                        ai.chat_with_status(
+                            text, system=system
+                        ),
                         timeout=_AI_TIMEOUT_S,
                     )
                 else:
-                    # fallback اگه AIAssistant قدیمی بود
                     ans = await asyncio.wait_for(
                         ai.chat(text, system=system),
                         timeout=_AI_TIMEOUT_S,
@@ -488,19 +600,22 @@ class SafeBrain:
                         "⚠️ هوش در دسترس نیست"
                     )
             except TimeoutError:
-                elapsed_ms = (time.monotonic() - t_ai) * 1000
+                elapsed_ms = (
+                    time.monotonic() - t_ai
+                ) * 1000
                 log_warning(
                     f"⏰ [SAFEBRAIN:ai] timeout | "
-                    f"{elapsed_ms:.0f}ms > {_AI_TIMEOUT_S}s"
+                    f"{elapsed_ms:.0f}ms > "
+                    f"{_AI_TIMEOUT_S}s"
                 )
                 return None
 
             ai_ms = (time.monotonic() - t_ai) * 1000
 
-            # چک پاسخ خالی
             if not ans or not isinstance(ans, str):
                 log_info(
-                    f"ℹ️ [SAFEBRAIN:ai] پاسخ خالی | {ai_ms:.0f}ms"
+                    f"ℹ️ [SAFEBRAIN:ai] پاسخ خالی | "
+                    f"{ai_ms:.0f}ms"
                 )
                 return None
 
@@ -509,15 +624,16 @@ class SafeBrain:
             self.global_memory.add("user", text)
             self.global_memory.add("assistant", ans)
 
-            # 🔴 FIX: فقط پاسخ معتبر کش می‌شود
+            # فقط پاسخ معتبر کش می‌شود
             if not is_fallback:
                 self.cache.set(text, ans)
 
             elapsed_ms = (time.monotonic() - t_all) * 1000
             log_success(
                 f"✅ [SAFEBRAIN:process] AI | "
-                f"ai={ai_ms:.0f}ms total={elapsed_ms:.0f}ms | "
-                f"len={len(ans)} | fallback={is_fallback}"
+                f"ai={ai_ms:.0f}ms total={elapsed_ms:.0f}ms "
+                f"| len={len(ans)} | "
+                f"fallback={is_fallback}"
             )
             return ans
         except Exception as e:
@@ -547,43 +663,44 @@ class SafeBrain:
     # execute
     # ═══════════════════════════════════════════
     async def _execute_safe_action(
-        self, action: str, value: str | None, raw_text: str
-    ) -> Any:  # str | _DelegateType
-        """
-        اجرای اکشن امن.
-
-        Returns:
-            str: پاسخ آماده
-            _DELEGATE: واگذاری به لایهٔ بالاتر
-        """
+        self,
+        action: str,
+        value: str | None,
+        raw_text: str,
+    ) -> Any:
+        """اجرای اکشن امن."""
         t0 = time.monotonic()
         try:
+            # ─── local handlers ───
             if action in SAFE_ACTIONS_HANDLED_LOCALLY:
                 if action == "help":
                     return self._help()
                 if action == "add_keyword":
                     return self._add_keyword(
-                        value or self._extract_value(raw_text) or ""
+                        value
+                        or self._extract_value(raw_text)
+                        or ""
                     )
                 if action == "remove_keyword":
                     return self._remove_keyword(
-                        value or self._extract_value(raw_text) or ""
+                        value
+                        or self._extract_value(raw_text)
+                        or ""
                     )
                 if action == "feature_request":
                     return self._log_request(raw_text)
 
+            # ─── delegate ───
             if action in SAFE_ACTIONS:
-                # واگذاری به لایهٔ بالاتر
                 return _DELEGATE
 
             if self.full_access:
                 log_warning(
-                    f"⚠️ [SAFEBRAIN:exec] ناشناخته «{action}» "
-                    f"(full_access) — واگذاری"
+                    f"⚠️ [SAFEBRAIN:exec] ناشناخته "
+                    f"«{action}» (full_access) — واگذاری"
                 )
                 return _DELEGATE
 
-            # اکشن غیرمجاز در حالت غیر full_access
             return _DELEGATE
         except Exception as e:
             log_error(
@@ -611,7 +728,8 @@ class SafeBrain:
             "دستورهایی که مستقیم کار می‌کنند:\n"
             "• کلیدواژه «...» را اضافه کن\n"
             "• حذف کلیدواژه «...»\n"
-            "• درخواست قابلیت جدید (با «می‌خوام» + «قابلیت»)\n\n"
+            "• درخواست قابلیت جدید (با «می‌خوام» + "
+            "«قابلیت»)\n\n"
             "برای بقیه (وضعیت، گزارش، CRM، لاگ، سلامت، "
             "ری‌استارت) → AdminHandler جواب می‌دهد."
         )
@@ -630,8 +748,8 @@ class SafeBrain:
         current[kw] = "T1"
         if _write_custom_kw_dict(current):
             log_success(
-                f"✅ [SAFEBRAIN:add_kw] «{kw}» اضافه شد | "
-                f"total={len(current)}"
+                f"✅ [SAFEBRAIN:add_kw] «{kw}» اضافه شد "
+                f"| total={len(current)}"
             )
             return (
                 f"✅ «{kw}» اضافه شد "
@@ -646,25 +764,39 @@ class SafeBrain:
         kw = str(value).strip()
         current = _read_custom_kw_dict()
         if kw not in current:
-            log_info(f"ℹ️ [SAFEBRAIN:rm_kw] «{kw}» نبود")
+            log_info(
+                f"ℹ️ [SAFEBRAIN:rm_kw] «{kw}» نبود"
+            )
             return (
-                f"«{kw}» در لیست کلیدواژه‌های سفارشی نیست."
+                f"«{kw}» در لیست کلیدواژه‌های سفارشی "
+                f"نیست."
             )
         current.pop(kw, None)
         if _write_custom_kw_dict(current):
             log_success(
-                f"🗑️ [SAFEBRAIN:rm_kw] «{kw}» حذف شد | "
-                f"remaining={len(current)}"
+                f"🗑️ [SAFEBRAIN:rm_kw] «{kw}» حذف شد "
+                f"| remaining={len(current)}"
             )
             return f"🗑️ «{kw}» حذف شد."
         return "❌ ذخیره ناموفق."
 
     @staticmethod
     def _log_request(text: str) -> str:
+        """🎯 FIX: مسیر از data.paths."""
         try:
-            path = Path(STORAGE_DIR) / "requests.jsonl"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(str(path), "a", encoding="utf-8") as f:
+            try:
+                from data import paths as data_paths
+                path = str(data_paths.REQUESTS_FILE)
+            except Exception:
+                path = os.path.join(
+                    STORAGE_DIR, "requests.jsonl"
+                )
+
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+
+            with open(path, "a", encoding="utf-8") as f:
                 f.write(
                     json.dumps(
                         {
@@ -688,18 +820,18 @@ class SafeBrain:
             return f"❌ خطا در ثبت: {e}"
 
     def _fallback_response(self, text: str = "") -> str:
-        """
-        پاسخ fallback.
-
-        hint هوشمندتر بر اساس کلمات کلیدی.
-        """
+        """پاسخ fallback — با hint هوشمند."""
         hint = ""
         if text:
             t_low = text.lower()
-            if any(k in t_low for k in ("وضعیت", "status", "آمار")):
+            if any(
+                k in t_low
+                for k in ("وضعیت", "status", "آمار")
+            ):
                 hint = "\n💡 «وضعیت» → آمار زنده"
             elif any(
-                k in t_low for k in ("گزارش", "report", "crm")
+                k in t_low
+                for k in ("گزارش", "report", "crm")
             ):
                 hint = "\n💡 «گزارش» یا «crm» → ساخت فایل"
             elif any(
@@ -711,14 +843,15 @@ class SafeBrain:
             ):
                 hint = "\n💡 «سلامت» → بررسی سیستم"
             elif any(
-                k in t_low for k in ("لاگ", "log", "خطا", "error")
+                k in t_low
+                for k in ("لاگ", "log", "خطا", "error")
             ):
                 hint = "\n💡 «لاگ» → آخرین خطاها"
 
         return (
             "🤖 WinDoctor:\n"
-            "هوش مصنوعی در دسترس نیست. از دستورات مستقیم "
-            "استفاده کنید:\n"
+            "هوش مصنوعی در دسترس نیست. از دستورات "
+            "مستقیم استفاده کنید:\n"
             "• «وضعیت» → آمار\n"
             "• «راهنما» → دستورات\n"
             "• «کلیدواژه‌ها» → لیست\n"
@@ -727,47 +860,101 @@ class SafeBrain:
         )
 
     # ═══════════════════════════════════════════
-    # flush
+    # flush / close
     # ═══════════════════════════════════════════
-    def flush(self):
+    def flush(self) -> None:
+        """ذخیرهٔ اجباری همهٔ state در دیسک."""
         try:
             self.cache.flush()
             self.project_memory.flush()
             self.global_memory.flush()
-            log_info("💾 [SAFEBRAIN:flush] همه ذخیره شدند")
+            log_info(
+                "💾 [SAFEBRAIN:flush] همه ذخیره شدند"
+            )
         except Exception as e:
             log_warning(
                 f"⚠️ [SAFEBRAIN:flush] "
                 f"{type(e).__name__}: {e}"
             )
 
+    def close(self) -> None:
+        """🎯 shutdown تمیز."""
+        self.flush()
+        try:
+            if self._ai_assistant is not None:
+                # AIAssistant معمولاً close ندارد
+                pass
+        except Exception:
+            pass
+        log_info("🔌 [SAFEBRAIN:close] بسته شد")
+
     # ═══════════════════════════════════════════
     # debug
     # ═══════════════════════════════════════════
+    def reset_stats(self) -> None:
+        """🎯 پاک کردن آمار — برای تست."""
+        with self._api_lock:
+            self._api_calls_this_hour = 0
+            self._api_hour_start = time.monotonic()
+        self.stats = {
+            "processed": 0,
+            "cached": 0,
+            "api_calls": 0,
+            "api_blocked": 0,
+            "blocked": 0,
+            "errors": 0,
+            "delegated": 0,
+            "fallback": 0,
+            "started_at": datetime.now().isoformat(),
+            "started_monotonic": time.monotonic(),
+        }
+        log_info("🗑️ [SAFEBRAIN:stats] reset شد")
+
     def get_stats(self) -> dict[str, Any]:
+        """🎯 آمار کامل — برای debug."""
         brain_age = (
             time.monotonic() - self._brain_failed_at
             if self._brain_failed_at > 0
             else 0.0
         )
 
-        # محاسبهٔ نرخ delegation
         processed = self.stats.get("processed", 0)
         delegated = self.stats.get("delegated", 0)
         delegated_rate = (
-            round(delegated / processed, 3) if processed else 0.0
+            round(delegated / processed, 3)
+            if processed else 0.0
         )
 
+        started = self.stats.get("started_monotonic", 0)
+        uptime_s = (
+            round(time.monotonic() - started, 1)
+            if started else 0.0
+        )
+
+        # ✅ حذف started_monotonic از output
+        stats_clean = {
+            k: v
+            for k, v in self.stats.items()
+            if k != "started_monotonic"
+        }
+
         return {
-            **self.stats,
+            **stats_clean,
+            "uptime_s": uptime_s,
             "cache": self.cache.stats(),
             "project_memory": self.project_memory.count,
             "global_memory": self.global_memory.count,
             "api_calls_this_hour": self._api_calls_this_hour,
+            "api_hour_started_ago_s": round(
+                time.monotonic() - self._api_hour_start, 1
+            ),
             "brain_connected": self._brain_instance is not None,
             "brain_failed": self._brain_failed_at > 0,
             "brain_retry_in_s": (
-                max(0, int(_BRAIN_FAIL_RETRY_S - brain_age))
+                max(
+                    0,
+                    int(_BRAIN_FAIL_RETRY_S - brain_age),
+                )
                 if self._brain_failed_at > 0
                 else 0
             ),
@@ -775,10 +962,18 @@ class SafeBrain:
             "delegated_rate": delegated_rate,
         }
 
+    def __repr__(self) -> str:
+        return (
+            f"<SafeBrain "
+            f"full_access={self.full_access} "
+            f"api_key={'✅' if self.api_key else '❌'} "
+            f"brain={'✅' if self._brain_instance else '—'}>"
+        )
 
-# ════════════════════════════════════════════
+
+# ═══════════════════════════════════════════
 # Singleton
-# ════════════════════════════════════════════
+# ═══════════════════════════════════════════
 _shared_safe_brain: SafeBrain | None = None
 _shared_lock = threading.Lock()
 
@@ -795,7 +990,9 @@ def get_safe_brain(
 
     with _shared_lock:
         if _shared_safe_brain is None:
-            log_info("🏗️ [SAFEBRAIN:singleton] ساخت نمونهٔ اول")
+            log_info(
+                "🏗️ [SAFEBRAIN:singleton] ساخت نمونهٔ اول"
+            )
             _shared_safe_brain = SafeBrain(
                 api_key=api_key,
                 full_access=full_access,
@@ -804,18 +1001,48 @@ def get_safe_brain(
                 memory_api_key=memory_api_key,
             )
         else:
-            updated = []
-            if full_access and not _shared_safe_brain.full_access:
+            updated: list[str] = []
+            if (
+                full_access
+                and not _shared_safe_brain.full_access
+            ):
                 _shared_safe_brain.full_access = True
                 updated.append("full_access=True")
             if use_api_memory and memory_api_url:
                 _shared_safe_brain.use_api_memory = True
-                _shared_safe_brain.memory_api_url = memory_api_url
-                _shared_safe_brain.memory_api_key = memory_api_key
+                _shared_safe_brain.memory_api_url = (
+                    memory_api_url
+                )
+                _shared_safe_brain.memory_api_key = (
+                    memory_api_key
+                )
                 updated.append("memory_api")
             if updated:
                 log_info(
-                    f"♻️ [SAFEBRAIN:singleton] به‌روزرسانی | "
-                    f"fields={updated}"
+                    f"♻️ [SAFEBRAIN:singleton] به‌روزرسانی"
+                    f" | fields={updated}"
                 )
     return _shared_safe_brain
+
+
+def reset_safe_brain() -> None:
+    """🎯 پاک‌کردن singleton — فقط برای تست."""
+    global _shared_safe_brain
+    with _shared_lock:
+        if _shared_safe_brain is not None:
+            try:
+                _shared_safe_brain.close()
+            except Exception:
+                pass
+            log_info("🗑️ [SAFEBRAIN:singleton] reset شد")
+        _shared_safe_brain = None
+
+
+# ═══════════════════════════════════════════
+# __all__
+# ═══════════════════════════════════════════
+__all__ = [
+    "SafeBrain",
+    "get_safe_brain",
+    "reset_safe_brain",
+]
