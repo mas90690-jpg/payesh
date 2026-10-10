@@ -176,16 +176,18 @@ def _load_commands_from_data() -> tuple[
 
     try:
         from data.loader import load_json
-        data = load_json("commands", default={})
+        # 🎯 FIX: force=True برای bypass کردن cache
+        data = load_json("commands", default={}, force=True)
 
         if not isinstance(data, dict):
             _COMMANDS_LOADED_FROM_FILE = False
             return dict(_FALLBACK_PLATFORM_MAP), dict(_FALLBACK_WORDS)
 
+        # 🎯 FIX: platforms حذف شده — از synonyms.json میاد
         platforms = _validate_platforms(data.get("platforms"))
         words = _validate_words(data.get("words"))
 
-        if not platforms or not words:
+        if not words:
             _COMMANDS_LOADED_FROM_FILE = False
             return dict(_FALLBACK_PLATFORM_MAP), dict(_FALLBACK_WORDS)
 
@@ -195,8 +197,7 @@ def _load_commands_from_data() -> tuple[
     except Exception:
         _COMMANDS_LOADED_FROM_FILE = False
         return dict(_FALLBACK_PLATFORM_MAP), dict(_FALLBACK_WORDS)
-
-
+        
 # ─── لود اولیه ───
 _PLATFORM_MAP, _WORDS = _load_commands_from_data()
 
@@ -322,9 +323,7 @@ def get_commands_source() -> str:
 # ═══════════════════════════════════════════
 # Regex ها
 # ═══════════════════════════════════════════
-_VALUE_RE = re.compile(
-    r"[«\"']([^«»\"']*)[»\"']"
-)
+_VALUE_RE = re.compile(r"«([^»]*)»|\"([^\"]*)\"|'([^']*)'")
 
 _SET_PARAM_RE = re.compile(
     r"([A-Z][A-Z0-9_]{2,})\s*[=:]\s*"
@@ -342,17 +341,19 @@ def _has_word(text_low: str, word: str) -> bool:
 
     w = word.lower()
 
-    # ─── ASCII کوتاه: word-boundary ───
-    if w.isascii() and w.isalnum() and len(w) <= 4:
-        return bool(re.search(
-            rf"(?<![A-Za-z0-9_]){re.escape(w)}(?![A-Za-z0-9_])",
-            text_low,
-        ))
-
-    # ─── بقیه: substring ───
-    return w in text_low
-
-
+    # 🎯 FIX: فقط حروف فارسی (U+0621-U+06FF) و عربی/ASCII
+    # علائم نگارشی مثل ؟ (U+061F) نباید word-char حساب بشن
+    # بازهٔ حروف فارسی/عربی: \u0621-\u063A\u0641-\u064A\u0660-\u0669
+    # + ZWNJ (\u200c) برای کلمات ترکیبی
+    word_chars = r"a-zA-Z0-9_\u0621-\u063A\u0641-\u064A\u0660-\u0669\u200c"
+    
+    pattern = (
+        rf"(?<![{word_chars}])"
+        rf"{re.escape(w)}"
+        rf"(?![{word_chars}])"
+    )
+    return bool(re.search(pattern, text_low))
+    
 def _any_word(
     text_low: str, words: tuple[str, ...]
 ) -> bool:
@@ -372,7 +373,7 @@ def extract_value(text: str) -> str | None:
     m = _VALUE_RE.search(text)
     if not m:
         return None
-    val = m.group(1).strip()
+    val = (m.group(1) or m.group(2) or m.group(3) or "").strip()
     return val if val else None
 
 
@@ -486,7 +487,12 @@ def parse_command(
     if p and _any_word(low, _PLATFORM_STATUS_WORDS):
         return "platform_status", p
 
+    # ─── 14.5: platform_status با وضعیت صریح ───
+    if p and _any_word(low, _STATUS_WORDS):
+        return "platform_status", p        
+
     # ─── 15. status ───
+    p = platform_in(low)
     if _any_word(low, _STATUS_WORDS) and not p:
         return "status", None
 

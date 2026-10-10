@@ -1,6 +1,15 @@
 """Brain — کلاس اصلی + singleton.
 
-نسخهٔ ۴ (این نسخه):
+نسخهٔ ۵ (این نسخه):
+  - 🐛 FIX: `_lessons` حالا **قبل از** `learning_engine` تعریف می‌شود
+    (ترتیب وابستگی — جلوگیری از AttributeError).
+  - 🐛 FIX: `l` → `item` (رفع هشدار E741).
+  - 🐛 FIX: کامنت `# 🎯 بارگذاری درس‌های قبلی` حالا ۸ فاصله دارد.
+  - 🐛 FIX: `_background_index` حالا `_index_started` را در صورت
+    خطا reset می‌کند (اجازهٔ retry).
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۴.
+
+نسخهٔ ۴ (قبلی):
   - 🎯 NEW: سه ابزار audit به `_TOOL_METHODS` اضافه شد:
       * `audit_code`   → `_audit_code`
       * `audit_file`   → `_audit_file`
@@ -208,8 +217,9 @@ class Brain(
 
         # ─── semantic + learning ───
         self.semantic_search = ProjectSemanticSearch()
-        self.learning_engine = LearningEngine(self)
-                # 🎯 بارگذاری درس‌های قبلی (Reflexion) از MemoryStore
+
+        # 🎯 بارگذاری درس‌های قبلی (Reflexion) از MemoryStore
+        # ⚠️ FIX: _lessons **قبل از** learning_engine تعریف می‌شود
         self._lessons: list[str] = []
         try:
             from core.adapters.memory_store import MemoryStore
@@ -219,12 +229,17 @@ class Brain(
                 query="خطاهای قبلی",
                 limit=5,
             )
-            self._lessons = [l.get("value", "") for l in lessons]
+            self._lessons = [
+                item.get("value", "") for item in lessons
+            ]
             log_info(
                 f"📚 [BRAIN:lessons] {len(self._lessons)} درس بارگذاری شد"
             )
         except Exception as e:
             log_warning(f"⚠️ [BRAIN:lessons] {e}")
+
+        # 🎯 FIX: learning_engine **بعد** از _lessons
+        self.learning_engine = LearningEngine(self)
         self.planner = TaskPlanner(self)
         self.healer = SelfHealer(self)
         self.test_gen = TestGenerator(self)

@@ -402,7 +402,8 @@ class AgentMixin:
                 f"⚠️ [BRAIN:bg:index] "
                 f"{type(e).__name__}: {e}"
             )
-
+            self._index_started = False  # 🎯 اجازهٔ retry
+            
     def _build_tools(self) -> list[dict]:
         """ساخت لیست تعریف ابزارها."""
         return build_tool_definitions()
@@ -895,10 +896,11 @@ class AgentMixin:
                     f"{type(e).__name__}: {e}"
                 )
 
-            # ─── یادگیری ───
+            # 🎯 FIX: فقط در ۲۰۰ کاراکتر اول چک کن (نه کل جواب)
+            _head = final_answer[:200]
             success = (
-                "❌" not in final_answer
-                and "خطا" not in final_answer
+                "❌" not in _head
+                and not _head.startswith("خطا")
             )
             try:
                 self.learning_engine.record_interaction(

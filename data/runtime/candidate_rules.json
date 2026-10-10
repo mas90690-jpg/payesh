@@ -1,1 +1,15 @@
-[]
+[
+  {
+    "name": "ai_learned_1791609346",
+    "triggers": [
+      "سوال دارم: چرا ۱۸ تا فایل تست؟"
+    ],
+    "action": {
+      "type": "text",
+      "text": "حالا کاملاً روشن شد. جواب دقیق می‌دم.\n\n---\n\n# 🔍 چرا ۱۸ تا فایل تست؟ — تحلیل واقعی\n\n## ✅ کشف اصلی: این‌ها تست pytest نیستند!\n\nبررسی کردم: **صفر تابع `test_`** در کل پوشه `tests/` وجود دارد.\nبا اینکه `pytest.ini` تنظیم شده که `test_*.py` را جمع کند، ولی این فایل‌ها **اسکریپت اجرایی end-to-end** هستند، نه تست واحد.\n\nهر فایل `test_*_full.py` یک **برنامهٔ مستقل** است که:\n- `argparse` دارد (`--headless`, `--since-days`, ...)\n- `asyncio.run(main())` صدا می‌زند\n- `sys.exit(0/1)` برمی‌گرداند\n- با `subprocess` از `run_all_tests.py` اجرا می‌شود\n\n## 📊 نقشهٔ ۱۸ فایل\n\n| دسته | فایل‌ها | تعداد | نقش |\n|------|---------|-------|------|\n| 🧪 **تست پلتفرم** | `test_bale_full`, `test_eitaa_full`, `test_rubika_full`, `test_telegram_full`, `test_whatsapp_full`, `test_linkedin_full`, `test_instagram_full`, `test_web_full` | **۸** | هر پلتفرم یک pipeline end-to-end |\n| 🤖 **تست AI** | `test_ai_full`, `test_ai_master_full` | **۲** | موتور تحلیل و master |\n| 💾 **تست زیرساخت** | `test_db_full`, `test_storage_full` | **۲** | دیتابیس و ذخیره‌سازی |\n| 🏥 **Health Check** | `test_healthcheck_full` | **۱** | چک جامع نهایی (۲۹۶۲ خط!) |\n| 🛠️ **Helper (تست نیست)** | `helpers`, `db_helpers`, `pipeline_helpers` | **۳** | ابزار مشترک |\n| ⚙️ **Runner (تست نیست)** | `run_all_tests`, `__init__` | **۲** | اجراکننده |\n\n## 🎯 جواب سوال: چرا ۱۸ تا؟\n\n**دلیل معماری، نه over-engineering:**\n\n1. **۸ پلتفرم مستقل** → هر کدام collector، session، و pipeline جدا دارد → ۸ فایل منطقی است.\n2. **جداسازی بر اساس دامنه** (platform / AI / infra / health) → استاندارد رایج.\n3. **اجرای مستقل** → هر فایل جداگانه قابل اجراست (برای دیباگ یک پلتفرم خاص).\n\n## ⚠️ اما دو مشکل واقعی هست:\n\n### 🔴 مشکل ۱ — این‌ها pytest نیستند ولی در `testpaths` هستند\n`pytest.ini` می‌گوید `testpaths = tests` و `python_files = test_*.py`.\nاگر `pytest` بزنی، این فایل‌ها **جمع‌آوری می‌شوند ولی هیچ تستی ندارند** → pytest هشدار «no tests ran» می‌دهد یا خطای collection.\n\n**راه‌حل:** یا اسم‌ها را به `e2e_*_full.py` تغییر بده، یا در `pytest.ini` اضافه کن:\n```ini\ncollect_ignore_glob = tests/test_*_full.py\n```\n\n### 🟠 مشکل ۲ — `test_healthcheck_full.py` با ۲۹۶۲ خط\nاین یک فایل غول است. احتمالاً چندین مسئولیت را در هم دارد → کاندید شکستن.\n\n---\n\n## 📋 خلاصه\n\n| سوال | جواب |\n|------|------|\n| چرا ۱۸ تا؟ | ۸ پلتفرم + ۲ AI + ۲ infra + ۱ health + ۵ helper/runner |\n| over-engineering؟ | ❌ نه — منطقی است |\n| مشکل دارد؟ | ✅ بله — با pytest سازگار نیستند + یک فایل غول |\n\n---\n\n**می‌تونم این کارها رو بکنم:**\n- بررسی کنم `test_healthcheck_full.py` رو و بگم چطور بشکنمش\n- درست کنم `pytest.ini` رو تا این فایل‌ها رو ignore کنه\n- بررسی کنم کدوم فایل‌ها duplication دارن (helpers مشترک)\n- audit کنم کل پوشه `tests/` رو با `audit_code`\n- چک کنم `run_all_tests.py` درست کار می‌کنه یا نه\n\nکدوم رو انجام بدم؟"
+    },
+    "learned": true,
+    "source": "ai",
+    "created_at": "2026-10-10T08:45:46.413932"
+  }
+]

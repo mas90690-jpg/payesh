@@ -839,7 +839,20 @@ class ProjectSemanticSearch:
         self._init()
 
     def _init(self) -> None:
-        """ساخت ChromaDB client با embedding."""
+        """ساخت ChromaDB client با embedding — یا غیرفعال اگه ممکن نبود."""
+        # 🎯 FIX: sentence-transformers در Python 3.14 پشتیبانی نمی‌شه
+        # و دانلود مدل خیلی سنگینه. پس semantic search رو غیرفعال می‌کنیم.
+        import os
+        if os.getenv("BRAIN_DISABLE_SEMANTIC", "true").lower() == "true":
+            log_info(
+                "ℹ️ [BRAIN:sem:init] semantic search غیرفعال "
+                "(BRAIN_DISABLE_SEMANTIC=true)"
+            )
+            self.client = None
+            self.collection = None
+            self.embedding_fn = None
+            return
+
         try:
             import chromadb
             from chromadb.utils import embedding_functions
@@ -866,12 +879,18 @@ class ProjectSemanticSearch:
             log_warning(
                 f"⚠️ [BRAIN:sem:init] chromadb نصب نیست | {e}"
             )
+            self.client = None
+            self.collection = None
+            self.embedding_fn = None
         except Exception as e:
             log_warning(
                 f"⚠️ [BRAIN:sem:init] غیرفعال | "
                 f"{type(e).__name__}: {e}"
             )
-
+            self.client = None
+            self.collection = None
+            self.embedding_fn = None
+            
     def index_files(
         self, patterns: list[str] | None = None
     ) -> int:
