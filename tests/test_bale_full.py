@@ -206,10 +206,10 @@ async def main(
         if not ok:
             print(f"\n{C.WARN}⚠️ اتصال بله شکست خورد.{C.END}")
             if is_api:
-                print(f"   راه‌حل: در اولین اجرا، شماره و کد پیامکی "
-                      f"را وارد کن")
+                print("   راه‌حل: در اولین اجرا، شماره و کد پیامکی "
+                      "را وارد کن")
             else:
-                print(f"   راه‌حل: python login.py → گزینهٔ ۲")
+                print("   راه‌حل: python login.py → گزینهٔ ۲")
             await safe_disconnect(collector, report)
             await pipeline.stop()
             report.print_summary()
@@ -234,7 +234,7 @@ async def main(
             report.add(
                 "is_logged_in",
                 "ok" if logged else "fail",
-                f"check_health=True | mode=API",
+                "check_health=True | mode=API",
             )
         else:
             # نسخهٔ DOM: _is_logged_in
@@ -393,7 +393,7 @@ async def main(
                 )
 
             if found:
-                print(f"\n  📥 نمونهٔ leadهای ذخیره‌شده در DB:")
+                print("\n  📥 نمونهٔ leadهای ذخیره‌شده در DB:")
                 for rid, row in list(found.items())[:5]:
                     chat = (row.get("chat_name") or "?")[:25]
                     txt = (row.get("text") or "")[:50]
@@ -405,13 +405,13 @@ async def main(
             report.add(
                 "db.scrape_saved", "skip",
                 f"هیچ‌کدام از {len(msgs)} پیام scrape‌شده "
-                f"کلیدواژه ندارند (طبیعی — پیام‌های عمومی)",
+                "کلیدواژه ندارند (طبیعی — پیام‌های عمومی)",
             )
-            print(f"\n  ℹ️ هیچ پیام کلیدواژه‌داری در این scrape نبود")
-            print(f"     این طبیعی است — StorageHandler فقط "
-                  f"پیام‌های برند را ذخیره می‌کند")
-            print(f"     💡 برای تست کامل: یک پیام با برند "
-                  f"(مثل «یاراترا کریستا اس او پی») در بله بفرست")
+            print("\n  ℹ️ هیچ پیام کلیدواژه‌داری در این scrape نبود")
+            print("     این طبیعی است — StorageHandler فقط "
+                  "پیام‌های برند را ذخیره می‌کند")
+            print("     💡 برای تست کامل: یک پیام با برند "
+                  "(مثل «یاراترا کریستا اس او پی») در بله بفرست")
     else:
         report.add(
             "db.scrape_saved", "skip",

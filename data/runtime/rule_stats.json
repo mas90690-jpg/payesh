@@ -15,9 +15,9 @@
     "last_used": "2026-10-05T12:28:44.054152"
   },
   "error_count": {
-    "success": 5,
+    "success": 6,
     "fail": 0,
-    "last_used": "2026-09-20T13:54:31.532131"
+    "last_used": "2026-10-11T07:31:51.808974"
   },
   "user_learned_1789803503": {
     "success": 1,
@@ -30,9 +30,9 @@
     "last_used": "2026-10-07T13:47:46.152811"
   },
   "by_platform": {
-    "success": 6,
+    "success": 7,
     "fail": 2,
-    "last_used": "2026-09-23T09:52:18.161179"
+    "last_used": "2026-10-11T12:02:36.964564"
   },
   "system_snapshot": {
     "success": 1,
@@ -90,9 +90,9 @@
     "last_used": "2026-10-06T16:14:12.595083"
   },
   "user_learned_1789808719": {
-    "success": 24,
+    "success": 31,
     "fail": 0,
-    "last_used": "2026-10-07T13:19:22.786190"
+    "last_used": "2026-10-11T12:46:56.537951"
   },
   "total_count": {
     "success": 8,

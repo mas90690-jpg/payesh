@@ -31,8 +31,12 @@ sys.path.insert(
 )
 
 from tests.helpers import (
-    TestReport, banner, check_env, check_session_exists,
-    safe_disconnect, section, C,
+    TestReport,
+    banner,
+    check_env,
+    safe_disconnect,
+    section,
+    C,
 )
 from tests.pipeline_helpers import TestPipeline
 
@@ -275,7 +279,7 @@ async def main(
                 )
 
             if found:
-                print(f"\n  📥 نمونهٔ leadهای ذخیره‌شده:")
+                print("\n  📥 نمونهٔ leadهای ذخیره‌شده:")
                 for rid, row in list(found.items())[:5]:
                     print(
                         f"     [{row.get('chat_name', '?')[:25]}] "

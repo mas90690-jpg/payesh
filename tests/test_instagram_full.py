@@ -48,7 +48,6 @@ async def main(headless: bool = False, max_posts: int = 5):
     # ═══ ۱) env ═══
     section("مرحله ۱: بررسی env و config")
     env_info = check_env("instagram")
-    raw = env_info.get("raw", {})
 
     report.add(
         "env.enabled",
@@ -80,10 +79,10 @@ async def main(headless: bool = False, max_posts: int = 5):
     )
     if not session_exists:
         print(f"\n{C.FAIL}❌ نشست Instagram وجود ندارد{C.END}")
-        print(f"   راه‌حل:")
-        print(f"     ۱) BROWSER_HEADLESS=false در .env")
-        print(f"     ۲) python login.py → گزینهٔ ۷")
-        print(f"     ۳) در مرورگر لاگین کن")
+        print("   راه‌حل:")
+        print("     ۱) BROWSER_HEADLESS=false در .env")
+        print("     ۲) python login.py → گزینهٔ ۷")
+        print("     ۳) در مرورگر لاگین کن")
         report.print_summary()
         report.save()
         return False
@@ -139,8 +138,8 @@ async def main(headless: bool = False, max_posts: int = 5):
         )
         if not ok:
             print(f"\n{C.WARN}⚠️ اتصال Instagram شکست خورد{C.END}")
-            print(f"   راه‌حل: python login.py → گزینهٔ ۷")
-            print(f"   ⚠️ در ایران VPN لازم است")
+            print("   راه‌حل: python login.py → گزینهٔ ۷")
+            print("   ⚠️ در ایران VPN لازم است")
             await safe_disconnect(collector, report)
             await pipeline.stop()
             report.print_summary()
@@ -280,9 +279,9 @@ async def main(headless: bool = False, max_posts: int = 5):
                 "db.scrape_saved", "skip",
                 f"هیچ‌کدام از {len(msgs)} آیتم کلیدواژه ندارند",
             )
-            print(f"\n  ℹ️ هیچ کلیدواژه‌ای در feed فالوورها نبود")
-            print(f"     💡 برای تست کامل: پیامی با برند "
-                  f"در یکی از پیج‌های فالوو بشه")
+            print("\n  ℹ️ هیچ کلیدواژه‌ای در feed فالوورها نبود")
+            print("     💡 برای تست کامل: پیامی با برند "
+                  "در یکی از پیج‌های فالوو بشه")
     else:
         report.add(
             "db.scrape_saved", "skip",

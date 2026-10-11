@@ -265,7 +265,7 @@ class FormulaManager:
             try:
                 self._save(data)
                 log_success(
-                    f"✅ [FORMULA:load] migration ذخیره شد"
+                    "✅ [FORMULA:load] migration ذخیره شد"
                 )
             except Exception as e:
                 log_warning(

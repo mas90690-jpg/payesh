@@ -899,9 +899,9 @@ class LinkedInCollector(BaseCollector):
                         continue
                     elif is_follower is True:
                         consecutive_non_followers = 0
-                        log_info(f"       ✅ فالوور — ادامه")
+                        log_info("       ✅ فالوور — ادامه")
                     else:
-                        log_info(f"       ❓ فالوور نامشخص — ادامه")
+                        log_info("       ❓ فالوور نامشخص — ادامه")
 
                 # ⭐ استخراج author قبل از more/ترجمه
                 author = ""
@@ -915,7 +915,7 @@ class LinkedInCollector(BaseCollector):
                 # ⭐ متن پیش‌نمایش
                 preview = (await post.inner_text() or "").strip()
                 if not preview or len(preview) < 20:
-                    log_info(f"       ⏭️ متن خیلی کوتاه — رد")
+                    log_info("       ⏭️ متن خیلی کوتاه — رد")
                     continue
 
                 # 🎯 فیلتر پست‌های UI (نه پست واقعی)
@@ -927,7 +927,7 @@ class LinkedInCollector(BaseCollector):
                 )
                 preview_lower = preview.lower()
                 if any(m in preview_lower for m in ui_markers):
-                    log_info(f"       ⏭️ UI element — رد")
+                    log_info("       ⏭️ UI element — رد")
                     continue
 
                 log_info(f"       📝 preview: {preview[:60]}...")
@@ -1027,7 +1027,7 @@ class LinkedInCollector(BaseCollector):
                 # ═══════════════════════════════════════
                 matched = self._match_post(text, query)
                 if not matched:
-                    log_info(f"       ⏭️ بدون کلیدواژه")
+                    log_info("       ⏭️ بدون کلیدواژه")
                     continue
                 log_info(
                     f"       🎯 کلیدواژه: "

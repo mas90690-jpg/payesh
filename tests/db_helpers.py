@@ -156,7 +156,7 @@ def db_schema_version() -> str:
             if "version" in cols:
                 cur.execute(
                     f"SELECT version FROM {table} "
-                    f"ORDER BY rowid DESC LIMIT 1"
+                    "ORDER BY rowid DESC LIMIT 1"
                 )
                 r = cur.fetchone()
                 if r and r[0] is not None:
@@ -287,9 +287,9 @@ def find_by_ids(
             chunk = ids[i:i + chunk_size]
             placeholders = ",".join("?" * len(chunk))
             cur.execute(
-                f"SELECT id, platform, chat_name, text, keywords, "
-                f"       opportunity_type, timestamp, media_type "
-                f"FROM messages "
+                "SELECT id, platform, chat_name, text, keywords, "
+                "       opportunity_type, timestamp, media_type "
+                "FROM messages "
                 f"WHERE platform=? AND id IN ({placeholders})",
                 [platform] + chunk,
             )

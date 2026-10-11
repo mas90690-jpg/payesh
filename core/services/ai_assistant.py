@@ -415,8 +415,8 @@ class AIAssistant:
         # ─── fallback: deepseek key (اگر priority=ollama) ───
         if self._deepseek_key:
             log_info(
-                f"ℹ️ [AI:available] Ollama نیست ولی "
-                f"کلید DeepSeek هست (fallback)"
+                "ℹ️ [AI:available] Ollama نیست ولی "
+                "کلید DeepSeek هست (fallback)"
             )
             return True
 

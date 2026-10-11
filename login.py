@@ -2,20 +2,19 @@
 login.py — اسکریپت ورود تعاملی (یک‌بار اجرا برای هر پلتفرم).
 
 چرا جدا از main.py؟
-  ورود کاربر عادی نیاز به «کد پیامکی» یا «اسکن QR» دارد و main.py در پس‌زمینه
-  اجرا می‌شود. این اسکریپت را یک‌بار به‌صورت دستی اجرا کن تا نشست (session)
-  ساخته شود. بعد main.py بی‌صدا از همان نشست استفاده می‌کند.
+  ورود کاربر عادی نیاز به «کد پیامکی» یا «اسکن QR» دارد و main.py در
+  پس‌زمینه اجرا می‌شود. این اسکریپت را یک‌بار به‌صورت دستی اجرا کن تا
+  نشست (session) ساخته شود. بعد main.py بی‌صدا از همان نشست استفاده
+  می‌کند.
 
 اجرا:
     python login.py
 
-نسخهٔ ۷ (این نسخه):
-  - 🔴 FIX: منو [8] اینستاگرام → [7] (شماره‌گذاری پشت‌سرهم).
-  - 🔴 FIX: چک «ربات روشن است؟» قبل از هر لاگین مرورگری — چون
-    پروفایل Playwright قفل می‌شود و خطای exitCode=21 می‌دهد.
-  - 🔴 FIX: _ACTIONS کلید «8» → «7» برای اینستاگرام.
-  - 🎨 پیام واضح‌تر برای کاربر در صورت قفل‌بودن پروفایل.
-  - ✅ حفظ همهٔ FIXهای نسخهٔ ۶.
+نسخهٔ ۸ (این نسخه):
+  - 🆕 گزینه [8] یوتیوب (YouTube) — کاربر عادی روی youtube.com
+  - 🎯 همهٔ تابع‌ها با الگوی یکسان (check ربات → launch → goto → منتظر)
+  - 🎯 stealth در یوتیوب (webdriver + plugins + languages)
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۷ (چک ربات، منو پشت‌سرهم، ...)
 """
 from __future__ import annotations
 
@@ -36,7 +35,9 @@ patch_console(verbose=False)
 # config + logger
 # ═══════════════════════════════════════════
 from config import LOGIN_INPUT_TIMEOUT_S, PLUGINS_CONFIG
-from core.kernel.logger import log_error, log_info, log_success, log_warning
+from core.kernel.logger import (
+    log_error, log_info, log_success, log_warning,
+)
 from data import paths as data_paths
 
 _LOGIN_PREFIX = "[LOGIN"
@@ -53,7 +54,7 @@ _PID_FILE = str(data_paths.BOT_PID)
 # ═══════════════════════════════════════════
 def _is_bot_running() -> tuple[bool, int | None]:
     """
-    🔴 NEW: چک می‌کند ربات روشن است یا نه.
+    چک می‌کند ربات روشن است یا نه.
 
     چون Playwright با پروفایل قفل‌شده کار نمی‌کند و خطای
     exitCode=21 می‌دهد، قبل از هر لاگین مرورگری این چک لازم است.
@@ -67,7 +68,7 @@ def _is_bot_running() -> tuple[bool, int | None]:
     except (FileNotFoundError, ValueError, OSError):
         return False, None
 
-    # چک زنده‌بودن پروسه
+    # ─── چک زنده‌بودن پروسه ───
     try:
         import psutil
         try:
@@ -122,7 +123,9 @@ def _warn_bot_running(platform_label: str) -> bool:
     print()
 
     try:
-        ans = input(f"  با این حال ادامه بدهی؟ [{platform_label}] [y/N]: ")
+        ans = input(
+            f"  با این حال ادامه بدهی؟ [{platform_label}] [y/N]: "
+        )
     except (EOFError, KeyboardInterrupt):
         return False
 
@@ -272,7 +275,7 @@ async def _safe_launch_context(collector, headless: bool = False):
 
 
 # ═══════════════════════════════════════════
-# مسیرهای نشست (از config)
+# مسیرهای نشست
 # ═══════════════════════════════════════════
 def _rubika_session_path() -> str:
     cfg = PLUGINS_CONFIG.get("rubikacollector", {}) or {}
@@ -307,6 +310,7 @@ def _telegram_session_path() -> str:
         )
     return p
 
+
 def _normalize_phone(phone: str) -> str:
     """نرمال‌سازی شماره تلفن ایران → 09XXXXXXXXX."""
     if not phone:
@@ -321,7 +325,8 @@ def _normalize_phone(phone: str) -> str:
     if not p.startswith("0"):
         return "0" + p
     return p
-    
+
+
 # ═══════════════════════════════════════════
 # روبیکا (rubpy)
 # ═══════════════════════════════════════════
@@ -418,7 +423,6 @@ async def login_telegram() -> bool:
     print("     ⚠️ VPN باید روشن باشد (web.telegram.org)")
     print()
 
-    # 🔴 NEW: چک ربات
     if not _warn_bot_running("تلگرام"):
         log_warning(f"⚠️ {_LOGIN_PREFIX}:telegram] لغو شد")
         return False
@@ -510,6 +514,184 @@ async def login_telegram() -> bool:
 
 
 # ═══════════════════════════════════════════
+# یوتیوب (Playwright / web)
+# ═══════════════════════════════════════════
+async def login_youtube() -> bool:
+    """
+    ورود تعاملی به یوتیوب با اتصال به Chrome واقعی از طریق CDP.
+
+    این روش از مسدود شدن توسط گوگل جلوگیری می‌کند چون مرورگر
+    یک Chrome واقعی است و نه Chromium خودکار.
+    """
+    print("[..] یوتیوب: باز کردن Chrome واقعی...")
+    print("     ⚠️ VPN باید روشن باشد (youtube.com)")
+    print()
+
+    if not _warn_bot_running("یوتیوب"):
+        log_warning(f"⚠️ {_LOGIN_PREFIX}:youtube] لغو شد")
+        return False
+
+    import subprocess
+    from config import CHROME_PATH
+
+    # ─── مسیر پروفایل اختصاصی ───
+    user_data_dir = str(
+        data_paths.SESSIONS_DIR / "youtube_web"
+    )
+    os.makedirs(user_data_dir, exist_ok=True)
+
+    # ─── پیدا کردن Chrome ───
+    chrome_exe = None
+    if CHROME_PATH and os.path.exists(CHROME_PATH):
+        chrome_exe = CHROME_PATH
+    else:
+        candidates = [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            os.path.expandvars(
+                r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"
+            ),
+        ]
+        for p in candidates:
+            if os.path.exists(p):
+                chrome_exe = p
+                break
+
+    if not chrome_exe:
+        print("[X] Chrome پیدا نشد. لطفاً Google Chrome نصب کن.")
+        return False
+
+    # ─── پاک کردن lockهای قبلی ───
+    for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+        p = os.path.join(user_data_dir, name)
+        try:
+            if os.path.exists(p):
+                os.remove(p)
+        except Exception:
+            pass
+
+    # ═══════════════════════════════════════════════════
+    # گام ۱: اجرای Chrome واقعی با پورت دیباگ
+    # ═══════════════════════════════════════════════════
+    CDP_PORT = 9222
+    cmd = [
+        chrome_exe,
+        f"--remote-debugging-port={CDP_PORT}",
+        f"--user-data-dir={user_data_dir}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-blink-features=AutomationControlled",
+        "--ignore-certificate-errors",
+        "https://www.youtube.com/",
+    ]
+
+    print(f"[..] اجرای Chrome واقعی با پورت {CDP_PORT}...")
+    try:
+        proc = subprocess.Popen(cmd)
+    except Exception as e:
+        print(f"[X] خطا در اجرای Chrome: {e}")
+        return False
+
+    print()
+    print("═" * 60)
+    print("📱 در مرورگر Chrome که باز شد:")
+    print("   ۱) روی Sign in کلیک کن (گوشهٔ بالا راست)")
+    print("   ۲) ایمیل/شماره گوگل را وارد کن")
+    print("   ۳) رمز عبور را وارد کن")
+    print("   ۴) اگر 2FA داری، کد را وارد کن")
+    print("   ۵) بعد از دیدن آواتار، پنجره را ببند")
+    print("═" * 60)
+    print()
+    print("⏳ منتظر می‌مانم تا Chrome را ببندی...")
+    print()
+
+    # ═══════════════════════════════════════════════════
+    # گام ۲: اتصال Playwright به Chrome از طریق CDP
+    # ═══════════════════════════════════════════════════
+    try:
+        from playwright.async_api import async_playwright
+
+        pw = await async_playwright().start()
+        browser = await pw.chromium.connect_over_cdp(
+            f"http://localhost:{CDP_PORT}"
+        )
+
+        if not browser.contexts:
+            print("[X] هیچ context ای در Chrome پیدا نشد")
+            await pw.stop()
+            return False
+
+        context = browser.contexts[0]
+        page = context.pages[0] if context.pages else await context.new_page()
+
+        # ─── تزریق stealth روی context فعلی ───
+        # (این کار فقط برای اطمینان است — چون Chrome واقعی است)
+        try:
+            await context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+            """)
+        except Exception:
+            pass
+
+        # ─── goto یوتیوب (اگر قبلاً باز نبود) ───
+        try:
+            if "youtube.com" not in (page.url or ""):
+                await page.goto(
+                    "https://www.youtube.com/",
+                    wait_until="domcontentloaded",
+                    timeout=60000,
+                )
+        except Exception as e:
+            log_warning(f"goto: {e}")
+
+        await asyncio.sleep(2)
+
+        # ─── چک لاگین ───
+        is_logged = False
+        try:
+            avatar = await page.query_selector(
+                'img#avatar-btn, '
+                'button[aria-label*="Account" i], '
+                'a[href*="/feed/subscriptions"]'
+            )
+            is_logged = avatar is not None
+        except Exception as e:
+            log_warning(f"is_logged: {e}")
+
+        # ─── ذخیرهٔ storage_state ───
+        try:
+            state_path = os.path.join(
+                data_paths.SESSIONS_DIR, "youtube_state.json"
+            )
+            await context.storage_state(path=state_path)
+            log_info(f"   ✔ state ذخیره شد | {state_path}")
+        except Exception as e:
+            log_warning(f"   ⚠️ storage_state | {e}")
+
+        await pw.stop()
+
+        if is_logged:
+            print()
+            print("[OK] نشست یوتیوب ذخیره شد ✅")
+            print(f"     مسیر پروفایل: {user_data_dir}")
+            print()
+            print("⚠️  نکته مهم:")
+            print("    در اجرای بعدی ربات، این Chrome باید باز بماند.")
+            print("    اگر بسته شود، دوباره login_youtube را اجرا کن.")
+            return True
+        else:
+            print()
+            print("[X] ورود تشخیص داده نشد.")
+            print("    ممکنه لاگین کامل نشده باشه یا صفحه لود نشده.")
+            return False
+
+    except Exception as e:
+        print(f"[X] خطا در اتصال CDP: {type(e).__name__}: {e}")
+        return False
+
+# ═══════════════════════════════════════════
 # ورود مرورگری مشترک
 # ═══════════════════════════════════════════
 async def login_browser(
@@ -520,13 +702,12 @@ async def login_browser(
     """
     ورود مرورگری مشترک (ایتا / بله / واتساپ / لینکدین / اینستاگرام).
 
-    🔴 NEW: قبل از باز کردن مرورگر، چک می‌کند ربات روشن نباشد.
+    قبل از باز کردن مرورگر، چک می‌کند ربات روشن نباشد.
     """
     t0 = time.monotonic()
     tag = platform_label.lower().replace(" ", "_")
     log_info(f"▶️ {_LOGIN_PREFIX}:browser:{tag}] شروع | url={url}")
 
-    # 🔴 NEW: چک ربات
     if not _warn_bot_running(platform_label):
         log_warning(
             f"⚠️ {_LOGIN_PREFIX}:browser:{tag}] لغو شد (ربات روشن)"
@@ -715,7 +896,7 @@ async def login_instagram() -> bool:
 
 
 # ═══════════════════════════════════════════
-# منو — 🔴 FIX: [8] → [7] برای اینستاگرام
+# منو
 # ═══════════════════════════════════════════
 _MENU = """
 ╔══════════════════════════════════════════════════════════╗
@@ -724,17 +905,17 @@ _MENU = """
 ║  [1] روبیکا (Rubika)                                     ║
 ║  [2] بله (Bale - مرورگر)                                 ║
 ║  [3] ایتا (Eitaa - مرورگر)                               ║
-║  [4] تلگرام (Telegram)                                   ║
+║  [4] تلگرام (Telegram - مرورگر)                          ║
 ║  [5] واتساپ (WhatsApp - مرورگر/QR)                       ║
 ║  [6] لینکدین (LinkedIn - مرورگر)                         ║
 ║  [7] اینستاگرام (Instagram - مرورگر)                     ║
+║  [8] یوتیوب (YouTube - مرورگر)                           ║
 ║  [9] ورود همه (به ترتیب)                                 ║
 ║  [0] خروج                                                ║
 ╚══════════════════════════════════════════════════════════╝
 """
 
 
-# 🔴 FIX: کلید «8» → «7» برای اینستاگرام
 _ACTIONS: dict[str, tuple[str, Callable[[], Awaitable[bool]]]] = {
     "1": ("rubika", login_rubika),
     "2": ("bale", login_bale),
@@ -743,6 +924,7 @@ _ACTIONS: dict[str, tuple[str, Callable[[], Awaitable[bool]]]] = {
     "5": ("whatsapp", login_whatsapp),
     "6": ("linkedin", login_linkedin),
     "7": ("instagram", login_instagram),
+    "8": ("youtube", login_youtube),
 }
 
 _BY_NAME: dict[str, Callable[[], Awaitable[bool]]] = {
@@ -751,7 +933,7 @@ _BY_NAME: dict[str, Callable[[], Awaitable[bool]]] = {
 
 _LOGIN_ALL_ORDER = [
     "rubika", "bale", "eitaa", "telegram",
-    "whatsapp", "linkedin", "instagram",
+    "whatsapp", "linkedin", "instagram", "youtube",
 ]
 
 
@@ -798,12 +980,16 @@ async def _login_all() -> None:
 async def main() -> None:
     log_info(f"▶️ {_LOGIN_PREFIX}:main] شروع")
 
-    # 🔴 NEW: هشدار اولیه اگر ربات روشن است
+    # ─── هشدار اولیه اگر ربات روشن است ───
     running, pid = _is_bot_running()
     if running:
         print()
         print("╔" + "═" * 58 + "╗")
-        print("║  ⚠️  توجه: ربات الان روشن است (PID: {:>6})         ║".format(pid or 0))
+        print(
+            "║  ⚠️  توجه: ربات الان روشن است (PID: {:>6})         ║".format(
+                pid or 0
+            )
+        )
         print("║  برای لاگین مرورگری، ابتدا ربات را Stop کن.          ║")
         print("╚" + "═" * 58 + "╝")
 

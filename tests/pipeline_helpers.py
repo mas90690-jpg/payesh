@@ -24,7 +24,6 @@ API عمومی:
 """
 from __future__ import annotations
 
-import asyncio
 import os
 import shutil
 import sqlite3
@@ -218,7 +217,7 @@ class TestPipeline:
             except Exception as e:
                 self.stats["errors"] += 1
                 print(
-                    f"  ⚠️ pipeline.feed error: "
+                    "  ⚠️ pipeline.feed error: "
                     f"{type(e).__name__}: {e}"
                 )
 
@@ -286,7 +285,7 @@ class TestPipeline:
                 chunk = candidates[i:i + chunk_size]
                 placeholders = ",".join("?" * len(chunk))
                 cur.execute(
-                    f"SELECT * FROM messages "
+                    "SELECT * FROM messages "
                     f"WHERE platform=? AND id IN ({placeholders})",
                     [platform] + chunk,
                 )
@@ -297,7 +296,7 @@ class TestPipeline:
                         raw_found[raw_id] = dict(row)
         except Exception as e:
             print(
-                f"  ⚠️ pipeline.find_in_db error: "
+                "  ⚠️ pipeline.find_in_db error: "
                 f"{type(e).__name__}: {e}"
             )
         finally:
@@ -326,7 +325,7 @@ class TestPipeline:
             return [dict(r) for r in cur.fetchall()]
         except Exception as e:
             print(
-                f"  ⚠️ pipeline.find_leads_in_db error: "
+                "  ⚠️ pipeline.find_leads_in_db error: "
                 f"{type(e).__name__}: {e}"
             )
             return []

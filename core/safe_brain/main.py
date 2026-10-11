@@ -1,24 +1,24 @@
-"""SafeBrain — گارد امن + کش + حافظه.
+"""SafeBrain — گارد امن + کش + حافظه + PersistentMemory.
 
-نسخهٔ ۷ (این نسخه):
-  - 🎯 پیام‌های خطا حالا از `data/configs/errors.json` می‌آیند
-    (تمرکز داده‌ها) — با fallback امن.
-  - 🎯 `_err()` helper جدید برای خواندن پیام‌ها.
-  - ✅ حفظ همهٔ FIXهای نسخهٔ ۶ (سازگاری کامل عقب‌رو).
+نسخهٔ ۸ (این نسخه):
+  - 🎯 NEW: اتصال به `PersistentMemory` (SQLite + FTS5):
+      * `self.persistent_memory` در `__init__`
+      * `_try_persistent_recall()` — جستجو قبل از پاسخ
+      * `_try_persistent_remember()` — ذخیره بعد از پاسخ
+      * `_is_from_persistent()` — تشخیص پاسخ از حافظه
+  - 🎯 NEW: `_get_persistent_memory()` lazy accessor.
+  - 🎯 NEW: `_remember_conversation()` — ذخیره در حافظهٔ پایدار.
+  - 🎯 در `_process_inner`: قبل از AI، اول PersistentMemory چک می‌شود.
+  - 🎯 در `_try_ai`: context از PersistentMemory هم اضافه می‌شود.
+  - 🎯 `get_stats()` حالا آمار PersistentMemory را هم می‌دهد.
+  - 🎯 `close()` حالا PersistentMemory را هم می‌بندد.
+  - 🎯 `flush()` حالا PersistentMemory را هم flush می‌کند.
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۷.
 
-نسخهٔ ۶ (قبلی):
-  - 🐛 FIX: `api_key` حالا از `config.AI["deepseek_api_key"]` می‌آید.
-  - 🐛 FIX: `_env_float` / `_env_int` حالا `min_val`/`max_val` دارند.
-  - 🐛 FIX: `project_memory` و `global_memory` `max_entries` حالا env-based.
-  - 🐛 FIX: `_try_ai` حالا از API عمومی AIAssistant استفاده می‌کند.
-  - 🐛 FIX: `_try_ai` حالا `AI_CONFIG` را dict-check می‌کند.
-  - 🐛 FIX: `_log_request` حالا مسیر را از `data.paths` می‌آورد.
-  - 🎯 `close()` متد جدید — graceful shutdown با flush.
-  - 🎯 `reset_stats()` و `reset_safe_brain()` برای تست.
-  - 🎯 `get_stats()` کامل‌تر (uptime، brain_failed_ago_s).
-  - 🎯 `__repr__` برای SafeBrain.
-  - 🎯 `__all__` export.
-  - ✅ حفظ همهٔ FIXهای نسخهٔ ۵.
+نسخهٔ ۷ (قبلی):
+  - 🎯 پیام‌های خطا از `data/configs/errors.json`.
+  - 🎯 `_err()` helper.
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۶.
 """
 from __future__ import annotations
 
@@ -100,8 +100,21 @@ def _env_float(
     return v
 
 
+def _env_bool(name: str, default: bool = True) -> bool:
+    """خواندن bool از env."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    v = str(raw).strip().lower()
+    if v in ("true", "1", "yes", "on", "y", "t"):
+        return True
+    if v in ("false", "0", "no", "off", "n", "f"):
+        return False
+    return default
+
+
 # ═══════════════════════════════════════════
-# 🆕 پیام‌های خطا از data/configs/errors.json
+# پیام‌های خطا از data/configs/errors.json
 # ═══════════════════════════════════════════
 try:
     from data.loader import load_json as _load_json_errors
@@ -117,21 +130,11 @@ _ERRS: dict[str, str] = (
 
 
 def _err(key: str, default: str = "", **kw) -> str:
-    """🎯 خواندن پیام خطا از فایل — با fallback امن.
-
-    Args:
-        key: کلید پیام در errors.json.
-        default: اگه کلید نبود یا فایل نبود.
-        **kw: پارامترهای format (مثل kw=...).
-
-    Returns:
-        متن پیام آماده.
-    """
+    """خواندن پیام خطا از فایل — با fallback امن."""
     template = _ERRS.get(key) or default or f"[{key}]"
     try:
         return template.format(**kw) if kw else template
     except (KeyError, IndexError, ValueError):
-        # اگه placeholder ناشناخته بود → متن خام
         return template
 
 
@@ -139,24 +142,40 @@ def _err(key: str, default: str = "", **kw) -> str:
 # تنظیمات (env-based)
 # ═══════════════════════════════════════════
 _AI_TIMEOUT_S = _env_float(
-    "SAFE_BRAIN_AI_TIMEOUT_S", 30.0,
+    "SAFE_BRAIN_AI_TIMEOUT_S", 120.0,
     min_val=5.0, max_val=300.0,
 )
 _PROJECT_MEMORY_MAX = _env_int(
-    "SAFE_BRAIN_PROJECT_MEMORY", 200,
+    "SAFE_BRAIN_PROJECT_MEMORY", 2000,
     min_val=10, max_val=10_000,
 )
 _GLOBAL_MEMORY_MAX = _env_int(
-    "SAFE_BRAIN_GLOBAL_MEMORY", 500,
+    "SAFE_BRAIN_GLOBAL_MEMORY", 5000,
     min_val=10, max_val=10_000,
 )
 _CACHE_TTL_HOURS = _env_int(
-    "SAFE_BRAIN_CACHE_TTL_HOURS", 48,
+    "SAFE_BRAIN_CACHE_TTL_HOURS", 720,
     min_val=1, max_val=720,
 )
 _CONTEXT_N = _env_int(
-    "SAFE_BRAIN_CONTEXT_N", 3,
+    "SAFE_BRAIN_CONTEXT_N", 5,
     min_val=1, max_val=20,
+)
+
+# 🆕 PersistentMemory settings
+_PERSISTENT_ENABLED = _env_bool(
+    "BRAIN_PERSISTENT_MEMORY", True
+)
+_PERSISTENT_REMEMBER = _env_bool(
+    "SAFE_BRAIN_REMEMBER_CONVERSATIONS", True
+)
+_PERSISTENT_CONTEXT_N = _env_int(
+    "SAFE_BRAIN_PERSISTENT_CONTEXT_N", 3,
+    min_val=1, max_val=20,
+)
+_PERSISTENT_IMPORTANCE_DEFAULT = _env_float(
+    "SAFE_BRAIN_PERSISTENT_IMPORTANCE", 0.5,
+    min_val=0.0, max_val=1.0,
 )
 
 
@@ -172,8 +191,7 @@ class _DelegateType:
         return "<DELEGATE>"
 
     def __bool__(self) -> bool:
-        """🎯 FIX: در بولی، _DELEGATE باید False باشد تا با
-        پاسخ خالی اشتباه نشود."""
+        """در بولی، _DELEGATE باید False باشد."""
         return False
 
 
@@ -184,14 +202,14 @@ _DELEGATE = _DelegateType()
 # SafeBrain
 # ═══════════════════════════════════════════
 class SafeBrain:
-    """مغز امن ربات — لایهٔ نازک روی Brain.
+    """مغز امن ربات — لایهٔ نازک روی Brain + حافظهٔ پایدار.
 
-    نسخهٔ ۷:
+    نسخهٔ ۸:
+      - PersistentMemory (SQLite + FTS5) — هیچ‌وقت پاک نمی‌شود.
+      - پاسخ‌های قبلی از حافظه بازیابی می‌شوند.
       - پیام‌های خطا از `data/configs/errors.json`.
-      - rate-limit DeepSeek در `_try_ai`.
-      - `chat_with_status()` برای دقت پاسخ.
+      - rate-limit DeepSeek.
       - پاسخ fallback کش نمی‌شود.
-      - در full_access، rate limit AI هم شمرده می‌شود.
     """
 
     def __init__(
@@ -203,7 +221,7 @@ class SafeBrain:
         memory_api_url: str = "",
         memory_api_key: str = "",
     ):
-        # 🐛 FIX: api_key از config.AI
+        # api_key از config.AI
         self.api_key = (
             api_key
             or (AI_CONFIG or {}).get("deepseek_api_key", "")
@@ -212,7 +230,7 @@ class SafeBrain:
         )
         self.full_access = full_access
 
-        # ─── memory ───
+        # ─── memory (کلاسیک) ───
         self.project_memory = SafeMemory(
             "project_memory",
             max_entries=_PROJECT_MEMORY_MAX,
@@ -227,6 +245,43 @@ class SafeBrain:
             "safe_brain_cache",
             ttl_hours=_CACHE_TTL_HOURS,
         )
+
+        # ═══════════════════════════════════════════
+        # 🆕 PersistentMemory (SQLite + FTS5)
+        # ═══════════════════════════════════════════
+        self.persistent_memory: Any | None = None
+        self._persistent_lock = threading.Lock()
+
+        if _PERSISTENT_ENABLED:
+            try:
+                from core.brain.memory import (
+                    get_persistent_memory,
+                )
+                self.persistent_memory = (
+                    get_persistent_memory()
+                )
+                if self.persistent_memory is not None:
+                    log_success(
+                        f"✅ [SAFEBRAIN:persistent] اتصال | "
+                        f"count="
+                        f"{self.persistent_memory.count()}"
+                    )
+                else:
+                    log_warning(
+                        "⚠️ [SAFEBRAIN:persistent] "
+                        "get_persistent_memory() = None"
+                    )
+            except Exception as e:
+                log_warning(
+                    f"⚠️ [SAFEBRAIN:persistent] "
+                    f"{type(e).__name__}: {e}"
+                )
+                self.persistent_memory = None
+        else:
+            log_info(
+                "ℹ️ [SAFEBRAIN:persistent] غیرفعال "
+                "(BRAIN_PERSISTENT_MEMORY=false)"
+            )
 
         # ─── rate limit ───
         self._api_calls_this_hour = 0
@@ -256,20 +311,152 @@ class SafeBrain:
             "errors": 0,
             "delegated": 0,
             "fallback": 0,
+            "persistent_recall": 0,
+            "persistent_remember": 0,
             "started_at": datetime.now().isoformat(),
             "started_monotonic": time.monotonic(),
         }
+
+        persistent_status = (
+            "✅" if self.persistent_memory else "❌"
+        )
 
         log_success(
             f"✅ [SAFEBRAIN:init] آماده | "
             f"api_key={'✅' if self.api_key else '❌'} | "
             f"full_access={'✅' if full_access else '❌'} | "
+            f"persistent={persistent_status} | "
             f"max_api_hour={MAX_API_CALLS_PER_HOUR} | "
-            f"ai_timeout={_AI_TIMEOUT_S}s | "
-            f"memory: project={self.project_memory.count} "
-            f"global={self.global_memory.count} | "
-            f"cache={self.cache.size}"
+            f"ai_timeout={_AI_TIMEOUT_S}s"
         )
+
+    # ═══════════════════════════════════════════
+    # PersistentMemory helpers
+    # ═══════════════════════════════════════════
+    def _try_persistent_recall(
+        self, query: str
+    ) -> str | None:
+        """جستجوی پاسخ در حافظهٔ پایدار.
+
+        Args:
+            query: سؤال کاربر.
+
+        Returns:
+            پاسخ اگر در حافظه بود، وگرنه None.
+        """
+        if not self.persistent_memory:
+            return None
+        if not query or len(query) < 3:
+            return None
+
+        try:
+            # ─── FTS search ───
+            results = self.persistent_memory.recall(
+                query=query,
+                category="conversation",
+                limit=1,
+            )
+
+            if not results:
+                return None
+
+            # ─── بهترین نتیجه (اولین) ───
+            best = results[0]
+            answer = best.get("value") or ""
+
+            # ─── فقط اگر پاسخ کافی طولانی باشد ───
+            if not answer or len(answer) < 10:
+                return None
+
+            # ─── log ───
+            self.stats["persistent_recall"] += 1
+            log_success(
+                f"🎯 [SAFEBRAIN:persistent:recall] "
+                f"'{query[:40]}' → "
+                f"'{answer[:40]}' | "
+                f"imp={best.get('importance', 0)}"
+            )
+            return answer
+
+        except Exception as e:
+            log_warning(
+                f"⚠️ [SAFEBRAIN:persistent:recall] "
+                f"{type(e).__name__}: {e}"
+            )
+            return None
+
+    def _try_persistent_remember(
+        self,
+        query: str,
+        answer: str,
+        category: str = "conversation",
+        importance: float | None = None,
+    ) -> bool:
+        """ذخیره در حافظهٔ پایدار.
+
+        Args:
+            query: سؤال.
+            answer: پاسخ.
+            category: دسته.
+            importance: اهمیت.
+
+        Returns:
+            True اگر ذخیره شد.
+        """
+        if not self.persistent_memory:
+            return False
+        if not query or not answer:
+            return False
+        if len(query) < 3 or len(answer) < 10:
+            return False
+
+        if importance is None:
+            importance = _PERSISTENT_IMPORTANCE_DEFAULT
+
+        try:
+            new_id = self.persistent_memory.remember(
+                category=category,
+                key=query[:500],
+                value=answer[:10000],
+                importance=importance,
+            )
+
+            if new_id > 0:
+                self.stats["persistent_remember"] += 1
+                log_info(
+                    f"💾 [SAFEBRAIN:persistent:remember] "
+                    f"id={new_id} | "
+                    f"cat={category} | "
+                    f"'{query[:40]}'"
+                )
+                return True
+            return False
+
+        except Exception as e:
+            log_warning(
+                f"⚠️ [SAFEBRAIN:persistent:remember] "
+                f"{type(e).__name__}: {e}"
+            )
+            return False
+
+    def _persistent_context(self, query: str) -> str:
+        """context از PersistentMemory برای AI.
+
+        Returns:
+            متن آماده یا "".
+        """
+        if not self.persistent_memory:
+            return ""
+        try:
+            return self.persistent_memory.get_context(
+                query, n=_PERSISTENT_CONTEXT_N
+            )
+        except Exception as e:
+            log_warning(
+                f"⚠️ [SAFEBRAIN:persistent:context] "
+                f"{type(e).__name__}: {e}"
+            )
+            return ""
 
     # ═══════════════════════════════════════════
     # lazy init
@@ -337,10 +524,7 @@ class SafeBrain:
     # rate limit
     # ═══════════════════════════════════════════
     def _can_call_api(self) -> bool:
-        """چک محدودیت ساعتی تماس‌های API.
-
-        در full_access محدودیت اعمال نمی‌شود ولی آمار شمرده می‌شود.
-        """
+        """چک محدودیت ساعتی تماس‌های API."""
         with self._api_lock:
             now = time.monotonic()
             if now - self._api_hour_start > 3600:
@@ -351,11 +535,9 @@ class SafeBrain:
                 self._api_calls_this_hour = 0
                 self._api_hour_start = now
 
-            # آمار همیشه افزایش می‌یابد
             self._api_calls_this_hour += 1
             self.stats["api_calls"] += 1
 
-            # در full_access محدودیت اعمال نمی‌شود
             if self.full_access:
                 return True
 
@@ -420,7 +602,6 @@ class SafeBrain:
 
         try:
             result = await self._process_inner(text, t_all)
-            # _DELEGATE → None
             if isinstance(result, _DelegateType):
                 return None
             return result
@@ -466,7 +647,24 @@ class SafeBrain:
             )
             return cached
 
-        # ─── ۳) تشخیص دستور ───
+        # ═══════════════════════════════════════════
+        # 🆕 ۳) PersistentMemory recall
+        # ═══════════════════════════════════════════
+        persistent_answer = self._try_persistent_recall(text)
+        if persistent_answer:
+            # کش هم بگذار
+            self.cache.set(text, persistent_answer)
+
+            elapsed_ms = (
+                time.monotonic() - t_all
+            ) * 1000
+            log_success(
+                f"✅ [SAFEBRAIN:process] persistent HIT | "
+                f"{elapsed_ms:.0f}ms"
+            )
+            return persistent_answer
+
+        # ─── ۴) تشخیص دستور ───
         action, value = self._rule_parse(text)
         log_info(
             f"🎯 [SAFEBRAIN:parse] action={action} "
@@ -478,12 +676,19 @@ class SafeBrain:
                 action, value, text, t_all
             )
 
-        # ─── ۴) AI ───
+        # ─── ۵) AI ───
         ai_result = await self._try_ai(text, t_all)
         if ai_result is not None:
+            # 🆕 ذخیره در PersistentMemory
+            if _PERSISTENT_REMEMBER:
+                self._try_persistent_remember(
+                    text, ai_result,
+                    category="conversation",
+                    importance=0.5,
+                )
             return ai_result
 
-        # ─── ۵) Brain.agent ───
+        # ─── ۶) Brain.agent ───
         if self.api_key and self._can_call_api():
             brain = self._get_brain()
             if brain:
@@ -500,6 +705,15 @@ class SafeBrain:
                         "assistant", result
                     )
                     self.cache.set(text, result)
+
+                    # 🆕 ذخیره در PersistentMemory
+                    if _PERSISTENT_REMEMBER:
+                        self._try_persistent_remember(
+                            text, result,
+                            category="conversation",
+                            importance=0.6,
+                        )
+
                     elapsed_ms = (
                         time.monotonic() - t_all
                     ) * 1000
@@ -517,7 +731,7 @@ class SafeBrain:
                     )
                     self.stats["errors"] += 1
 
-        # ─── ۶) Fallback ───
+        # ─── ۷) Fallback ───
         self.stats["fallback"] += 1
         elapsed_ms = (time.monotonic() - t_all) * 1000
         log_warning(
@@ -550,7 +764,6 @@ class SafeBrain:
                 )
                 return _DELEGATE
 
-            # ─── نتیجهٔ معتبر ───
             if result:
                 self.cache.set(text, result)
                 self.global_memory.add(
@@ -583,12 +796,12 @@ class SafeBrain:
         - rate limit روی DeepSeek.
         - `chat_with_status()` برای دقت.
         - پاسخ fallback کش نمی‌شود.
+        - 🆕 context از PersistentMemory.
         """
         ai = self._get_ai()
         if not ai:
             return None
 
-        # 🐛 FIX: dict-check برای AI_CONFIG
         if not isinstance(AI_CONFIG, dict):
             return None
         if not AI_CONFIG.get("enabled", True):
@@ -598,8 +811,7 @@ class SafeBrain:
             if not await ai.available():
                 return None
 
-            # ─── rate limit (DeepSeek) ───
-            # 🐛 FIX: از API عمومی استفاده می‌کنیم
+            # rate limit
             try:
                 provider_order = ai._provider_order()
             except Exception:
@@ -614,9 +826,14 @@ class SafeBrain:
                     )
                     return None
 
+            # ─── context از حافظه‌های محلی ───
             context = self.global_memory.get_context(
                 _CONTEXT_N
             )
+
+            # 🆕 context از PersistentMemory
+            persistent_ctx = self._persistent_context(text)
+
             system = (
                 "تو «مغز هوشمند ربات پایش سرنخ سپاهان "
                 "رویش» هستی؛ یک دستیار داخلی ربات. "
@@ -627,6 +844,10 @@ class SafeBrain:
             )
             if context:
                 system += f"زمینه گفتگو:\n{context}\n\n"
+            if persistent_ctx:
+                system += (
+                    f"\n{persistent_ctx}\n\n"
+                )
 
             t_ai = time.monotonic()
             try:
@@ -670,7 +891,6 @@ class SafeBrain:
             self.global_memory.add("user", text)
             self.global_memory.add("assistant", ans)
 
-            # فقط پاسخ معتبر کش می‌شود
             if not is_fallback:
                 self.cache.set(text, ans)
 
@@ -717,8 +937,22 @@ class SafeBrain:
         """اجرای اکشن امن."""
         t0 = time.monotonic()
         try:
-            # ─── local handlers ───
             if action in SAFE_ACTIONS_HANDLED_LOCALLY:
+                if action == "reload_prompt":
+                    try:
+                        from config import reload_ai_prompts
+                        reload_ai_prompts()
+                        return (
+                            "✅ AI prompt ها بارگذاری "
+                            "مجدد شدند."
+                        )
+                    except Exception as e:
+                        log_error(
+                            f"❌ [SAFEBRAIN:reload_prompt] "
+                            f"{type(e).__name__}: {e}"
+                        )
+                        return f"❌ خطا: {e}"
+
                 if action == "help":
                     return self._help()
                 if action == "add_keyword":
@@ -736,7 +970,6 @@ class SafeBrain:
                 if action == "feature_request":
                     return self._log_request(raw_text)
 
-            # ─── delegate ───
             if action in SAFE_ACTIONS:
                 return _DELEGATE
 
@@ -845,7 +1078,7 @@ class SafeBrain:
 
     @staticmethod
     def _log_request(text: str) -> str:
-        """🎯 FIX: مسیر از data.paths."""
+        """مسیر از data.paths."""
         try:
             try:
                 from data import paths as data_paths
@@ -939,6 +1172,14 @@ class SafeBrain:
             self.cache.flush()
             self.project_memory.flush()
             self.global_memory.flush()
+
+            # 🆕 flush PersistentMemory (no-op ولی مفید)
+            if self.persistent_memory is not None:
+                try:
+                    self.persistent_memory.close()
+                except Exception:
+                    pass
+
             log_info(
                 "💾 [SAFEBRAIN:flush] همه ذخیره شدند"
             )
@@ -949,21 +1190,15 @@ class SafeBrain:
             )
 
     def close(self) -> None:
-        """🎯 shutdown تمیز."""
+        """shutdown تمیز."""
         self.flush()
-        try:
-            if self._ai_assistant is not None:
-                # AIAssistant معمولاً close ندارد
-                pass
-        except Exception:
-            pass
         log_info("🔌 [SAFEBRAIN:close] بسته شد")
 
     # ═══════════════════════════════════════════
     # debug
     # ═══════════════════════════════════════════
     def reset_stats(self) -> None:
-        """🎯 پاک کردن آمار — برای تست."""
+        """پاک کردن آمار — برای تست."""
         with self._api_lock:
             self._api_calls_this_hour = 0
             self._api_hour_start = time.monotonic()
@@ -976,13 +1211,15 @@ class SafeBrain:
             "errors": 0,
             "delegated": 0,
             "fallback": 0,
+            "persistent_recall": 0,
+            "persistent_remember": 0,
             "started_at": datetime.now().isoformat(),
             "started_monotonic": time.monotonic(),
         }
         log_info("🗑️ [SAFEBRAIN:stats] reset شد")
 
     def get_stats(self) -> dict[str, Any]:
-        """🎯 آمار کامل — برای debug."""
+        """آمار کامل — برای debug."""
         brain_age = (
             time.monotonic() - self._brain_failed_at
             if self._brain_failed_at > 0
@@ -1002,12 +1239,23 @@ class SafeBrain:
             if started else 0.0
         )
 
-        # ✅ حذف started_monotonic از output
         stats_clean = {
             k: v
             for k, v in self.stats.items()
             if k != "started_monotonic"
         }
+
+        # 🆕 آمار PersistentMemory
+        persistent_stats: dict[str, Any] = {}
+        if self.persistent_memory is not None:
+            try:
+                persistent_stats = (
+                    self.persistent_memory.get_stats()
+                )
+            except Exception as e:
+                persistent_stats = {
+                    "error": f"{type(e).__name__}: {e}"
+                }
 
         return {
             **stats_clean,
@@ -1015,6 +1263,7 @@ class SafeBrain:
             "cache": self.cache.stats(),
             "project_memory": self.project_memory.count,
             "global_memory": self.global_memory.count,
+            "persistent_memory": persistent_stats,
             "api_calls_this_hour": self._api_calls_this_hour,
             "api_hour_started_ago_s": round(
                 time.monotonic() - self._api_hour_start, 1
@@ -1034,11 +1283,15 @@ class SafeBrain:
         }
 
     def __repr__(self) -> str:
+        persistent = (
+            "✅" if self.persistent_memory else "❌"
+        )
         return (
             f"<SafeBrain "
             f"full_access={self.full_access} "
             f"api_key={'✅' if self.api_key else '❌'} "
-            f"brain={'✅' if self._brain_instance else '—'}>"
+            f"brain={'✅' if self._brain_instance else '—'} "
+            f"persistent={persistent}>"
         )
 
 
@@ -1097,7 +1350,7 @@ def get_safe_brain(
 
 
 def reset_safe_brain() -> None:
-    """🎯 پاک‌کردن singleton — فقط برای تست."""
+    """پاک‌کردن singleton — فقط برای تست."""
     global _shared_safe_brain
     with _shared_lock:
         if _shared_safe_brain is not None:

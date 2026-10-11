@@ -31,12 +31,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import os
 import sys
 import time
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 sys.path.insert(
@@ -45,7 +43,10 @@ sys.path.insert(
 )
 
 from tests.helpers import (
-    TestReport, banner, section, C,
+    C,
+    TestReport,
+    banner,
+    section,
 )
 
 
@@ -294,29 +295,28 @@ async def section_B_connections(report: TestReport,
                 report.add("B4.ollama", "skip", "URL خالی")
             else:
                 t0 = time.monotonic()
-                async with aiohttp.ClientSession() as s:
-                    async with s.get(
-                        f"{ollama_url}/api/tags",
-                        timeout=aiohttp.ClientTimeout(total=3.0),
-                    ) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            models = data.get("models", [])
-                            names = [m.get("name", "?") for m in models[:5]]
-                            report.add("B4.ollama.ping", "ok",
-                                       f"{len(models)} مدل | {names}",
-                                       (time.monotonic() - t0) * 1000)
-                            # ─── B5: مدل مورد نظر ───
-                            wanted = _AI.get("model", "?")
-                            if wanted in names:
-                                report.add("B5.ollama.model", "ok",
-                                           f"{wanted} موجود")
-                            else:
-                                report.add("B5.ollama.model", "warn",
-                                           f"{wanted} نیست")
+                async with aiohttp.ClientSession() as s, s.get(
+                    f"{ollama_url}/api/tags",
+                    timeout=aiohttp.ClientTimeout(total=3.0),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        models = data.get("models", [])
+                        names = [m.get("name", "?") for m in models[:5]]
+                        report.add("B4.ollama.ping", "ok",
+                                   f"{len(models)} مدل | {names}",
+                                   (time.monotonic() - t0) * 1000)
+                        # ─── B5: مدل مورد نظر ───
+                        wanted = _AI.get("model", "?")
+                        if wanted in names:
+                            report.add("B5.ollama.model", "ok",
+                                       f"{wanted} موجود")
                         else:
-                            report.add("B4.ollama.ping", "warn",
-                                       f"status={resp.status}")
+                            report.add("B5.ollama.model", "warn",
+                                       f"{wanted} نیست")
+                    else:
+                        report.add("B4.ollama.ping", "warn",
+                                   f"status={resp.status}")
         except Exception as e:
             report.add("B4.ollama.ping", "warn",
                        f"روشن نیست؟ | {type(e).__name__}")
@@ -598,7 +598,7 @@ async def section_F_manual(report: TestReport,
 
         # ─── F3: keywords API ───
         report.add("F3.keywords", "ok",
-                   f"custom_count="
+                   "custom_count="
                    f"{len(mbrain._load_custom_kw()) if hasattr(mbrain, '_load_custom_kw') else '?'}")
     except Exception as e:
         report.add("F1.manual", "skip",
@@ -693,7 +693,7 @@ async def section_H_tools(report: TestReport,
                        f"len={len(r)} | config.py خوانده شد")
         else:
             report.add("H1.read_file", "warn",
-                       f"خوانده شد ولی محتوا نامنتظره")
+                       "خوانده شد ولی محتوا نامنتظره")
     except Exception as e:
         report.add("H1.read_file", "fail", str(e))
 
@@ -777,7 +777,7 @@ async def section_H_tools(report: TestReport,
         report.add("H9.dashboard", "skip", "--skip-heavy")
 
     # ─── H10: append_knowledge (safe) ───
-    # ⚠️ این تست واقعاً مینویسه — می‌خوایم مطمئن شویم قفل کار می‌کنه
+    # ⚠️ این تست واقعاً می‌نویسه — می‌خوایم مطمئن شویم قفل کار می‌کنه
     try:
         r = await brain._write_file(
             "data/prompts/bot_knowledge.md",
@@ -848,7 +848,7 @@ async def section_I_intent(report: TestReport,
                    f"{elapsed:.0f}ms",
                    elapsed)
 
-        print(f"\n  📊 نتایج:")
+        print("\n  📊 نتایج:")
         print(f"     ✅ صحیح:   {passed}/{total}")
         print(f"     ❓ unknown: {unknown_count}")
         print(f"     ❌ اشتباه:  {failed}")
@@ -896,7 +896,9 @@ async def section_J_pipeline(report: TestReport, **kw):
     # ─── J2: db_helpers ───
     try:
         from tests.db_helpers import (
-            db_available, db_size_kb, count_messages,
+            count_messages,
+            db_available,
+            db_size_kb,
         )
         avail = db_available()
         report.add("J2.db.available",
@@ -909,16 +911,6 @@ async def section_J_pipeline(report: TestReport, **kw):
                        f"total={count_messages()}")
     except Exception as e:
         report.add("J2.db_helpers", "warn", str(e))
-
-    # ─── J3: helpers ───
-    try:
-        from tests.helpers import (
-            TestReport as _TR, check_env, check_session_exists,
-        )
-        report.add("J3.helpers", "ok", "همه import شدند")
-    except Exception as e:
-        report.add("J3.helpers", "warn", str(e))
-
 
 # ═════════════════════════════════════════════════════════
 # بخش K: Performance + Error

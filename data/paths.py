@@ -54,7 +54,8 @@ MARKERS: Path = CONFIGS_DIR / "markers.json"
 MESSAGES: Path = CONFIGS_DIR / "messages.json"
 TIERS: Path = CONFIGS_DIR / "tiers.json"
 COMMANDS: Path = CONFIGS_DIR / "commands.json"
-
+AI_PERSONA: Path = CONFIGS_DIR / "ai_persona.json"
+AI_MODE_PROMPTS: Path = CONFIGS_DIR / "ai_mode_prompts.json"
 
 # ══════════════════════════════════════════════════════════
 # schemas/
@@ -205,4 +206,8 @@ __all__ = [
     "PYCACHE_DIR",
     # helpers
     "ensure_runtime_dirs",
+    
+    "AI_SYSTEM_PROMPT",
+    "AI_PERSONA",
+    "AI_MODE_PROMPTS",
 ]

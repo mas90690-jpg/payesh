@@ -25,7 +25,6 @@ from core.kernel.logger import log_warning
 from core.manual._brain_core import (
     FUZZY_THRESHOLD,
     SLOW_ACTION_MS,
-    _env_int,  # noqa: F401
 )
 
 

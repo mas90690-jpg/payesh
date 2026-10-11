@@ -272,6 +272,12 @@ User: "xyz"
 User: ""
 → {"action": "unknown", "args": {}}
 ```
+### مثال ۹ — reload prompt
+User: "prompt رو دوباره بخون"
+→ {"action": "reload_prompt", "args": {}}
+
+User: "prompt را reload کن"
+→ {"action": "reload_prompt", "args": {}}
 
 ## نکات مهم
 

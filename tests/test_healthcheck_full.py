@@ -50,22 +50,21 @@ from __future__ import annotations
 import argparse
 import ast
 import hashlib
-import importlib.metadata
 import json
 import math
-import os
 import re
 import shutil
 import subprocess
 import sys
 import textwrap
-import tokenize
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Optional, Sequence
-
+from typing import Any, Iterator, Optional, Sequence
+import sys, io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 # ---------------------------------------------------------------------------
 # Console
@@ -183,13 +182,13 @@ CURRENT_REFERENCE_BASELINE = {
     "owasp": "OWASP Top 10:2025",
     "cwe": "CWE Top 25:2025",
     "iso": "ISO/IEC 25010:2023",
-    "sarif": "SARIF 2.1.0 + Approved Errata 01",
+    "sari": "SARIF 2.1.0 + Approved Errata 01",
     "asvs": "OWASP ASVS 5.0.0 (reference; not a completeness claim)",
     "nist": "NIST SP 800-218 SSDF 1.1 final; 1.2 remains draft in the current NIST publication list",
 }
 LATEST_TOOL_REFERENCE = {
     "python": "3.14.8",
-    "ruff": "0.16.10",
+    "ruf": "0.16.10",
     "bandit": "1.9.4",
     "mypy": "2.4.0",
     "note": "Versions verified against public package/release pages on 2026-10-05; the script executes the installed local versions when external mode is enabled.",
@@ -892,7 +891,7 @@ def rule_type_hints_docs(tree: ast.AST, rel: str, src: str, c: Collector) -> Non
                 list(node.args.args) +
                 list(node.args.kwonlyargs)
             )
-            if a.arg not in {"self", "cls"}
+            if a.arg not in {"sel", "cls"}
         ]
         missing_args = [a.arg for a in args if a.annotation is None]
         if missing_return or missing_args:
@@ -1029,7 +1028,7 @@ def rule_unused_args(tree: ast.AST, rel: str, src: str, c: Collector) -> None:
     for node in iter_functions(tree):
         used = names_used(node)
         for arg in list(node.args.args) + list(node.args.kwonlyargs) + list(node.args.posonlyargs):
-            if arg.arg in {"self", "cls"} or arg.arg.startswith("_"):
+            if arg.arg in {"sel", "cls"} or arg.arg.startswith("_"):
                 continue
             if arg.arg not in used:
                 c.add(
@@ -2051,7 +2050,6 @@ def _deep_add(c: Collector, *, rel: str, src: str, node: ast.AST, rule_id: str,
 
 def rule_professor_security(tree: ast.AST, rel: str, src: str, c: Collector) -> None:
     """Second security pass: high-signal Python web/service patterns."""
-    ancestors = _ancestor_functions(tree)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -2420,7 +2418,7 @@ def run_dependency_audit(root: Path, c: Collector) -> None:
     cmd = [exe]
     if req.exists():
         cmd += ["-r", str(req)]
-    cmd += ["-f", "json", "--progress-spinner", "off"]
+    cmd += ["-", "json", "--progress-spinner", "off"]
     rc, out, err = run_command(cmd, root, timeout=1200)
     try:
         payload = json.loads(out) if out.strip() else {}
@@ -2460,8 +2458,8 @@ def run_dependency_audit(root: Path, c: Collector) -> None:
 def run_external(root: Path, c: Collector) -> None:
     """Run available industry tools without making them hard dependencies."""
     jobs: list[tuple[str, list[str], str]] = [
-        ("ruff", ["ruff", "check", ".", "--output-format", "json"], "maintainability"),
-        ("bandit", ["bandit", "-r", ".", "-f", "json", "-q"], "security"),
+        ("ruf", ["ruf", "check", ".", "--output-format", "json"], "maintainability"),
+        ("bandit", ["bandit", "-r", ".", "-", "json", "-q"], "security"),
         ("pyflakes", ["pyflakes", "."], "maintainability"),
     ]
     for name, cmd, iso in jobs:
@@ -2478,7 +2476,7 @@ def run_external(root: Path, c: Collector) -> None:
         if rc == 0:
             continue
         # Preserve exact tool output as evidence, but keep each external result auditable.
-        parsed = _parse_external_json_findings(name, out) if name in {"ruff", "bandit"} else []
+        parsed = _parse_external_json_findings(name, out) if name in {"ruf", "bandit"} else []
         if name == "bandit" and isinstance(parsed, dict):
             parsed = parsed.get("results", [])
         if isinstance(parsed, list) and parsed:
@@ -2675,7 +2673,7 @@ def sarif_report(c: Collector, config: ScanConfig, started: str) -> dict[str, An
     rules = {}
     for f in c.findings:
         level = "error" if f.severity in {"critical", "high"} else ("warning" if f.severity == "medium" else "note")
-        rule = rules.setdefault(
+        rules.setdefault(
             f.rule_id,
             {
                 "id": f.rule_id,

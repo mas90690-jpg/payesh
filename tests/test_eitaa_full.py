@@ -300,7 +300,7 @@ async def main(headless: bool = False, max_chats: int = 0):
                 report.add(
                     "db.scrape_saved", "ok",
                     f"{in_db}/{total} کلیدواژه‌دار (غیر-Saved) "
-                    f"در DB ✅",
+                    "در DB ✅",
                 )
             elif in_db > 0:
                 report.add(
@@ -314,7 +314,7 @@ async def main(headless: bool = False, max_chats: int = 0):
                 )
 
             if found:
-                print(f"\n  📥 نمونهٔ leadهای ذخیره‌شده:")
+                print("\n  📥 نمونهٔ leadهای ذخیره‌شده:")
                 for rid, row in list(found.items())[:5]:
                     print(
                         f"     [{row.get('chat_name', '?')[:25]}] "
@@ -331,41 +331,41 @@ async def main(headless: bool = False, max_chats: int = 0):
                 report.add(
                     "db.scrape_saved", "skip",
                     f"تنها {saved_kw_count} پیام کلیدواژه‌دار از "
-                    f"Saved Messages بود (StorageHandler گارد ۰ دارد)",
+                    "Saved Messages بود (StorageHandler گارد ۰ دارد)",
                 )
                 print(
                     f"\n  ℹ️ {saved_kw_count} پیام کلیدواژه‌دار در "
-                    f"Saved Messages پیدا شد"
+                    "Saved Messages پیدا شد"
                 )
                 print(
-                    f"     StorageHandler گارد ۰ دارد و آن‌ها را "
-                    f"رد می‌کند"
+                    "     StorageHandler گارد ۰ دارد و آن‌ها را "
+                    "رد می‌کند"
                 )
                 print(
-                    f"     این طبیعی است — Saved Messages منبع "
-                    f"واقعی نیست"
+                    "     این طبیعی است — Saved Messages منبع "
+                    "واقعی نیست"
                 )
             elif msgs_kw:
                 # کلیدواژه داشت ولی به هر دلیل حذف شد
                 report.add(
                     "db.scrape_saved", "skip",
                     f"{len(msgs_kw)} کلیدواژه‌دار بود ولی هیچ‌کدام "
-                    f"به DB نرسیدند",
+                    "به DB نرسیدند",
                 )
             else:
                 # هیچ کلیدواژه‌داری نبود
                 report.add(
                     "db.scrape_saved", "skip",
                     f"هیچ‌کدام از {len(msgs)} پیام scrape‌شده "
-                    f"کلیدواژه ندارند",
+                    "کلیدواژه ندارند",
                 )
                 print(
-                    f"\n  ℹ️ هیچ پیام کلیدواژه‌داری در این scrape "
-                    f"نبود"
+                    "\n  ℹ️ هیچ پیام کلیدواژه‌داری در این scrape "
+                    "نبود"
                 )
                 print(
-                    f"     💡 برای تست کامل: پیام با برند "
-                    f"(مثل «یاراترا کریستا اس او پی») در ایتا بفرست"
+                    "     💡 برای تست کامل: پیام با برند "
+                    "(مثل «یاراترا کریستا اس او پی») در ایتا بفرست"
                 )
     else:
         report.add(

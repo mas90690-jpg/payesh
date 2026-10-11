@@ -210,8 +210,8 @@ def patch_console(
         }
         if verbose:
             _safe_stderr_write(
-                f"🔧 [CONSOLE] patch_console → "
-                f"(قبلاً patch شده)"
+                "🔧 [CONSOLE] patch_console → "
+                "(قبلاً patch شده)"
             )
         return result
 

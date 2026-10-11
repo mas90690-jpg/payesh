@@ -222,7 +222,7 @@ async def main(headless: bool = False):
                            f"0/{total} کلیدواژه‌دار در DB!")
 
             if found:
-                print(f"\n  📥 نمونهٔ leadهای ذخیره‌شده:")
+                print("\n  📥 نمونهٔ leadهای ذخیره‌شده:")
                 for rid, row in list(found.items())[:5]:
                     print(f"     [{row.get('sender_name', '?')[:25]}] "
                           f"{(row.get('text') or '')[:50]}")

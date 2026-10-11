@@ -4,9 +4,14 @@
 
 اجرا:
   python tests/run_all_tests.py
-  python tests/run_all_tests.py --only bale eitaa rubika
+  python tests/run_all_tests.py --only bale eitaa rubika youtube
   python tests/run_all_tests.py --headless
   python tests/run_all_tests.py --include-disabled
+
+نسخهٔ ۲.۰ (این نسخه):
+  - 🆕 پشتیبانی از YouTube (env-based enabled check).
+  - 🆕 YouTube در PLATFORMS list.
+  - ✅ حفظ همهٔ رفتار نسخهٔ ۱.
 """
 from __future__ import annotations
 
@@ -31,6 +36,7 @@ PLATFORMS = [
     "whatsapp",
     "linkedin",
     "instagram",
+    "youtube",      # 🆕
     "web",
 ]
 
@@ -43,7 +49,10 @@ def run_test(name: str, headless: bool = False) -> tuple[bool, float]:
         return (False, 0.0)
 
     cmd = [sys.executable, script]
-    if headless and name in ("bale", "eitaa", "linkedin", "instagram"):
+    if headless and name in (
+        "bale", "eitaa", "linkedin", "instagram",
+        "telegram", "whatsapp", "youtube",
+    ):
         cmd.append("--headless")
 
     t0 = time.monotonic()
@@ -77,10 +86,25 @@ def run_healthcheck() -> tuple[bool, float]:
 
 
 def _is_platform_enabled(platform: str) -> bool:
-    """آیا پلتفرم در config فعال است؟
+    """آیا پلتفرم فعال است؟
+
+    برای یوتیوب (که هنوز در PLUGINS_CONFIG نیست)، مستقیماً env را چک
+    می‌کنیم. برای بقیه، PLUGINS_CONFIG.
 
     اگر پلتفرم ناشناخته باشد یا config خطا داد → True (پیش‌فرض: تلاش).
     """
+    # 🆕 یوتیوب — env مستقیم
+    if platform == "youtube":
+        try:
+            from dotenv import load_dotenv
+            load_dotenv(override=False)
+        except Exception:
+            pass
+        raw = os.getenv(
+            "YOUTUBE_ENABLED", "false"
+        ).strip().lower()
+        return raw in ("true", "1", "yes", "on")
+
     try:
         from config import PLUGINS_CONFIG
         key = f"{platform}collector"
@@ -99,7 +123,7 @@ def main():
                         help="تست پلتفرم‌های خاموش را هم اجرا کن")
     args = parser.parse_args()
 
-    # ─── فیلتر پلتفرم‌های خاموش (مگر با --include-disabled) ───
+    # ─── فیلتر پلتفرم‌های خاموش ───
     requested = args.only if args.only else PLATFORMS
     tests: list[str] = []
     skipped: list[str] = []
@@ -112,7 +136,7 @@ def main():
 
     if skipped:
         print(f"⏭️  پلتفرم‌های خاموش (skip): {', '.join(skipped)}")
-        print(f"   (برای اجرا: --include-disabled)")
+        print("   (برای اجرا: --include-disabled)")
 
     if not tests:
         print("⚠️ هیچ پلتفرم فعالی برای تست نیست.")
@@ -165,7 +189,6 @@ def main():
     hc_status = "✅" if hc_ok else "❌"
     print(f"\n  {hc_status} Health Check | {hc_elapsed:.1f}s")
 
-    # کد خروج: اگر تست‌ها یا Health Check خطا داشتند → 1
     all_ok = (n_fail == 0) and hc_ok
     sys.exit(0 if all_ok else 1)
 

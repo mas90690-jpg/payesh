@@ -1,27 +1,20 @@
-"""حافظه و کش Brain — SmartCache, APIMemory, BrainMemory, Semantic.
+"""حافظه و کش Brain — SmartCache, APIMemory, BrainMemory,
+PersistentMemory, Semantic.
 
-نسخهٔ ۳ (این نسخه):
-  - 🐛 FIX مهم: `APIMemory._ensure_session` حالا با `asyncio.Lock`
-    از race condition جلوگیری می‌کند (قبلاً دو task هم‌زمان می‌توانستند
-    دو session بسازند).
-  - 🐛 FIX مهم: `APIMemory._post` حالا اگر session نبود، error
-    امن برمی‌گرداند (به‌جای AttributeError).
-  - 🐛 FIX مهم: `APIMemory.close` حالا idempotent است (دوبار صدا زدن
-    مشکلی ندارد).
-  - 🐛 FIX: `SmartCache.save` حالا قبل از write، `mkdir` می‌زند.
-  - 🐛 FIX: `SmartCache.save` حالا `os.fsync` می‌زند (durability).
-  - 🐛 FIX: `_on_task_done` حالا exception اصلی را دقیق‌تر می‌گیرد
-    (نه `except (asyncio.CancelledError, Exception)` که مبهم بود).
-  - 🐛 FIX: `BrainMemory.close` حالا منتظر pending taskها می‌ماند
-    (به‌جای رها کردن آن‌ها).
-  - 🎯 `_MAX_PENDING_TASKS` — سقف برای `_pending_tasks` (جلوگیری
-    از رشد نامحدود).
-  - 🎯 `BrainMemory.get_stats()` متد جدید برای debug.
-  - 🎯 `SmartCache.get_stats()` alias برای `stats()` (یکدست‌سازی).
-  - 🎯 لاگ‌های دقیق‌تر با prefixهای `[BRAIN:cache:*]`,
-    `[BRAIN:apimem:*]`, `[BRAIN:mem:*]`, `[BRAIN:sem:*]`.
-  - 🎯 `_env_int` helper برای thresholds.
-  - ✅ حفظ همهٔ رفتار نسخهٔ ۲.
+نسخهٔ ۴ (این نسخه):
+  - 🎯 NEW: `PersistentMemory` — حافظهٔ پایدار SQLite + FTS5:
+      * `remember(category, key, value)` — ذخیره
+      * `recall(query, category, limit)` — جستجو با FTS
+      * `get_context(query, n)` — ساخت context برای AI
+      * `count(category)` — تعداد
+      * `forget(days, min_importance)` — فراموشی انتخابی
+      * `get_stats()` — آمار کامل
+      * `close()` — بستن تمیز
+      * auto-cleanup وقتی از سقف گذشت
+  - 🎯 NEW: `get_persistent_memory()` — singleton
+  - 🎯 NEW: `reset_persistent_memory()` — برای تست
+  - 🎯 همهٔ مقادیر از `constants.py` (env-based)
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۳.
 """
 from __future__ import annotations
 
@@ -30,6 +23,7 @@ import glob
 import hashlib
 import json
 import os
+import sqlite3
 import threading
 import time
 from datetime import datetime, timedelta
@@ -40,10 +34,19 @@ from core.brain.constants import (
     CACHE_DIR,
     CACHE_SAVE_INTERVAL_S,
     CACHE_TTL_DAYS,
+    COMPRESS_THRESHOLD,
+    CONTEXT_API_N,
+    CONTEXT_CHROMA_N,
+    CONTEXT_RECENT,
     LOG_PREVIEW_LEN,
     MAX_CONTEXT_TOKENS,
     MAX_FILE_SIZE_BYTES,
+    MAX_PENDING_TASKS,
+    MAX_SHORT_TERM,
     MEMORY_DIR,
+    PERSISTENT_DB_PATH,
+    PERSISTENT_MAX_ROWS,
+    PERSISTENT_MEMORY_ENABLED,
     PROJECT_BASE,
 )
 from core.kernel.logger import (
@@ -74,33 +77,35 @@ def _env_int(
     return v
 
 
-# 🎯 سقف برای taskهای pending
-_MAX_PENDING_TASKS = _env_int(
-    "BRAIN_MAX_PENDING_TASKS", 100,
-    min_val=10, max_val=10_000,
-)
+def _env_float(
+    name: str, default: float,
+    min_val: float | None = None,
+    max_val: float | None = None,
+) -> float:
+    """خواندن float از env — با sanitize."""
+    try:
+        v = float(os.getenv(name, str(default)))
+    except (ValueError, TypeError):
+        return default
+    if min_val is not None and v < min_val:
+        return min_val
+    if max_val is not None and v > max_val:
+        return max_val
+    return v
 
-# 🎯 سقف برای context history
-_MAX_SHORT_TERM = _env_int(
-    "BRAIN_MAX_SHORT_TERM", 20,
-    min_val=5, max_val=500,
-)
-_COMPRESS_THRESHOLD = _env_int(
-    "BRAIN_COMPRESS_THRESHOLD", 15,
-    min_val=3, max_val=200,
-)
-_CONTEXT_RECENT = _env_int(
-    "BRAIN_CONTEXT_RECENT", 5,
-    min_val=1, max_val=50,
-)
-_CONTEXT_API_N = _env_int(
-    "BRAIN_CONTEXT_API_N", 3,
-    min_val=1, max_val=20,
-)
-_CONTEXT_CHROMA_N = _env_int(
-    "BRAIN_CONTEXT_CHROMA_N", 3,
-    min_val=1, max_val=20,
-)
+
+# 🎯 سقف‌های env-based
+_MAX_PENDING_TASKS = MAX_PENDING_TASKS
+_MAX_SHORT_TERM = MAX_SHORT_TERM
+_COMPRESS_THRESHOLD = COMPRESS_THRESHOLD
+_CONTEXT_RECENT = CONTEXT_RECENT
+_CONTEXT_API_N = CONTEXT_API_N
+_CONTEXT_CHROMA_N = CONTEXT_CHROMA_N
+
+# 🎯 Persistent Memory thresholds
+_PERSISTENT_MEMORY_ENABLED = PERSISTENT_MEMORY_ENABLED
+_PERSISTENT_DB_PATH = PERSISTENT_DB_PATH
+_PERSISTENT_MAX_ROWS = PERSISTENT_MAX_ROWS
 
 
 # ═══════════════════════════════════════════
@@ -231,7 +236,7 @@ class SmartCache:
             self.cache = {}
 
     def save(self) -> None:
-        """🎯 FIX: ذخیره atomic + fsync + mkdir."""
+        """ذخیره atomic + fsync + mkdir."""
         try:
             with self._lock:
                 data = json.dumps(
@@ -240,13 +245,12 @@ class SmartCache:
                 self._last_save = time.time()
                 self._dirty = False
 
-            # 🎯 FIX: mkdir قبل از write
+            # mkdir قبل از write
             self.filepath.parent.mkdir(parents=True, exist_ok=True)
 
             tmp = self.filepath.with_suffix(".tmp")
             with open(str(tmp), "w", encoding="utf-8") as f:
                 f.write(data)
-                # 🎯 FIX: fsync
                 try:
                     f.flush()
                     os.fsync(f.fileno())
@@ -298,7 +302,6 @@ class SmartCache:
                 "dirty": self._dirty,
             }
 
-    # 🎯 alias برای یکدست‌سازی
     def get_stats(self) -> dict[str, Any]:
         return self.stats()
 
@@ -316,7 +319,6 @@ class APIMemory:
         self.api_key = api_key
         self.timeout = timeout
         self._session = None
-        # 🐛 FIX: lock برای جلوگیری از race در ساخت session
         self._session_lock = asyncio.Lock()
         log_info(
             f"🧠 [BRAIN:apimem:init] url={self.api_url} | "
@@ -325,11 +327,10 @@ class APIMemory:
         )
 
     async def _ensure_session(self):
-        """🎯 FIX: ساخت session با lock (بدون race)."""
+        """ساخت session با lock (بدون race)."""
         if self._session is not None:
             return
         async with self._session_lock:
-            # چک دوباره داخل lock
             if self._session is not None:
                 return
             try:
@@ -357,7 +358,6 @@ class APIMemory:
 
     async def _post(self, endpoint: str, data: dict) -> dict:
         """POST امن — با چک session."""
-        # 🐛 FIX: چک session
         try:
             await self._ensure_session()
         except Exception as e:
@@ -411,7 +411,6 @@ class APIMemory:
         content: str,
         metadata: dict | None = None,
     ) -> dict:
-        """افزودن به حافظه API."""
         return await self._post(
             "add",
             {
@@ -424,7 +423,6 @@ class APIMemory:
     async def search(
         self, query: str, n: int = 5
     ) -> list[dict]:
-        """جستجو در حافظه API."""
         result = await self._post(
             "search", {"query": query, "n": n}
         )
@@ -437,7 +435,6 @@ class APIMemory:
     async def get_context(
         self, query: str = "", n: int = 5
     ) -> list[dict]:
-        """گرفتن context از حافظه API."""
         result = await self._post(
             "context", {"query": query, "n": n}
         )
@@ -448,11 +445,10 @@ class APIMemory:
         return []
 
     async def clear(self) -> dict:
-        """پاک کردن حافظه API."""
         return await self._post("clear", {})
 
     async def close(self) -> None:
-        """🎯 FIX: idempotent close."""
+        """idempotent close."""
         session = self._session
         self._session = None
         if session is not None:
@@ -466,6 +462,655 @@ class APIMemory:
                     f"⚠️ [BRAIN:apimem:close] "
                     f"{type(e).__name__}: {e}"
                 )
+
+
+# ═══════════════════════════════════════════
+# 🆕 PersistentMemory — حافظهٔ پایدار SQLite + FTS5
+# ═══════════════════════════════════════════
+class PersistentMemory:
+    """حافظهٔ پایدار — هیچ‌وقت پاک نمی‌شود.
+
+    SQLite + FTS5 برای جستجوی سریع متن کامل.
+
+    Features:
+        - `remember(category, key, value, importance)` → ذخیره
+        - `recall(query, category, limit)` → جستجو با FTS
+        - `get_context(query, n)` → context برای AI
+        - `count(category)` → تعداد
+        - `forget(days, min_importance)` → فراموشی انتخابی
+        - `get_stats()` → آمار
+        - `close()` → بستن تمیز
+
+    Categories پیشنهادی:
+        - "conversation"     → گفتگوهای عادی
+        - "code_review"      → نتایج بازبینی کد
+        - "knowledge"        → دانش‌های یادگرفته
+        - "reflexion"        → درس‌های اشتباهات
+        - "learned_rule"     → قوانین یادگرفته‌شده
+    """
+
+    def __init__(
+        self,
+        db_path: str | None = None,
+        max_rows: int | None = None,
+    ):
+        # ─── مسیر absolute ───
+        raw_path = (
+            db_path
+            or _PERSISTENT_DB_PATH
+            or "storage/brain/persistent.db"
+        )
+        p = Path(raw_path)
+        if not p.is_absolute():
+            try:
+                p = Path(PROJECT_BASE) / raw_path
+            except Exception:
+                p = Path.cwd() / raw_path
+
+        self.db_path = str(p)
+        self.max_rows = max(
+            100,
+            int(max_rows or _PERSISTENT_MAX_ROWS or 100_000),
+        )
+
+        # ─── ساخت پوشه ───
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            log_warning(
+                f"⚠️ [MEM:mkdir] {type(e).__name__}: {e}"
+            )
+
+        # ─── lock ───
+        self._lock = threading.RLock()
+
+        # ─── schema ───
+        self._init_db()
+
+        log_success(
+            f"🧠 [MEM:init] آماده | db={self.db_path} | "
+            f"max_rows={self.max_rows} | "
+            f"count={self.count()}"
+        )
+
+    # ═══════════════════════════════════════════
+    # schema
+    # ═══════════════════════════════════════════
+    def _init_db(self) -> None:
+        """ساخت جدول‌ها + FTS + indexes."""
+        with self._lock:
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    # ─── جدول اصلی ───
+                    conn.execute("""
+                        CREATE TABLE IF NOT EXISTS memory (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            category TEXT NOT NULL,
+                            key TEXT NOT NULL,
+                            value TEXT NOT NULL,
+                            importance REAL DEFAULT 0.5,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            accessed_at TIMESTAMP,
+                            access_count INTEGER DEFAULT 0
+                        )
+                    """)
+
+                    # ─── indexes ───
+                    conn.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_memory_category
+                        ON memory(category)
+                    """)
+                    conn.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_memory_key
+                        ON memory(key)
+                    """)
+                    conn.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_memory_created
+                        ON memory(created_at DESC)
+                    """)
+                    conn.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_memory_importance
+                        ON memory(importance DESC)
+                    """)
+
+                    # ─── FTS5 ───
+                    try:
+                        conn.execute("""
+                            CREATE VIRTUAL TABLE IF NOT EXISTS
+                            memory_fts
+                            USING fts5(
+                                key, value, category,
+                                content='memory',
+                                content_rowid='id'
+                            )
+                        """)
+
+                        # trigger INSERT
+                        conn.execute("""
+                            CREATE TRIGGER IF NOT EXISTS memory_ai
+                            AFTER INSERT ON memory BEGIN
+                                INSERT INTO memory_fts(
+                                    rowid, key, value, category
+                                )
+                                VALUES (
+                                    new.id, new.key,
+                                    new.value, new.category
+                                );
+                            END
+                        """)
+
+                        # trigger DELETE
+                        conn.execute("""
+                            CREATE TRIGGER IF NOT EXISTS memory_ad
+                            AFTER DELETE ON memory BEGIN
+                                INSERT INTO memory_fts(
+                                    memory_fts, rowid, key,
+                                    value, category
+                                )
+                                VALUES (
+                                    'delete', old.id, old.key,
+                                    old.value, old.category
+                                );
+                            END
+                        """)
+                    except sqlite3.OperationalError as e:
+                        log_warning(
+                            f"⚠️ [MEM:fts] FTS5 در دسترس نیست | "
+                            f"{type(e).__name__}: {e}"
+                        )
+
+                    conn.commit()
+
+                log_info(
+                    f"🗄️ [MEM:schema] آماده | {self.db_path}"
+                )
+            except Exception as e:
+                log_error(
+                    f"❌ [MEM:schema] {type(e).__name__}: {e}"
+                )
+                raise
+
+    # ═══════════════════════════════════════════
+    # remember
+    # ═══════════════════════════════════════════
+    def remember(
+        self,
+        category: str,
+        key: str,
+        value: str,
+        importance: float = 0.5,
+    ) -> int:
+        """ذخیرهٔ یک خاطره.
+
+        Args:
+            category: دسته (conversation, code_review, knowledge, ...).
+            key: کلید (سؤال کاربر، مسیر فایل، ...).
+            value: مقدار (پاسخ، محتوا، ...).
+            importance: اهمیت (0-1).
+
+        Returns:
+            id رکورد جدید یا -1 در صورت خطا.
+        """
+        if not key or not value:
+            log_warning(
+                "⚠️ [MEM:remember] key/value خالی — رد شد"
+            )
+            return -1
+
+        # sanitize
+        cat = str(category or "misc")[:100]
+        k = str(key)[:500]
+        v = str(value)[:10000]
+
+        try:
+            imp = float(importance)
+        except (TypeError, ValueError):
+            imp = 0.5
+        imp = max(0.0, min(1.0, imp))
+
+        try:
+            with self._lock:
+                with sqlite3.connect(self.db_path) as conn:
+                    cur = conn.execute(
+                        """
+                        INSERT INTO memory
+                            (category, key, value, importance)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (cat, k, v, imp),
+                    )
+                    conn.commit()
+                    new_id = cur.lastrowid or -1
+
+                    # ─── cleanup اگر از سقف گذشت ───
+                    self._maybe_cleanup(conn)
+
+            log_info(
+                f"💾 [MEM:remember] {cat} | id={new_id} | "
+                f"key={k[:60]!r} | imp={imp}"
+            )
+            return new_id
+
+        except Exception as e:
+            log_error(
+                f"❌ [MEM:remember] {type(e).__name__}: {e}"
+            )
+            return -1
+
+    def _maybe_cleanup(self, conn) -> None:
+        """اگر از سقف گذشت، قدیمی‌ترین‌ها را حذف کن."""
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM memory"
+            ).fetchone()
+            total = row[0] if row else 0
+
+            if total <= self.max_rows:
+                return
+
+            # حذف ۱۰٪ قدیمی‌ترین + کم‌اهمیت
+            excess = total - self.max_rows
+            remove_n = max(excess, self.max_rows // 10)
+
+            conn.execute(
+                """
+                DELETE FROM memory
+                WHERE id IN (
+                    SELECT id FROM memory
+                    ORDER BY importance ASC, created_at ASC
+                    LIMIT ?
+                )
+                """,
+                (remove_n,),
+            )
+            conn.commit()
+
+            log_warning(
+                f"🧹 [MEM:cleanup] {remove_n} رکورد قدیمی حذف شد | "
+                f"total_before={total}"
+            )
+        except Exception as e:
+            log_warning(
+                f"⚠️ [MEM:cleanup] {type(e).__name__}: {e}"
+            )
+
+    # ═══════════════════════════════════════════
+    # recall
+    # ═══════════════════════════════════════════
+    def recall(
+        self,
+        query: str = "",
+        category: str = "",
+        limit: int = 10,
+    ) -> list[dict]:
+        """به‌یاد آوردن — با FTS یا LIKE.
+
+        Args:
+            query: متن جستجو.
+            category: فیلتر دسته (اختیاری).
+            limit: حداکثر نتایج.
+
+        Returns:
+            لیست dict با id, category, key, value,
+            importance, created_at, access_count.
+        """
+        try:
+            limit = max(1, min(int(limit), 100))
+        except (TypeError, ValueError):
+            limit = 10
+
+        results: list[dict] = []
+
+        with self._lock:
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.row_factory = sqlite3.Row
+
+                    # ─── FTS اول ───
+                    if query and query.strip():
+                        try:
+                            sql = """
+                                SELECT m.* FROM memory m
+                                JOIN memory_fts f ON m.id = f.rowid
+                                WHERE memory_fts MATCH ?
+                            """
+                            params: list[Any] = [query]
+                            if category:
+                                sql += " AND m.category = ?"
+                                params.append(category)
+                            sql += (
+                                " ORDER BY m.importance DESC, "
+                                "m.created_at DESC LIMIT ?"
+                            )
+                            params.append(limit)
+
+                            rows = conn.execute(
+                                sql, params
+                            ).fetchall()
+                            results = [dict(r) for r in rows]
+                        except Exception as e:
+                            log_warning(
+                                f"⚠️ [MEM:fts] {e} — fallback LIKE"
+                            )
+
+                    # ─── fallback: LIKE ───
+                    if not results:
+                        sql = (
+                            "SELECT * FROM memory WHERE 1=1"
+                        )
+                        params = []
+                        if category:
+                            sql += " AND category = ?"
+                            params.append(category)
+                        if query:
+                            sql += (
+                                " AND (key LIKE ? "
+                                "OR value LIKE ?)"
+                            )
+                            like = f"%{query}%"
+                            params.extend([like, like])
+                        sql += (
+                            " ORDER BY importance DESC, "
+                            "created_at DESC LIMIT ?"
+                        )
+                        params.append(limit)
+
+                        rows = conn.execute(
+                            sql, params
+                        ).fetchall()
+                        results = [dict(r) for r in rows]
+
+                    # ─── آپدیت access_count ───
+                    if results:
+                        ids = [r["id"] for r in results]
+                        placeholders = ",".join(
+                            "?" * len(ids)
+                        )
+                        conn.execute(
+                            f"""
+                            UPDATE memory
+                            SET access_count =
+                                access_count + 1,
+                                accessed_at = CURRENT_TIMESTAMP
+                            WHERE id IN ({placeholders})
+                            """,
+                            ids,
+                        )
+                        conn.commit()
+
+            except Exception as e:
+                log_error(
+                    f"❌ [MEM:recall] {type(e).__name__}: {e}"
+                )
+
+        log_info(
+            f"🔍 [MEM:recall] query={query[:40]!r} | "
+            f"category={category or 'all'} | "
+            f"results={len(results)}"
+        )
+        return results
+
+    # ═══════════════════════════════════════════
+    # get_context
+    # ═══════════════════════════════════════════
+    def get_context(
+        self, query: str = "", n: int = 5
+    ) -> str:
+        """ساخت context از حافظه — برای AI.
+
+        Args:
+            query: متن جستجو.
+            n: تعداد آیتم.
+
+        Returns:
+            متن آماده برای درج در prompt (یا "").
+        """
+        results = self.recall(query=query, limit=n)
+        if not results:
+            return ""
+
+        lines = ["# حافظهٔ مرتبط:"]
+        for r in results:
+            cat = r.get("category", "?")
+            key = str(r.get("key", ""))[:100]
+            val = str(r.get("value", ""))[:300]
+            lines.append(
+                f"\n[{cat}] {key}\n→ {val}"
+            )
+        return "\n".join(lines)
+
+    # ═══════════════════════════════════════════
+    # count
+    # ═══════════════════════════════════════════
+    def count(self, category: str = "") -> int:
+        """تعداد رکوردها (کل یا یک دسته)."""
+        with self._lock:
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    if category:
+                        cur = conn.execute(
+                            "SELECT COUNT(*) FROM memory "
+                            "WHERE category = ?",
+                            (category,),
+                        )
+                    else:
+                        cur = conn.execute(
+                            "SELECT COUNT(*) FROM memory"
+                        )
+                    row = cur.fetchone()
+                    return row[0] if row else 0
+            except Exception as e:
+                log_warning(
+                    f"⚠️ [MEM:count] {type(e).__name__}: {e}"
+                )
+                return 0
+
+    # ═══════════════════════════════════════════
+    # forget
+    # ═══════════════════════════════════════════
+    def forget(
+        self,
+        days: int = 30,
+        min_importance: float = 0.2,
+    ) -> int:
+        """فراموشی — حذف رکوردهای کم‌اهمیت و قدیمی.
+
+        Args:
+            days: چند روز پیش.
+            min_importance: اهمیت کمتر از این حذف شود.
+
+        Returns:
+            تعداد حذف‌شده.
+        """
+        try:
+            days = max(1, int(days))
+        except (TypeError, ValueError):
+            days = 30
+
+        try:
+            imp = float(min_importance)
+        except (TypeError, ValueError):
+            imp = 0.2
+
+        with self._lock:
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    cur = conn.execute(
+                        """
+                        DELETE FROM memory
+                        WHERE importance < ?
+                          AND julianday('now')
+                              - julianday(created_at) > ?
+                          AND (
+                              access_count = 0
+                              OR access_count IS NULL
+                          )
+                        """,
+                        (imp, days),
+                    )
+                    conn.commit()
+                    n = cur.rowcount or 0
+
+                if n > 0:
+                    log_success(
+                        f"🧹 [MEM:forget] {n} رکورد "
+                        f"(imp<{imp}, age>{days}d)"
+                    )
+                return n
+            except Exception as e:
+                log_warning(
+                    f"⚠️ [MEM:forget] {type(e).__name__}: {e}"
+                )
+                return 0
+
+    # ═══════════════════════════════════════════
+    # clear (دستی — با احتیاط)
+    # ═══════════════════════════════════════════
+    def clear(self, category: str = "") -> int:
+        """پاک کردن همه یا یک دسته — دستی.
+
+        ⚠️ با احتیاط استفاده کن.
+        """
+        with self._lock:
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    if category:
+                        cur = conn.execute(
+                            "DELETE FROM memory "
+                            "WHERE category = ?",
+                            (category,),
+                        )
+                    else:
+                        cur = conn.execute(
+                            "DELETE FROM memory"
+                        )
+                    conn.commit()
+                    n = cur.rowcount or 0
+                    conn.execute("VACUUM")
+                    conn.commit()
+
+                log_warning(
+                    f"🗑️ [MEM:clear] {n} رکورد "
+                    f"(category={category or 'all'})"
+                )
+                return n
+            except Exception as e:
+                log_error(
+                    f"❌ [MEM:clear] {type(e).__name__}: {e}"
+                )
+                return 0
+
+    # ═══════════════════════════════════════════
+    # get_stats
+    # ═══════════════════════════════════════════
+    def get_stats(self) -> dict[str, Any]:
+        """آمار کامل — برای debug."""
+        with self._lock:
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.row_factory = sqlite3.Row
+
+                    total = conn.execute(
+                        "SELECT COUNT(*) as n FROM memory"
+                    ).fetchone()["n"]
+
+                    by_cat = conn.execute("""
+                        SELECT category, COUNT(*) as n
+                        FROM memory
+                        GROUP BY category
+                        ORDER BY n DESC
+                        LIMIT 20
+                    """).fetchall()
+
+                    try:
+                        size_bytes = os.path.getsize(
+                            self.db_path
+                        )
+                        size_kb = round(size_bytes / 1024, 1)
+                    except Exception:
+                        size_kb = 0
+
+                    return {
+                        "total": total,
+                        "by_category": {
+                            r["category"]: r["n"]
+                            for r in by_cat
+                        },
+                        "db_path": self.db_path,
+                        "size_kb": size_kb,
+                        "max_rows": self.max_rows,
+                    }
+            except Exception as e:
+                log_warning(
+                    f"⚠️ [MEM:stats] {type(e).__name__}: {e}"
+                )
+                return {
+                    "total": 0,
+                    "by_category": {},
+                    "db_path": self.db_path,
+                    "size_kb": 0,
+                    "max_rows": self.max_rows,
+                }
+
+    # ═══════════════════════════════════════════
+    # close
+    # ═══════════════════════════════════════════
+    def close(self) -> None:
+        """بستن تمیز — no-op فعلاً (connection per-call)."""
+        log_info("🔌 [MEM:close] بسته شد")
+
+    # ═══════════════════════════════════════════
+    # __repr__
+    # ═══════════════════════════════════════════
+    def __repr__(self) -> str:
+        return (
+            f"<PersistentMemory db={os.path.basename(self.db_path)} "
+            f"count={self.count()}>"
+        )
+
+
+# ═══════════════════════════════════════════
+# PersistentMemory Singleton
+# ═══════════════════════════════════════════
+_shared_persistent: PersistentMemory | None = None
+_shared_persistent_lock = threading.Lock()
+
+
+def get_persistent_memory() -> PersistentMemory | None:
+    """دریافت PersistentMemory singleton.
+
+    اگر `PERSISTENT_MEMORY_ENABLED=false` باشد، None برمی‌گرداند.
+    """
+    global _shared_persistent
+
+    if not _PERSISTENT_MEMORY_ENABLED:
+        return None
+
+    if _shared_persistent is None:
+        with _shared_persistent_lock:
+            if _shared_persistent is None:
+                try:
+                    _shared_persistent = PersistentMemory()
+                except Exception as e:
+                    log_error(
+                        f"❌ [MEM:singleton] "
+                        f"{type(e).__name__}: {e}"
+                    )
+                    return None
+    return _shared_persistent
+
+
+def reset_persistent_memory() -> None:
+    """پاک کردن singleton — فقط برای تست."""
+    global _shared_persistent
+    with _shared_persistent_lock:
+        if _shared_persistent is not None:
+            try:
+                _shared_persistent.close()
+            except Exception:
+                pass
+            log_info("🗑️ [MEM:singleton] reset شد")
+        _shared_persistent = None
 
 
 # ═══════════════════════════════════════════
@@ -490,9 +1135,7 @@ class BrainMemory:
         self.api_memory: APIMemory | None = None
         self.chroma_client = None
         self.collection = None
-        # 🐛 FIX: نگه‌داری reference taskها
         self._pending_tasks: list[asyncio.Task] = []
-        # 🐛 FIX: lock برای task list
         self._tasks_lock = threading.Lock()
 
         if use_api and api_url:
@@ -534,7 +1177,7 @@ class BrainMemory:
             )
 
     def _spawn_task(self, coro) -> None:
-        """🎯 FIX: ساخت task با reference نگه‌داری + سقف."""
+        """ساخت task با reference نگه‌داری + سقف."""
         try:
             task = asyncio.create_task(coro)
         except RuntimeError as e:
@@ -545,9 +1188,7 @@ class BrainMemory:
             return
 
         with self._tasks_lock:
-            # 🎯 FIX: سقف برای pending tasks
             if len(self._pending_tasks) >= _MAX_PENDING_TASKS:
-                # قدیمی‌ترین task تمام‌شده را حذف کن
                 self._pending_tasks = [
                     t for t in self._pending_tasks
                     if not t.done()
@@ -564,14 +1205,13 @@ class BrainMemory:
         task.add_done_callback(self._on_task_done)
 
     def _on_task_done(self, task: asyncio.Task) -> None:
-        """🎯 FIX: exception دقیق‌تر."""
+        """exception دقیق‌تر."""
         with self._tasks_lock:
             try:
                 self._pending_tasks.remove(task)
             except ValueError:
                 pass
 
-        # چک exception (به‌جز CancelledError)
         if task.cancelled():
             return
         try:
@@ -626,7 +1266,7 @@ class BrainMemory:
             self._compress()
 
     def _compress(self) -> None:
-        """🎯 FIX: خلاصه‌سازی با threshold env-based."""
+        """خلاصه‌سازی با threshold env-based."""
         if len(self.short_term) < _COMPRESS_THRESHOLD:
             return
         to_summarize = self.short_term[:_COMPRESS_THRESHOLD]
@@ -776,8 +1416,7 @@ class BrainMemory:
             return []
 
     async def close(self) -> None:
-        """🎯 FIX: منتظر pending taskها + بستن API session."""
-        # ─── منتظر pending taskها (با timeout) ───
+        """منتظر pending taskها + بستن API session."""
         with self._tasks_lock:
             pending = list(self._pending_tasks)
         if pending:
@@ -806,12 +1445,11 @@ class BrainMemory:
                     f"{type(e).__name__}: {e}"
                 )
 
-        # ─── بستن API ───
         if self.api_memory:
             await self.api_memory.close()
 
     def get_stats(self) -> dict[str, Any]:
-        """🎯 خلاصهٔ وضعیت — برای debug."""
+        """خلاصهٔ وضعیت — برای debug."""
         with self._tasks_lock:
             pending_count = sum(
                 1 for t in self._pending_tasks if not t.done()
@@ -840,10 +1478,10 @@ class ProjectSemanticSearch:
 
     def _init(self) -> None:
         """ساخت ChromaDB client با embedding — یا غیرفعال اگه ممکن نبود."""
-        # 🎯 FIX: sentence-transformers در Python 3.14 پشتیبانی نمی‌شه
-        # و دانلود مدل خیلی سنگینه. پس semantic search رو غیرفعال می‌کنیم.
         import os
-        if os.getenv("BRAIN_DISABLE_SEMANTIC", "true").lower() == "true":
+        if os.getenv(
+            "BRAIN_DISABLE_SEMANTIC", "true"
+        ).lower() == "true":
             log_info(
                 "ℹ️ [BRAIN:sem:init] semantic search غیرفعال "
                 "(BRAIN_DISABLE_SEMANTIC=true)"
@@ -890,7 +1528,7 @@ class ProjectSemanticSearch:
             self.client = None
             self.collection = None
             self.embedding_fn = None
-            
+
     def index_files(
         self, patterns: list[str] | None = None
     ) -> int:
@@ -985,3 +1623,17 @@ class ProjectSemanticSearch:
                 f"{type(e).__name__}: {e}"
             )
             return []
+
+
+# ═══════════════════════════════════════════
+# __all__
+# ═══════════════════════════════════════════
+__all__ = [
+    "SmartCache",
+    "APIMemory",
+    "BrainMemory",
+    "ProjectSemanticSearch",
+    "PersistentMemory",
+    "get_persistent_memory",
+    "reset_persistent_memory",
+]

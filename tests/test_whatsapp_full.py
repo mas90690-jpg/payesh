@@ -71,9 +71,9 @@ async def main(headless: bool = False, max_chats: int = 0):
         f"exists={session_exists}",
     )
     if not session_exists:
-        print(f"\n  ⚠️ نشست واتساپ وجود ندارد")
-        print(f"     یک‌بار اجرا کن: python login.py → گزینهٔ ۵ (واتساپ)")
-        print(f"     سپس با گوشی QR را اسکن کن")
+        print("\n  ⚠️ نشست واتساپ وجود ندارد")
+        print("     یک‌بار اجرا کن: python login.py → گزینهٔ ۵ (واتساپ)")
+        print("     سپس با گوشی QR را اسکن کن")
 
     # ═══ ۳) pipeline ═══
     section("مرحله ۳: ساخت pipeline end-to-end")
@@ -123,8 +123,8 @@ async def main(headless: bool = False, max_chats: int = 0):
         )
         if not ok:
             print(f"\n{C.WARN}⚠️ اتصال واتساپ شکست خورد.{C.END}")
-            print(f"   راه‌حل: python login.py → گزینهٔ ۵")
-            print(f"   ⚠️ در ایران ممکن است VPN (سایفون) لازم باشد")
+            print("   راه‌حل: python login.py → گزینهٔ ۵")
+            print("   ⚠️ در ایران ممکن است VPN (سایفون) لازم باشد")
             await safe_disconnect(collector, report)
             await pipeline.stop()
             report.print_summary()
@@ -235,7 +235,7 @@ async def main(headless: bool = False, max_chats: int = 0):
         else:
             report.add(
                 "msg.chat_id", "warn",
-                f"chat_id خالی یا نامعتبر",
+                "chat_id خالی یا نامعتبر",
             )
     else:
         report.add("msg.structure", "warn",
@@ -302,7 +302,7 @@ async def main(headless: bool = False, max_chats: int = 0):
                 )
 
             if found:
-                print(f"\n  📥 نمونهٔ leadهای ذخیره‌شده در DB:")
+                print("\n  📥 نمونهٔ leadهای ذخیره‌شده در DB:")
                 for rid, row in list(found.items())[:5]:
                     chat = (row.get("chat_name") or "?")[:25]
                     txt = (row.get("text") or "")[:50]
@@ -314,14 +314,14 @@ async def main(headless: bool = False, max_chats: int = 0):
             report.add(
                 "db.scrape_saved", "skip",
                 f"هیچ‌کدام از {len(msgs)} پیام scrape‌شده "
-                f"کلیدواژه ندارند (طبیعی — پیام‌های عمومی)",
+                "کلیدواژه ندارند (طبیعی — پیام‌های عمومی)",
             )
-            print(f"\n  ℹ️ هیچ پیام کلیدواژه‌داری در این scrape نبود")
-            print(f"     این طبیعی است — StorageHandler فقط "
-                  f"پیام‌های برند را ذخیره می‌کند")
-            print(f"     ")
-            print(f"     💡 برای تست کامل: یک پیام با برند "
-                  f"(مثل «یاراترا کریستا اس او پی») در واتساپ بفرست")
+            print("\n  ℹ️ هیچ پیام کلیدواژه‌داری در این scrape نبود")
+            print("     این طبیعی است — StorageHandler فقط "
+                  "پیام‌های برند را ذخیره می‌کند")
+            print("     ")
+            print("     💡 برای تست کامل: یک پیام با برند "
+                  "(مثل «یاراترا کریستا اس او پی») در واتساپ بفرست")
     else:
         report.add(
             "db.scrape_saved", "skip",

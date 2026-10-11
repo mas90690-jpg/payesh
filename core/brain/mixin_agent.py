@@ -29,7 +29,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from config import AI, AI_ENABLED, AI_PRIORITY
+from config import AI, AI_ENABLED, AI_PRIORITY, OFFLINE_MODE_ENABLED
 from core.brain.constants import (
     DEFAULT_BASE_URL,
     DEFAULT_MODEL,
@@ -735,7 +735,13 @@ class AgentMixin:
                 step_t0 = time.monotonic()
 
                 if not self.client:
-                    final_answer = self._offline_agent(task)
+                    if OFFLINE_MODE_ENABLED:
+                        final_answer = self._offline_agent(task)
+                    else:
+                        final_answer = (
+                            "⚠️ مغز در دسترس نیست "
+                            "(DeepSeek متصل نشد)."
+                        )
                     break
 
                 # ─── API call (با timeout) ───
@@ -1107,8 +1113,13 @@ class AgentMixin:
         # ─── agent fallback ───
         if self.client:
             return await self.agent(text)
-        return self._offline_agent(text)
 
+        # 🎯 اگه آفلاین خاموشه، پیام خطا بده
+        if not OFFLINE_MODE_ENABLED:
+            return "⚠️ مغز در دسترس نیست (DeepSeek متصل نشد)."
+
+        return self._offline_agent(text)
+        
     async def _handle_action(
         self, action: str, args: dict, original_text: str
     ) -> str | None:

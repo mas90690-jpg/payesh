@@ -24,7 +24,6 @@ import json
 import os
 import re
 import time
-import threading as _threading
 from core.adapters.memory_store import MemoryStore
 from datetime import datetime
 from pathlib import Path
@@ -267,7 +266,6 @@ class LearningEngine:
         self._save_learned_data()
                 # 🎯 ذخیره در MemoryStore جدید
         try:
-            from core.adapters.memory_store import MemoryStore
             store = MemoryStore()
             store.add(
                 category="interactions",
@@ -339,7 +337,6 @@ class LearningEngine:
     def to_memory_store(self) -> None:
         """ذخیرهٔ همهٔ الگوها در MemoryStore جدید."""
         try:
-            from core.adapters.memory_store import MemoryStore
             store = MemoryStore()
             for key, data in self.learned_patterns.items():
                 count = data.get("count", 0)

@@ -34,8 +34,12 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests.helpers import (
-    TestReport, banner, check_env, check_session_exists,
-    safe_disconnect, section, C,
+    TestReport,
+    banner,
+    check_env,
+    safe_disconnect,
+    section,
+    C,
 )
 from tests.pipeline_helpers import TestPipeline
 
@@ -131,11 +135,11 @@ async def main(headless: bool = False, max_chats: int = 0):
     )
     if not session_exists:
         print(f"\n{C.FAIL}❌ نشست تلگرام‌وب وجود ندارد{C.END}")
-        print(f"   راه‌حل:")
-        print(f"     ۱) VPN را روشن کن")
-        print(f"     ۲) python login.py → گزینه تلگرام وِب")
-        print(f"     ۳) در مرورگر با شماره و کد پیامکی وارد شو")
-        print(f"     ۴) بعد دوباره این تست را اجرا کن")
+        print("   راه‌حل:")
+        print("     ۱) VPN را روشن کن")
+        print("     ۲) python login.py → گزینه تلگرام وِب")
+        print("     ۳) در مرورگر با شماره و کد پیامکی وارد شو")
+        print("     ۴) بعد دوباره این تست را اجرا کن")
         report.print_summary()
         report.save()
         return False
@@ -190,9 +194,9 @@ async def main(headless: bool = False, max_chats: int = 0):
         )
         if not ok:
             print(f"\n{C.WARN}⚠️ اتصال تلگرام‌وب شکست خورد{C.END}")
-            print(f"   راه‌حل:")
-            print(f"     ۱) VPN را چک کن (web.telegram.org)")
-            print(f"     ۲) python login.py → گزینه تلگرام وِب")
+            print("   راه‌حل:")
+            print("     ۱) VPN را چک کن (web.telegram.org)")
+            print("     ۲) python login.py → گزینه تلگرام وِب")
             await safe_disconnect(collector, report)
             await pipeline.stop()
             report.print_summary()
@@ -336,7 +340,7 @@ async def main(headless: bool = False, max_chats: int = 0):
                 )
 
             if found:
-                print(f"\n  📥 نمونهٔ leadهای ذخیره‌شده در DB:")
+                print("\n  📥 نمونهٔ leadهای ذخیره‌شده در DB:")
                 for rid, row in list(found.items())[:5]:
                     chat = (row.get("chat_name") or "?")[:25]
                     txt = (row.get("text") or "")[:50]
@@ -351,9 +355,9 @@ async def main(headless: bool = False, max_chats: int = 0):
                 "db.scrape_saved", "skip",
                 f"هیچ‌کدام از {len(msgs)} پیام کلیدواژه ندارند",
             )
-            print(f"\n  ℹ️ هیچ پیام کلیدواژه‌داری در این scrape نبود")
-            print(f"     💡 برای تست کامل: پیام با برند "
-                  f"(مثل «یاراترا کریستا اس او پی») در یه چت بفرست")
+            print("\n  ℹ️ هیچ پیام کلیدواژه‌داری در این scrape نبود")
+            print("     💡 برای تست کامل: پیام با برند "
+                  "(مثل «یاراترا کریستا اس او پی») در یه چت بفرست")
     else:
         report.add(
             "db.scrape_saved", "skip",

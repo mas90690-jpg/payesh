@@ -775,24 +775,32 @@ class WhatsAppCollector(BaseCollector):
 
     async def _get_open_chat_title(self) -> str:
         """نام چت باز فعلی را از header مکالمه استخراج می‌کند.
-        
-        ⭐ FIX: در فرمت جدید واتساپ (۲۰۲۶)، chat_id از DOM در نمی‌آید و
-        تنها سیگنال قابل اعتماد نام چت از header است [citation:3][citation:10].
+
+        FIX (2026-10-10):
+        - ترتیب سلکتورها برعکس شد — قبلی 'You' (اسم خود کاربر) رو
+          برمی‌گردوند به‌جای اسم چت.
+        - سلکتورهای تست‌شده: conversation-info-header-chat-title و
+          span[dir="auto"] اسم واقعی رو می‌دن.
+        - فیلتر 'You' و 'click here' اضافه شد.
         """
-        # روش ۱: انتخابگر مستقیم header (پایدار)
         for sel in [
+            '[data-testid="conversation-info-header-chat-title"]',
+            'header span[dir="auto"]',
             'header[data-testid="conversation-header"] span',
             '[data-testid="conversation-info-header"] span[title]',
-            "header span[title]",
-            'header div[role="button"] span[dir="auto"]',
         ]:
             try:
                 el = await self._page.query_selector(sel)
                 if el:
                     t = (await el.get_attribute("title")) or (await el.inner_text())
                     t = (t or "").strip()
-                    if t and len(t) < 100:
-                        return t
+                    if not t or len(t) >= 100:
+                        continue
+                    if t == "You":
+                        continue
+                    if "click here" in t.lower():
+                        continue
+                    return t
             except Exception:
                 continue
         return _DEFAULT_CHAT_NAME

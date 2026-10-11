@@ -361,14 +361,8 @@ class Logger:
         if self._console_enabled:
             self._setup_console_handler()
 
-        # ─── File handler ───
-        try:
-            from config import SYSTEM_CONFIG
-            _sys_log_to_file = SYSTEM_CONFIG.get(
-                "log_to_file", True
-            )
-        except Exception:
-            _sys_log_to_file = True
+        # ─── File handler (فقط env — config غیرامنه) ───
+        _sys_log_to_file = _env_bool("LOG_TO_FILE", "true")
 
         self._file_enabled = (
             bool(_sys_log_to_file)
@@ -395,62 +389,28 @@ class Logger:
 
     @staticmethod
     def _resolve_log_dir() -> str:
-        """🎯 FIX: اولویت config → env → default."""
-        # ─── config ───
-        try:
-            from config import LOG_CONFIG
-            d = LOG_CONFIG.get("directory")
-            if d:
-                return str(d)
-        except Exception:
-            pass
-
-        # ─── SYSTEM_CONFIG (lazy) ───
-        try:
-            from config import SYSTEM_CONFIG
-            d = SYSTEM_CONFIG.get("log_directory")
-            if d:
-                return str(d)
-        except Exception:
-            pass
-
-        # ─── env ───
+        """🎯 FIX: بدون config — فقط env و default."""
+        # ─── env (همیشه امن) ───
         d = os.getenv("LOG_DIR")
         if d and d.strip():
             return d.strip()
 
-        return "storage/logs"
-        
+        # ─── default: مسیر پروژه + storage/logs ───
+        try:
+            here = os.path.abspath(__file__)
+            project_root = os.path.dirname(
+                os.path.dirname(os.path.dirname(here))
+            )
+            return os.path.join(project_root, "storage", "logs")
+        except Exception:
+            return "storage/logs"
+            
     @staticmethod
     def _resolve_log_level() -> str:
-        """🎯 FIX: اولویت config → env → default."""
-        # ─── config ───
-        try:
-            from config import LOG_CONFIG
-            lv = LOG_CONFIG.get("level")
-            if lv:
-                lv_u = str(lv).upper()
-                if lv_u in _LEVEL_NO:
-                    return lv_u
-        except Exception:
-            pass
-
-        # ─── SYSTEM_CONFIG (lazy) ───
-        try:
-            from config import SYSTEM_CONFIG
-            lv = SYSTEM_CONFIG.get("log_level")
-            if lv:
-                lv_u = str(lv).upper()
-                if lv_u in _LEVEL_NO:
-                    return lv_u
-        except Exception:
-            pass
-
-        # ─── env ───
+        """🎯 FIX: بدون config — فقط env."""
         lv = os.getenv("LOG_LEVEL", "").strip().upper()
         if lv in _LEVEL_NO:
             return lv
-
         return "INFO"
         
     def _setup_console_handler(self) -> None:
@@ -484,33 +444,17 @@ class Logger:
     def _setup_file_handler(self) -> None:
         """🎯 FIX: setup file handler با config/env."""
         try:
-            # ─── config ───
-            max_mb = 10.0
-            backups = 30
-            as_json = True
-            try:
-                from config import LOG_CONFIG
-                max_mb = float(
-                    LOG_CONFIG.get("max_mb", 10)
-                )
-                backups = int(
-                    LOG_CONFIG.get("backups", 30)
-                )
-                as_json = bool(
-                    LOG_CONFIG.get("json", True)
-                )
-            except Exception:
-                # env fallback
-                max_mb = _env_float(
-                    "LOG_MAX_MB", 10.0,
-                    min_val=0.1, max_val=10_000,
-                )
-                backups = _env_int(
-                    "LOG_BACKUPS", 30,
-                    min_val=0, max_val=10_000,
-                )
-                as_json = _env_bool("LOG_JSON", "true")
-
+            # ─── فقط از env بخون (config غیرامنه) ───
+            max_mb = _env_float(
+                "LOG_MAX_MB", 10.0,
+                min_val=0.1, max_val=10_000,
+            )
+            backups = _env_int(
+                "LOG_BACKUPS", 30,
+                min_val=0, max_val=10_000,
+            )
+            as_json = _env_bool("LOG_JSON", "true")
+            
             if max_mb <= 0:
                 max_mb = 10.0
             if backups < 0:

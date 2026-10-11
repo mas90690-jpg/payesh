@@ -66,7 +66,10 @@ sys.path.insert(
 )
 
 from tests.helpers import (
-    TestReport, banner, check_env, safe_disconnect, section, C,
+    TestReport,
+    banner,
+    section,
+    C,
 )
 
 
@@ -283,7 +286,7 @@ async def main(
             if key.startswith("sk-"):
                 report.add(
                     "deepseek.key.format", "ok",
-                    f"شکل صحیح (sk-...)",
+                    "شکل صحیح (sk-...)",
                 )
             else:
                 report.add(
@@ -456,7 +459,7 @@ async def main(
                 except Exception as e:
                     report.add(
                         "ollama.ping", "warn",
-                        f"Ollama روشن نیست؟ | "
+                        "Ollama روشن نیست؟ | "
                         f"{type(e).__name__}: {_short(e, 60)}",
                     )
         except Exception as e:
@@ -582,7 +585,7 @@ async def main(
         elif action == "unknown":
             report.add(
                 "ai.parse_intent", "warn",
-                f"action=unknown (AI تشخیص نداد) | "
+                "action=unknown (AI تشخیص نداد) | "
                 f"{elapsed:.0f}ms",
             )
         else:
@@ -724,12 +727,12 @@ async def main(
             if reply3 and "مسدود" in reply3:
                 report.add(
                     "safe_brain.security", "ok",
-                    f"الگوی ممنوعه مسدود شد",
+                    "الگوی ممنوعه مسدود شد",
                 )
             elif reply3 is None:
                 report.add(
                     "safe_brain.security", "warn",
-                    f"delegate شد (انتظار: مسدود)",
+                    "delegate شد (انتظار: مسدود)",
                 )
             else:
                 report.add(
@@ -1027,7 +1030,7 @@ async def main(
         except Exception as e:
             report.add(
                 "manual_brain", "skip",
-                f"در دسترس نیست | "
+                "در دسترس نیست | "
                 f"{type(e).__name__}: {_short(e, 60)}",
             )
     else:
@@ -1184,7 +1187,7 @@ async def main(
                 f"uptime={stats.get('uptime_s', 0):.0f}s",
             )
     except Exception as e:
-        report.add("perf", "warn", str(e))
+        report.add("per", "warn", str(e))
 
     # ═══════════════════════════════════════════════════
     # مرحله ۱۹: error handling
@@ -1257,7 +1260,7 @@ async def main(
                 report.add(
                     "cache.hit", "ok",
                     f"بار1={t1:.0f}ms بار2={t2:.0f}ms "
-                    f"(سریع‌تر ✅)",
+                    "(سریع‌تر ✅)",
                 )
             else:
                 report.add(

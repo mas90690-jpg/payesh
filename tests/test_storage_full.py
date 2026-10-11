@@ -32,7 +32,9 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests.helpers import (
-    TestReport, banner, section, C,
+    TestReport,
+    banner,
+    section,
 )
 from tests.db_helpers import (
     db_available, db_size_kb,
@@ -188,8 +190,8 @@ async def main():
         else:
             report.add(
                 "kw.prematch", "fail",
-                f"متن با هیچ کلیدواژه‌ای match نشد! "
-                f"این تست شکست خواهد خورد."
+                "متن با هیچ کلیدواژه‌ای match نشد! "
+                "این تست شکست خواهد خورد."
             )
     except Exception as e:
         report.add("kw.prematch", "warn", str(e))
@@ -251,7 +253,7 @@ async def main():
                 f"chat={(stored.get('chat_name') or '?')[:25]} | "
                 f"kw={kw_str}"
             )
-            print(f"\n  ✅ پیام در DB پیدا شد:")
+            print("\n  ✅ پیام در DB پیدا شد:")
             print(f"     id={stored['id']}")
             print(f"     chat={stored['chat_name']}")
             print(f"     text={(stored.get('text') or '')[:80]}")
@@ -269,17 +271,17 @@ async def main():
             detail = f"پیام با {unique_marker} در DB نیست"
             if fallback_row:
                 detail += (
-                    f" | ولی پیام دیگری در DB هست: "
+                    " | ولی پیام دیگری در DB هست: "
                     f"id={fallback_row['id'][:30]}"
                 )
             report.add("db.saved", "fail", detail)
 
             # ─── اطلاعات دیباگ اضافی ───
-            print(f"\n  🔍 دیباگ:")
+            print("\n  🔍 دیباگ:")
             print(f"     dropped={handler.stats.get('dropped', 0)}")
             print(f"     total={handler.stats.get('total', 0)}")
             print(
-                f"     messages_with_keywords="
+                "     messages_with_keywords="
                 f"{handler.stats.get('messages_with_keywords', 0)}"
             )
             print(
@@ -322,7 +324,7 @@ async def main():
                    f"storage_test: total={total} | leads={leads}")
 
         if samples:
-            print(f"\n  📋 نمونهٔ پیام‌های DB تست:")
+            print("\n  📋 نمونهٔ پیام‌های DB تست:")
             for s in samples:
                 print(f"     id={str(s[0])[:30]} | "
                       f"chat={s[1]} | "

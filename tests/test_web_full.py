@@ -32,7 +32,6 @@ import asyncio
 import os
 import sys
 import time
-import traceback
 
 sys.path.insert(
     0,
@@ -337,7 +336,7 @@ async def main(
                 )
 
             if found:
-                print(f"\n  📥 نمونهٔ leadهای ذخیره‌شده:")
+                print("\n  📥 نمونهٔ leadهای ذخیره‌شده:")
                 for rid, row in list(found.items())[:5]:
                     print(f"     [{row.get('chat_name', '?')[:40]}]")
                     print(f"        {(row.get('text') or '')[:60]}")

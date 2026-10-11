@@ -1,45 +1,25 @@
 """Brain — کلاس اصلی + singleton.
 
-نسخهٔ ۵ (این نسخه):
-  - 🐛 FIX: `_lessons` حالا **قبل از** `learning_engine` تعریف می‌شود
-    (ترتیب وابستگی — جلوگیری از AttributeError).
-  - 🐛 FIX: `l` → `item` (رفع هشدار E741).
-  - 🐛 FIX: کامنت `# 🎯 بارگذاری درس‌های قبلی` حالا ۸ فاصله دارد.
-  - 🐛 FIX: `_background_index` حالا `_index_started` را در صورت
-    خطا reset می‌کند (اجازهٔ retry).
-  - ✅ حفظ همهٔ FIXهای نسخهٔ ۴.
-
-نسخهٔ ۴ (قبلی):
-  - 🎯 NEW: سه ابزار audit به `_TOOL_METHODS` اضافه شد:
-      * `audit_code`   → `_audit_code`
-      * `audit_file`   → `_audit_file`
-      * `fix_fstrings` → `_fix_fstrings`
-  - ✅ حفظ همهٔ FIXهای نسخهٔ ۳.
-
-نسخهٔ ۳ (قبلی):
-  - 🎯 NEW: `append_knowledge` ابزار — افزودن به bot_knowledge.md
-    (در `_TOOL_METHODS` ثبت شد).
-  - ✅ حفظ همهٔ FIXهای نسخهٔ ۲.
-
-نسخهٔ ۲ (قبلی):
-  - 🎯 استفاده از `config.AI` و `config.AI_PRIORITY` (top-level).
-  - 🐛 FIX: `TOOL_MAP` حالا با تابع `_build_tool_map()` ساخته می‌شود
-    که قبل از افزودن هر متد، `hasattr` چک می‌کند (جلوگیری از
-    AttributeError در صورت حذف/rename یک متد).
-  - 🐛 FIX: `_build_tool_map()` حالا هر ابزارِ گم‌شده را لاگ
-    می‌کند (به‌جای crash).
-  - 🐛 FIX: `_background_index` حالا با یک flag `_index_started`
-    محافظت می‌شود (جلوگیری از thread تکراری در init دوباره).
-  - 🎯 لاگ‌های دقیق‌تر با prefixهای `[BRAIN:init:*]` و `[BRAIN:singleton:*]`.
-  - 🎯 `self.stats` با type hints کامل.
-  - 🎯 `api_key` حالا از `config.AI["deepseek_api_key"]` هم می‌آید
-    (به‌جای `os.environ.get` مستقیم).
-  - 🎯 `get_brain()` حالا در هر بار فراخوانی، `last_used` را به‌روز
-    می‌کند (برای debug).
-  - 🎯 `reset_brain()` متد جدید برای تست.
+نسخهٔ ۶ (این نسخه):
+  - 🎯 NEW: ۸ ابزار Chunk Reading به `_TOOL_METHODS` اضافه شد:
+      * `read_all`     → `_read_all`
+      * `read_chunk`   → `_read_chunk`
+      * `read_lines`   → `_read_lines`
+      * `read_range`   → `_read_range`
+  - 🎯 NEW: ۴ ابزار File Utils به `_TOOL_METHODS` اضافه شد:
+      * `file_info`    → `_file_info`
+      * `file_exists`  → `_file_exists`
+      * `file_hash`    → `_file_hash`
+      * `find_files`   → `_find_files`
+  - 🎯 مجموع ابزارها: ۵۳ (قبلاً ۴۵)
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۵:
+      * `_lessons` قبل از `learning_engine`.
+      * `l` → `item` (E741).
+      * `_background_index` reset flag.
+      * tools audit (code, file, fix_fstrings).
 """
 from __future__ import annotations
-
+from core.brain.mixin_platforms import PlatformMixin
 import threading
 import time
 from datetime import datetime
@@ -83,52 +63,99 @@ from core.kernel.logger import (
 # لیست ابزارهای موردانتظار (نام → نام متد)
 # ═══════════════════════════════════════════════════════════
 _TOOL_METHODS: dict[str, str] = {
+    # ═══ فایل (read) — ۹ ابزار ═══
     "read_file": "_read_file",
+    "read_all": "_read_all",              # 🆕
+    "read_chunk": "_read_chunk",          # 🆕
+    "read_lines": "_read_lines",          # 🆕
+    "read_range": "_read_range",          # 🆕
+    "file_info": "_file_info",            # 🆕
+    "file_exists": "_file_exists",        # 🆕
+    "file_hash": "_file_hash",            # 🆕
+    "find_files": "_find_files",          # 🆕
+    "list_directory": "_list_directory",
+
+    # ═══ فایل (write) — ۴ ابزار ═══
     "write_file": "_write_file",
     "edit_file": "_edit_file",
     "append_knowledge": "_append_knowledge",
-    "list_directory": "_list_directory",
     "delete_file": "_delete_file",
     "move_file": "_move_file",
+
+    # ═══ Git — ۵ ابزار ═══
     "git_status": "_git_status",
     "git_diff": "_git_diff",
     "git_commit": "_git_commit",
     "git_log": "_git_log",
     "git_branch": "_git_branch",
+
+    # ═══ اجرا — ۴ ابزار ═══
     "execute_command": "_execute_command",
+    "execute_python": "_execute_python",
+    "run_tests": "_run_tests",
+    "run_tests_coverage": "_run_tests_with_coverage",
+    "analyze_security": "_analyze_security",
+
+    # ═══ سیستم — ۵ ابزار ═══
     "get_system_info": "_get_system_info",
     "list_processes": "_list_processes",
     "kill_process": "_kill_process",
     "ping_host": "_ping_host",
-    "run_tests": "_run_tests",
-    "execute_python": "_execute_python",
+    "system_dashboard": "_system_dashboard",
+
+    # ═══ تحلیل — ۴ ابزار ═══
     "analyze_code": "_analyze_code",
     "semantic_search": "_semantic_search",
     "grep_search": "_grep_search",
+    "get_project_context": "_get_project_context",
+
+    # ═══ دیتابیس — ۱ ابزار ═══
     "query_database": "_query_database",
+
+    # ═══ وب — ۳ ابزار ═══
     "browse_web": "_browse_web",
-    "clipboard_get": "_clipboard_get",
-    "zip_archive": "_zip_archive",
     "web_search": "_web_search",
+    "clipboard_get": "_clipboard_get",
+
+    # ═══ zip — ۱ ابزار ═══
+    "zip_archive": "_zip_archive",
+
+    # ═══ AI helpers — ۵ ابزار ═══
     "generate_tests": "_generate_tests",
     "code_review": "_code_review",
     "fix_bug": "_fix_bug",
     "plan_task": "_plan_task",
-    "get_project_context": "_get_project_context",
-    "system_dashboard": "_system_dashboard",
-    "run_tests_coverage": "_run_tests_with_coverage",
-    "analyze_security": "_analyze_security",
     "backup_project": "_backup_project",
+
+    # ═══ تنظیمات — ۵ ابزار ═══
     "get_setting": "_get_setting",
     "set_setting": "_set_setting",
     "toggle_platform": "_toggle_platform",
     "platform_status": "_platform_status",
     "change_poll_interval": "_change_poll_interval",
     "get_access_summary": "_get_access_summary",
-    # ─── 🎯 NEW: ابزارهای audit ───
+
+    # ═══ Audit — ۳ ابزار ═══
     "audit_code": "_audit_code",
     "audit_file": "_audit_file",
     "fix_fstrings": "_fix_fstrings",
+    
+    # ═══ پلتفرم‌ها ═══
+    "start_platform": "_start_platform",
+    "stop_platform": "_stop_platform",
+    "platform_health": "_platform_health",
+    "platform_diagnose": "_platform_diagnose",
+    "platform_run_once": "_platform_run_once",
+    "list_platforms": "_list_platforms",
+
+    # 🆕 اضافه کن:
+    "diagnose_platform": "_diagnose_platform",
+    "run_platform_as_user": "_run_platform_as_user",
+    "list_all_platforms": "_list_all_platforms",
+    
+    # 🆕 کنترل پلتفرم
+    "control_platform": "_control_platform",
+    "control_stats": "_control_stats",    
 }
 
 
@@ -141,6 +168,7 @@ class Brain(
     InfoMixin,
     ReportsMixin,
     AgentMixin,
+    PlatformMixin,
 ):
     """مغز هوشمند امن — ترکیب همهٔ mixinها."""
 

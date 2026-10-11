@@ -27,7 +27,6 @@ config.py — منبع یکتای تنظیمات پروژه (از .env).
 from __future__ import annotations
 
 import os
-import sys
 from typing import Any
 
 from data import paths as data_paths
@@ -99,6 +98,7 @@ def _env_list(
 PLATFORMS_ORDER: tuple[str, ...] = (
     "eitaa", "bale", "rubika", "telegram",
     "whatsapp", "web", "linkedin", "instagram",
+    "youtube",
 )
 """ترتیب canonical پلتفرم‌ها — برای نمایش/گزارش/مرتب‌سازی."""
 
@@ -138,7 +138,10 @@ def get_browser_proxy() -> dict[str, Any]:
 # ══════════════════════════════════════════════════════════
 AI_ENABLED: bool = _env_bool("AI_ENABLED", True)
 EVENT_LOG: bool = _env_bool("EVENT_LOG", False)
-
+# 🆕 حالت آفلاین
+OFFLINE_MODE_ENABLED: bool = _env_bool(
+    "OFFLINE_MODE_ENABLED", False
+)
 _VALID_AI_PRIORITIES = {"auto", "deepseek", "ollama"}
 _ai_priority_raw = (_env_str("AI_PRIORITY", "auto").lower() or "auto")
 if _ai_priority_raw not in _VALID_AI_PRIORITIES:
@@ -148,7 +151,8 @@ if _ai_priority_raw not in _VALID_AI_PRIORITIES:
     )
     _ai_priority_raw = "auto"
 AI_PRIORITY: str = _ai_priority_raw
-
+# خط ~۱۵۰ — اضافه کن:
+OLLAMA_ENABLED: bool = _env_bool("OLLAMA_ENABLED", False)
 
 # ══════════════════════════════════════════════════════════
 # مسیرهای storage
@@ -369,9 +373,9 @@ _WEEKLY_DAY_MAP: dict[str, str] = {
     "دوشنبه": "mon", "دو‌شنبه": "mon", "دو شنبه": "mon",
     "سه‌شنبه": "tue", "سه شنبه": "tue", "سهشنبه": "tue",
     "چهارشنبه": "wed", "چهار‌شنبه": "wed",
-    "چهار شنبه": "wed", "چهارشنبه": "wed",
+    "چهار شنبه": "wed",
     "پنجشنبه": "thu", "پنج‌شنبه": "thu",
-    "پنج شنبه": "thu", "پنجشنبه": "thu",
+    "پنج شنبه": "thu",
     "جمعه": "fri",
 }
 
@@ -712,6 +716,25 @@ def _build_plugins_config() -> dict[str, Any]:
             "read_posts": _env_bool("INSTAGRAM_READ_POSTS", True),
         },
 
+        # یوتیوب
+        "youtubecollector": {
+            "session_path": os.path.join(SESSIONS_DIR, "youtube_web"),
+            "media_dir": os.path.join(MEDIA_DIR, "youtube"),
+            "enabled": _env_bool("YOUTUBE_ENABLED", False),
+            "headless": _env_bool("BROWSER_HEADLESS", True),
+            "poll_seconds": _env_int(
+                "YOUTUBE_POLL_SECONDS", 1800,
+                min_val=60, max_val=86400,
+            ),
+            "max_videos": _env_int(
+                "YOUTUBE_MAX_VIDEOS", 20, min_val=1, max_val=100
+            ),
+            "delay_between": _env_float(
+                "YOUTUBE_DELAY_BETWEEN", 3.0,
+                min_val=0.5, max_val=30.0,
+            ),
+        },
+        
         # وب
         "webcollector": {
             "sources_file": str(data_paths.WEB_SOURCES),
@@ -802,166 +825,108 @@ AI: dict[str, Any] = {
 
 
 # ══════════════════════════════════════════════════════════
-# 🎯 NEW: AI Persona — شخصیت متخصص پایش کد
+# 🎯 AI Prompt — از data/ می‌خونیم (منبع یکتا)
 # ══════════════════════════════════════════════════════════
-AI_PERSONA: dict[str, Any] = {
-    "role": "مهندس نرم‌افزار ارشد متخصص پایش کد",
-    "name": "WinDoctor",
-    "language": "fa",
-    "expertise": [
-        "تحلیل استاتیک کد پایتون با AST",
-        "پیدا کردن خطاهای import (اشتباه، اضافه، ناقص)",
-        "پیدا کردن متغیرهای استفاده‌نشده",
-        "پیدا کردن f-string های بی‌placeholder",
-        "پیدا کردن کد تکراری و dead code",
-        "پیدا کردن باگ‌های منطقی",
-        "بررسی امنیت کد (SQL injection, XSS, ...)",
-        "بهینه‌سازی عملکرد",
-        "طراحی الگوهای نرم‌افزاری",
-    ],
-    "behavior": {
-        "always_audit_first": True,
-        "categorize_errors": True,
-        "provide_line_numbers": True,
-        "provide_fix_suggestions": True,
-        "be_concise": True,
-        "speak_persian": True,
-    },
-}
+
+def _load_ai_persona(force: bool = False) -> dict[str, Any]:
+    """بارگذاری شخصیت AI از data/configs/ai_persona.json."""
+    try:
+        from data.loader import load_json
+        data = load_json("ai_persona", default={}, force=force)
+        if isinstance(data, dict) and "persona" in data:
+            return data["persona"]
+    except Exception as e:
+        _warn(f"ai_persona.json load | {type(e).__name__}: {e}")
+
+    # ─── fallback امن ───
+    return {
+        "role": "دستیار هوشمند پایش سرنخ",
+        "name": "WinDoctor",
+        "language": "fa",
+        "expertise": [],
+        "behavior": {"speak_persian": True},
+    }
 
 
-# 🎯 System prompt اصلی برای DeepSeek
-AI_SYSTEM_PROMPT: str = """
-تو یک «مهندس نرم‌افزار ارشد متخصص پایش کد» هستی.
-نام تو «WinDoctor» است.
+def _load_ai_system_prompt() -> str:
+    """بارگذاری system prompt از data/prompts/ai_system_prompt.md."""
+    try:
+        path = data_paths.PROMPTS_DIR / "ai_system_prompt.md"
+        if path.exists():
+            return path.read_text(encoding="utf-8").strip()
+    except Exception as e:
+        _warn(f"ai_system_prompt.md load | {type(e).__name__}: {e}")
 
-🎯 **تخصص‌های تو:**
-1. تحلیل استاتیک کد پایتون با AST
-2. پیدا کردن خطاهای import (اشتباه، اضافه، ناقص)
-3. پیدا کردن متغیرهای استفاده‌نشده
-4. پیدا کردن f-string های بی‌placeholder
-5. پیدا کردن کد تکراری و dead code
-6. پیدا کردن باگ‌های منطقی
-7. بررسی امنیت کد
-8. بهینه‌سازی عملکرد
-
-📋 **قواعد کار تو:**
-
-**قاعدهٔ ۱ — همیشه اول بررسی کن، بعد جواب بده:**
-اگر کاربر از «خطا»، «مشکل»، «بررسی»، «audit»، «پایش» حرف زد،
-**حتماً** از ابزار `audit_code` یا `audit_file` استفاده کن.
-هرگز بدون بررسی، حدس نزن.
-
-**قاعدهٔ ۲ — دسته‌بندی کن:**
-خطاها را در این دسته‌ها گزارش کن:
-- 🔴 **جدی**: اسم تعریف‌نشده، import ناقص، خطای منطقی
-- 🟠 **متوسط**: import اضافه، متغیر استفاده‌نشده
-- 🟡 **جزئی**: f-string بی‌placeholder، style
-
-**قاعدهٔ ۳ — دقیق بگو:**
-برای هر خطا این ۴ چیز را بگو:
-- 📁 کدوم فایل
-- 📍 کدوم خط
-- ❌ چی هست مشکل
-- ✅ چطور درستش کنی
-
-**قاعدهٔ ۴ — با ابزار کار کن:**
-- برای بررسی کل پروژه: `audit_code`
-- برای بررسی یک فایل: `audit_file`
-- برای درست کردن f-string: `fix_fstrings`
-- برای جستجوی الگو: `grep_search`
-- برای خوندن فایل: `read_file`
-
-**قاعدهٔ ۵ — ساده و دقیق حرف بزن:**
-- همیشه فارسی جواب بده
-- از کلمات ساده استفاده کن
-- کوتاه و مفید بگو
-- اگه مطمئن نیستی، بگو «نیاز به بررسی بیشتر»
-
-**قاعدهٔ ۶ — کاری که می‌تونی بکنی، لیست کن:**
-آخر جوابت بگو:
-«می‌تونم این کارها رو بکنم:
-- بررسی کنم فلان فایل رو
-- درست کنم f-string ها رو
-- ...»
-
-🚫 **کارهایی که نکن:**
-- بدون بررسی، جواب نده
-- الکی خطا نساز
-- کد رو خودسر تغییر نده (اول بپرس)
-- از «من یک مدل هوش مصنوعی هستم» استفاده نکن
-
-🎯 **هدف نهایی:**
-پروژه رو تمیز، امن، و بهینه کن.
-"""
+    # ─── fallback امن ───
+    return (
+        "تو «WinDoctor» هستی — دستیار هوشمند پایش سرنخ.\n"
+        "همیشه فارسی، دقیق، کوتاه جواب بده."
+    )
 
 
-# 🎯 Prompt های تخصصی برای هر mode
-AI_MODE_PROMPTS: dict[str, str] = {
-    "audit": """
-حالت پایش کد فعال است.
-حتماً از ابزار `audit_code` استفاده کن.
-خطاها رو دسته‌بندی کن و دقیق بگو.
-""",
-    "audit_file": """
-حالت بررسی یک فایل فعال است.
-حتماً از ابزار `audit_file` استفاده کن.
-شماره خط + مشکل + راه‌حل بده.
-""",
-    "fix": """
-حالت درست کردن فعال است.
-قبل از تغییر، بکاپ بگیر.
-dry_run=True اجرا کن و نشون بده.
-""",
-    "explain": """
-حالت توضیح فعال است.
-کد رو خط‌به‌خط توضیح بده.
-""",
-    "code": """
-حالت برنامه‌نویسی فعال است.
-کد تمیز و production-ready بنویس.
-""",
-    "chat": """
-حالت گفتگوی معمولی فعال است.
-دوستانه و مفید جواب بده.
-""",
-    "analyze": """
-حالت تحلیل فعال است.
-دقیق و عمیق بررسی کن.
-""",
-    "precise": """
-حالت دقیق فعال است.
-فقط بر اساس داده‌ها جواب بده.
-""",
-}
+def _load_ai_mode_prompts(force: bool = False) -> dict[str, str]:
+    """بارگذاری prompt های mode از data/configs/ai_mode_prompts.json."""
+    try:
+        from data.loader import load_json
+        data = load_json("ai_mode_prompts", default={}, force=force)
+        if isinstance(data, dict) and "modes" in data:
+            return data["modes"]
+    except Exception as e:
+        _warn(f"ai_mode_prompts.json load | {type(e).__name__}: {e}")
+
+    # ─── fallback امن ───
+    return {
+        "chat": "حالت گفتگو فعال است.",
+        "precise": "حالت دقیق فعال است.",
+    }
 
 
-def get_ai_system_prompt(mode: str = "precise") -> str:
-    """دریافت system prompt بر اساس mode.
+# ─── لود اولیه ───
+AI_PERSONA: dict[str, Any] = _load_ai_persona()
+AI_SYSTEM_PROMPT: str = _load_ai_system_prompt()
+AI_MODE_PROMPTS: dict[str, str] = _load_ai_mode_prompts()
 
-    Args:
-        mode: حالت پردازش (audit, fix, code, chat, ...).
 
-    Returns:
-        system prompt ترکیبی.
+def reload_ai_prompts() -> None:
+    """🎯 hot-reload prompt های AI بدون ری‌استارت.
+
+    Example:
+        >>> from config import reload_ai_prompts
+        >>> reload_ai_prompts()
     """
-    base = AI_SYSTEM_PROMPT.strip()
-    mode_extra = AI_MODE_PROMPTS.get(mode, "").strip()
-    if mode_extra:
-        return f"{base}\n\n# حالت فعال:\n{mode_extra}"
-    return base
+    global AI_PERSONA, AI_SYSTEM_PROMPT, AI_MODE_PROMPTS
+
+    AI_PERSONA = _load_ai_persona(force=True)
+    AI_SYSTEM_PROMPT = _load_ai_system_prompt()
+    AI_MODE_PROMPTS = _load_ai_mode_prompts(force=True)
+
+    _warn(
+        f"🔄 [config:reload] AI prompt ها | "
+        f"persona={AI_PERSONA.get('name')} | "
+        f"modes={len(AI_MODE_PROMPTS)}"
+    )
 
 
 def get_ai_persona() -> dict[str, Any]:
-    """دریافت دیکشنری کامل شخصیت AI."""
-    return dict(AI_PERSONA)
+    """دسترسی به شخصیت AI."""
+    return AI_PERSONA
 
 
+def get_ai_system_prompt() -> str:
+    """دسترسی به system prompt."""
+    return AI_SYSTEM_PROMPT
+
+
+def get_ai_mode_prompt(mode: str) -> str:
+    """دسترسی به prompt یک mode خاص."""
+    return AI_MODE_PROMPTS.get(mode, "")
+    
+    
 # ══════════════════════════════════════════════════════════
 # Brain — 🎯 top-level export برای FULL_ACCESS
 # ══════════════════════════════════════════════════════════
-FULL_ACCESS: bool = _env_bool("FULL_ACCESS", False)
-USE_API_MEMORY: bool = _env_bool("USE_API_MEMORY", False)
+FULL_ACCESS: bool = _env_bool("FULL_ACCESS", True)
+USE_API_MEMORY: bool = _env_bool("USE_API_MEMORY", True)
 MEMORY_API_URL: str = _env_str("MEMORY_API_URL")
 MEMORY_API_KEY: str = _env_secret("MEMORY_API_KEY")
 
@@ -1044,7 +1009,9 @@ def get_linkedin_config() -> dict[str, Any]:
 def get_instagram_config() -> dict[str, Any]:
     return PLUGINS_CONFIG.get("instagramcollector", {})
 
-
+def get_youtube_config() -> dict[str, Any]:
+    return PLUGINS_CONFIG.get("youtubecollector", {})
+    
 def get_web_config() -> dict[str, Any]:
     return PLUGINS_CONFIG.get("webcollector", {})
 
@@ -1058,6 +1025,7 @@ _PLATFORM_KEY_MAP: tuple[tuple[str, str], ...] = (
     ("web", "webcollector"),
     ("linkedin", "linkedincollector"),
     ("instagram", "instagramcollector"),
+    ("youtube", "youtubecollector"),
 )
 
 
@@ -1507,7 +1475,7 @@ __all__ = [
     "MEMORY_API_URL", "MEMORY_API_KEY",
     # ─── AI Persona (NEW) ───
     "AI_PERSONA", "AI_SYSTEM_PROMPT", "AI_MODE_PROMPTS",
-    "get_ai_system_prompt", "get_ai_persona",
+    "get_ai_system_prompt", "get_ai_persona", "get_ai_mode_prompt",
     # ─── Config dicts ───
     "SQLITE_CONFIG", "POSTGRES_CONFIG", "CRM_CONFIG",
     "SYSTEM_CONFIG", "RETENTION",
@@ -1522,6 +1490,7 @@ __all__ = [
     "get_bale_config", "get_rubika_config", "get_eitaa_config",
     "get_telegram_config", "get_whatsapp_config",
     "get_linkedin_config", "get_instagram_config", "get_web_config",
+    "get_youtube_config",
     "get_active_platforms",
     "log_config_summary", "reload",
 ]

@@ -1,15 +1,54 @@
 [
   {
-    "name": "ai_learned_1791609346",
+    "name": "ai_learned_1791708603",
     "triggers": [
-      "سوال دارم: چرا ۱۸ تا فایل تست؟"
+      "«بله رو شروع کن»"
     ],
     "action": {
       "type": "text",
-      "text": "حالا کاملاً روشن شد. جواب دقیق می‌دم.\n\n---\n\n# 🔍 چرا ۱۸ تا فایل تست؟ — تحلیل واقعی\n\n## ✅ کشف اصلی: این‌ها تست pytest نیستند!\n\nبررسی کردم: **صفر تابع `test_`** در کل پوشه `tests/` وجود دارد.\nبا اینکه `pytest.ini` تنظیم شده که `test_*.py` را جمع کند، ولی این فایل‌ها **اسکریپت اجرایی end-to-end** هستند، نه تست واحد.\n\nهر فایل `test_*_full.py` یک **برنامهٔ مستقل** است که:\n- `argparse` دارد (`--headless`, `--since-days`, ...)\n- `asyncio.run(main())` صدا می‌زند\n- `sys.exit(0/1)` برمی‌گرداند\n- با `subprocess` از `run_all_tests.py` اجرا می‌شود\n\n## 📊 نقشهٔ ۱۸ فایل\n\n| دسته | فایل‌ها | تعداد | نقش |\n|------|---------|-------|------|\n| 🧪 **تست پلتفرم** | `test_bale_full`, `test_eitaa_full`, `test_rubika_full`, `test_telegram_full`, `test_whatsapp_full`, `test_linkedin_full`, `test_instagram_full`, `test_web_full` | **۸** | هر پلتفرم یک pipeline end-to-end |\n| 🤖 **تست AI** | `test_ai_full`, `test_ai_master_full` | **۲** | موتور تحلیل و master |\n| 💾 **تست زیرساخت** | `test_db_full`, `test_storage_full` | **۲** | دیتابیس و ذخیره‌سازی |\n| 🏥 **Health Check** | `test_healthcheck_full` | **۱** | چک جامع نهایی (۲۹۶۲ خط!) |\n| 🛠️ **Helper (تست نیست)** | `helpers`, `db_helpers`, `pipeline_helpers` | **۳** | ابزار مشترک |\n| ⚙️ **Runner (تست نیست)** | `run_all_tests`, `__init__` | **۲** | اجراکننده |\n\n## 🎯 جواب سوال: چرا ۱۸ تا؟\n\n**دلیل معماری، نه over-engineering:**\n\n1. **۸ پلتفرم مستقل** → هر کدام collector، session، و pipeline جدا دارد → ۸ فایل منطقی است.\n2. **جداسازی بر اساس دامنه** (platform / AI / infra / health) → استاندارد رایج.\n3. **اجرای مستقل** → هر فایل جداگانه قابل اجراست (برای دیباگ یک پلتفرم خاص).\n\n## ⚠️ اما دو مشکل واقعی هست:\n\n### 🔴 مشکل ۱ — این‌ها pytest نیستند ولی در `testpaths` هستند\n`pytest.ini` می‌گوید `testpaths = tests` و `python_files = test_*.py`.\nاگر `pytest` بزنی، این فایل‌ها **جمع‌آوری می‌شوند ولی هیچ تستی ندارند** → pytest هشدار «no tests ran» می‌دهد یا خطای collection.\n\n**راه‌حل:** یا اسم‌ها را به `e2e_*_full.py` تغییر بده، یا در `pytest.ini` اضافه کن:\n```ini\ncollect_ignore_glob = tests/test_*_full.py\n```\n\n### 🟠 مشکل ۲ — `test_healthcheck_full.py` با ۲۹۶۲ خط\nاین یک فایل غول است. احتمالاً چندین مسئولیت را در هم دارد → کاندید شکستن.\n\n---\n\n## 📋 خلاصه\n\n| سوال | جواب |\n|------|------|\n| چرا ۱۸ تا؟ | ۸ پلتفرم + ۲ AI + ۲ infra + ۱ health + ۵ helper/runner |\n| over-engineering؟ | ❌ نه — منطقی است |\n| مشکل دارد؟ | ✅ بله — با pytest سازگار نیستند + یک فایل غول |\n\n---\n\n**می‌تونم این کارها رو بکنم:**\n- بررسی کنم `test_healthcheck_full.py` رو و بگم چطور بشکنمش\n- درست کنم `pytest.ini` رو تا این فایل‌ها رو ignore کنه\n- بررسی کنم کدوم فایل‌ها duplication دارن (helpers مشترک)\n- audit کنم کل پوشه `tests/` رو با `audit_code`\n- چک کنم `run_all_tests.py` درست کار می‌کنه یا نه\n\nکدوم رو انجام بدم؟"
+      "text": "🔍 حالت آفلاین.\n• /status — وضعیت\n• /help — راهنما"
     },
     "learned": true,
     "source": "ai",
-    "created_at": "2026-10-10T08:45:46.413932"
+    "created_at": "2026-10-11T12:20:03.144309"
+  },
+  {
+    "name": "ai_learned_1791708611",
+    "triggers": [
+      "«در بله سرچ کن گلخانه»"
+    ],
+    "action": {
+      "type": "text",
+      "text": "🔍 حالت آفلاین.\n• /status — وضعیت\n• /help — راهنما"
+    },
+    "learned": true,
+    "source": "ai",
+    "created_at": "2026-10-11T12:20:11.615736"
+  },
+  {
+    "name": "ai_learned_1791709011",
+    "triggers": [
+      "بله رو شروع کن"
+    ],
+    "action": {
+      "type": "text",
+      "text": "<tool_call>\nplatform_status\n</tool_call>\n\nبررسی می‌کنم وضعیت فعلی پلتفرم‌ها را ببینم و بعد بله را روشن کنم."
+    },
+    "learned": true,
+    "source": "ai",
+    "created_at": "2026-10-11T12:26:51.596829"
+  },
+  {
+    "name": "ai_learned_1791709020",
+    "triggers": [
+      "در بله سرچ کن گلخانه"
+    ],
+    "action": {
+      "type": "text",
+      "text": "برای جستجوی «گلخانه» در بله، اول باید مطمئن شوم که کلیدواژه در سیستم تعریف شده، بعد سرنخ‌های بله را فیلتر کنم. اجازه بده دو کار انجام دهم:\n\n**۱) وضعیت کلیدواژه در سیستم:**\n\nنمی‌دانم «گلخانه» الان به‌عنوان کلیدواژه ثبت شده یا نه. باید فایل‌های کلیدواژه را چک کنم:\n- `data/products.py` و `data/products_en.py`\n- `data/runtime/keywords_custom.json`\n\n**۲) جستجوی سرنخ‌های بله با این کلیدواژه:**\n\nمی‌خواهم دیتابیس را این‌طور کوئری کنم:\n```sql\nSELECT * FROM leads \nWHERE platform='bale' \n  AND (keyword LIKE '%گلخانه%' OR message LIKE '%گلخانه%')\n```\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nسؤال مهم برای دقیق جواب دادن:\n\nقصدت کدام است؟\n- 🔎 **الف)** بین سرنخ‌های ذخیره‌شدهٔ بله بگردم که کلیدواژه «گلخانه» داشته‌اند → از `query_database`\n- ➕ **ب)** «گلخانه» را به‌عنوان کلیدواژهٔ جدید اضافه کنم تا از این به بعد سرنخ شود → از `keyword_admin`\n- 🔍 **ج)** در کد پروژه بگردم که «گلخانه» کجا استفاده/تعریف شده → از `grep_search`\n\nتا وقتی نگویی کدام، نمی‌توانم دقیق عمل کنم. صریح بگو **الف/ب/ج** تا اجرا کنم.\n\n⚠️ نکته: «سرچ زنده در پیام‌های بله» جزو قابلیت‌های من نیست — من فقط **سرنخ‌های ذخیره‌شده در دیتابیس** را می‌توانم جستجو کنم. اگر می‌خواهی ربات از این به بعد پیام‌های بله را با کلیدواژهٔ «گلخانه» رصد کند، گزینهٔ **ب** را انتخاب کن."
+    },
+    "learned": true,
+    "source": "ai",
+    "created_at": "2026-10-11T12:27:00.025009"
   }
 ]

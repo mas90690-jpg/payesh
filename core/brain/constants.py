@@ -1,33 +1,34 @@
 """ثابت‌های Brain — هیچ منطقی این‌جا نیست.
 
-نسخهٔ ۳ (این نسخه):
-  - 🎯 مسیرهای Brain حالا از `data.paths` می‌آیند (منبع یکتا).
-  - 🎯 همهٔ سقف‌ها (`MAX_*`) حالا env-based هستند:
-      * `BRAIN_MAX_FILE_MB`           (پیش‌فرض 5)
-      * `BRAIN_MAX_CONTENT_LEN`       (پیش‌فرض 100_000)
-      * `BRAIN_MAX_AGENT_STEPS`       (پیش‌فرض 30)
-      * `BRAIN_MAX_CONTEXT_TOKENS`    (پیش‌فرض 16384)
-      * `BRAIN_CACHE_TTL_DAYS`        (پیش‌فرض 14)
-      * `BRAIN_LOG_TAIL_BYTES`        (پیش‌فرض 256KB)
-      * `BRAIN_CACHE_SAVE_INTERVAL_S` (پیش‌فرض 2.0)
-  - 🎯 همهٔ timeoutها env-based:
-      * `BRAIN_DEFAULT_TIMEOUT_S`          (پیش‌فرض 300)
-      * `BRAIN_PY_EXEC_TIMEOUT_S`          (پیش‌فرض 30)
-      * `BRAIN_TESTS_TIMEOUT_S`            (پیش‌فرض 120)
-      * `BRAIN_PYTEST_COVERAGE_TIMEOUT_S`  (پیش‌فرض 120)
-      * `BRAIN_BANDIT_TIMEOUT_S`           (پیش‌فرض 60)
-  - 🎯 همهٔ آستانه‌های کندی env-based:
-      * `BRAIN_SLOW_STEP_MS`
-      * `BRAIN_SLOW_TOOL_MS`
-      * `BRAIN_SLOW_THINK_MS`
-      * `BRAIN_SLOW_ACTION_MS`
-      * `BRAIN_LOG_PREVIEW_LEN`
-  - 🐛 FIX: `mkdir` حالا با try/except (پوشه‌های غیرقابل‌دسترس crash نمی‌کنند).
-  - 🐛 FIX: `DEFAULT_PROVIDER` fallback از `"ollama"` به `"auto"` تغییر
-    (سازگار با `config.AI_PRIORITY`).
-  - 🎯 `_env_int` / `_env_float` / `_env_str` helperها.
-  - 🎯 `get_stats()` متد جدید برای debug.
-  - ✅ حفظ همهٔ FIXهای نسخهٔ ۲.
+نسخهٔ ۴ (این نسخه):
+  - 🎯 NEW: Chunk Reading — `CHUNK_SIZE`, `CHUNK_AUTO`, `CHUNK_MAX_PER_FILE`,
+    `CHUNK_AUTO_THRESHOLD`.
+  - 🎯 NEW: Persistent Memory — `PERSISTENT_MEMORY_ENABLED`, `PERSISTENT_DB_PATH`,
+    `PERSISTENT_MAX_ROWS`, `PERSISTENT_REMEMBER_CONVERSATIONS`.
+  - 🎯 NEW: Semantic Search — `DISABLE_SEMANTIC`, `SEMANTIC_MAX_RESULTS`.
+  - 🎯 NEW: Think config — `THINK_TIMEOUT_S`, `THINK_MAX_TOKENS`,
+    `THINK_TEMPERATURE`.
+  - 🎯 NEW: Agent config — `AGENT_API_TIMEOUT_S`, `AGENT_MAX_TOKENS`,
+    `AGENT_TEMPERATURE`.
+  - 🎯 NEW: Context — `CONTEXT_RECENT`, `CONTEXT_API_N`, `CONTEXT_CHROMA_N`.
+  - 🎯 NEW: Pending tasks — `MAX_PENDING_TASKS`, `COMPRESS_THRESHOLD`.
+  - 🎯 NEW: `MAX_SHORT_TERM` env-based.
+  - 🎯 همهٔ مقادیر پیش‌فرض افزایش یافتند (متناسب با `.env` نسخهٔ ۱۴):
+      * `BRAIN_MAX_FILE_MB`           (پیش‌فرض 5 → 50)
+      * `BRAIN_MAX_CONTENT_LEN`       (پیش‌فرض 100_000 → 2_000_000)
+      * `BRAIN_MAX_AGENT_STEPS`       (پیش‌فرض 30 → 100)
+      * `BRAIN_MAX_CONTEXT_TOKENS`    (پیش‌فرض 16384 → 128_000)
+      * `BRAIN_CACHE_TTL_DAYS`        (پیش‌فرض 14 → 365)
+      * `BRAIN_LOG_TAIL_BYTES`        (پیش‌فرض 256KB → 5MB)
+      * `BRAIN_PY_EXEC_TIMEOUT_S`     (پیش‌فرض 30 → 60)
+      * `BRAIN_TESTS_TIMEOUT_S`       (پیش‌فرض 120 → 180)
+      * `BRAIN_AGENT_MAX_TOKENS`      (پیش‌فرض 4096 → 8192)
+      * `BRAIN_CONTEXT_RECENT`        (پیش‌فرض 5 → 10)
+      * `BRAIN_CONTEXT_API_N`         (پیش‌فرض 3 → 5)
+      * `BRAIN_CONTEXT_CHROMA_N`      (پیش‌فرض 3 → 5)
+  - 🎯 `get_stats()` کامل‌تر — همهٔ مقادیر جدید را نشان می‌دهد.
+  - 🎯 `__all__` صریح برای همهٔ ثابت‌ها.
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۳.
 """
 from __future__ import annotations
 
@@ -76,6 +77,19 @@ def _env_float(
 def _env_str(name: str, default: str = "") -> str:
     """خواندن str از env — با strip."""
     return (os.getenv(name) or default).strip()
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    """خواندن bool از env — با پشتیبانی از yes/no/on/off."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    v = str(raw).strip().lower()
+    if v in ("true", "1", "yes", "on", "y", "t"):
+        return True
+    if v in ("false", "0", "no", "off", "n", "f"):
+        return False
+    return default
 
 
 # ═══════════════════════════════════════════════════════════
@@ -157,7 +171,7 @@ except ImportError as _paths_err:
 # ساخت پوشه‌ها (با try/except)
 # ═══════════════════════════════════════════════════════════
 def _ensure_dirs() -> None:
-    """🎯 FIX: ساخت پوشه‌ها با try/except (نباید crash کند)."""
+    """ساخت پوشه‌ها با try/except (نباید crash کند)."""
     for d in (
         BRAIN_DIR, MEMORY_DIR, CACHE_DIR, BACKUP_DIR, HOOKS_DIR
     ):
@@ -182,44 +196,121 @@ _ensure_dirs()
 # سقف‌ها (env-based)
 # ═══════════════════════════════════════════════════════════
 
-# 🎯 حجم فایل (به بایت)
+# 🎯 حجم فایل (به مگابایت → بایت)
 _BRAIN_MAX_FILE_MB = _env_int(
-    "BRAIN_MAX_FILE_MB", 5, min_val=1, max_val=500
+    "BRAIN_MAX_FILE_MB", 50, min_val=1, max_val=500
 )
 MAX_FILE_SIZE_BYTES: int = _BRAIN_MAX_FILE_MB * 1024 * 1024
 
-# 🎯 محتوا
+# 🎯 محتوا (کاراکتر)
 MAX_CONTENT_LENGTH: int = _env_int(
-    "BRAIN_MAX_CONTENT_LEN", 100_000,
-    min_val=1000, max_val=10_000_000,
+    "BRAIN_MAX_CONTENT_LEN", 2_000_000,
+    min_val=1000, max_val=50_000_000,
 )
 
 # 🎯 گام‌های agent
 MAX_AGENT_STEPS: int = _env_int(
-    "BRAIN_MAX_AGENT_STEPS", 30, min_val=1, max_val=1000
+    "BRAIN_MAX_AGENT_STEPS", 100, min_val=1, max_val=1000
 )
 
 # 🎯 context tokens
 MAX_CONTEXT_TOKENS: int = _env_int(
-    "BRAIN_MAX_CONTEXT_TOKENS", 16384,
+    "BRAIN_MAX_CONTEXT_TOKENS", 128_000,
     min_val=1000, max_val=1_000_000,
 )
 
-# 🎯 TTL کش
+# 🎯 TTL کش (روز)
 CACHE_TTL_DAYS: int = _env_int(
-    "BRAIN_CACHE_TTL_DAYS", 14, min_val=1, max_val=365
+    "BRAIN_CACHE_TTL_DAYS", 365, min_val=1, max_val=3650
 )
 
-# 🎯 لاگ tail
+# 🎯 لاگ tail (بایت)
 LOG_TAIL_BYTES: int = _env_int(
-    "BRAIN_LOG_TAIL_BYTES", 256 * 1024,
-    min_val=10_000, max_val=100_000_000,
+    "BRAIN_LOG_TAIL_BYTES", 5_000_000,
+    min_val=10_000, max_val=1_000_000_000,
 )
 
 # 🎯 فاصلهٔ save کش (ثانیه)
 CACHE_SAVE_INTERVAL_S: float = _env_float(
     "BRAIN_CACHE_SAVE_INTERVAL_S", 2.0,
     min_val=0.1, max_val=300.0,
+)
+
+# 🎯 حافظهٔ کوتاه‌مدت (پیام)
+MAX_SHORT_TERM: int = _env_int(
+    "BRAIN_MAX_SHORT_TERM", 100, min_val=5, max_val=1000
+)
+
+
+# ═══════════════════════════════════════════════════════════
+# 🆕 Chunk Reading (خواندن تکه‌تکه)
+# ═══════════════════════════════════════════════════════════
+
+# اندازهٔ هر تکه (کاراکتر)
+CHUNK_SIZE: int = _env_int(
+    "BRAIN_CHUNK_SIZE", 100_000,
+    min_val=10_000, max_val=5_000_000,
+)
+
+# فعال بودن خودکار
+CHUNK_AUTO: bool = _env_bool(
+    "BRAIN_CHUNK_AUTO", True
+)
+
+# سقف تعداد تکه‌ها در یک فایل
+CHUNK_MAX_PER_FILE: int = _env_int(
+    "BRAIN_MAX_CHUNKS_PER_FILE", 100,
+    min_val=1, max_val=10_000,
+)
+
+# آستانه‌ای که بالاتر از آن chunk_auto فعال می‌شود
+CHUNK_AUTO_THRESHOLD: int = _env_int(
+    "BRAIN_CHUNK_AUTO_THRESHOLD", 80_000,
+    min_val=10_000, max_val=5_000_000,
+)
+
+
+# ═══════════════════════════════════════════════════════════
+# 🆕 Persistent Memory (حافظهٔ SQLite)
+# ═══════════════════════════════════════════════════════════
+
+# فعال بودن حافظهٔ پایدار
+PERSISTENT_MEMORY_ENABLED: bool = _env_bool(
+    "BRAIN_PERSISTENT_MEMORY", True
+)
+
+# مسیر فایل DB (absolute)
+_default_pdb = str(BRAIN_DIR / "persistent.db")
+PERSISTENT_DB_PATH: str = (
+    _env_str("BRAIN_PERSISTENT_DB", _default_pdb)
+    or _default_pdb
+)
+
+# سقف تعداد رکورد
+PERSISTENT_MAX_ROWS: int = _env_int(
+    "BRAIN_PERSISTENT_MAX_ROWS", 100_000,
+    min_val=100, max_val=10_000_000,
+)
+
+# یادآوری خودکار گفتگوها
+PERSISTENT_REMEMBER_CONVERSATIONS: bool = _env_bool(
+    "SAFE_BRAIN_REMEMBER_CONVERSATIONS", True
+)
+
+
+# ═══════════════════════════════════════════════════════════
+# 🆕 Semantic Search
+# ═══════════════════════════════════════════════════════════
+
+# غیرفعال بودن Semantic (پیش‌فرض: false = فعال)
+DISABLE_SEMANTIC: bool = _env_bool(
+    "BRAIN_DISABLE_SEMANTIC", False
+)
+
+# سقف نتایج جستجو
+SEMANTIC_MAX_RESULTS: int = _env_int(
+    "BRAIN_SEMANTIC_MAX_RESULTS", 10,
+    min_val=1, max_val=100,
 )
 
 
@@ -231,11 +322,11 @@ DEFAULT_TIMEOUT_S: int = _env_int(
     min_val=10, max_val=3600,
 )
 PY_EXEC_TIMEOUT_S: int = _env_int(
-    "BRAIN_PY_EXEC_TIMEOUT_S", 30,
+    "BRAIN_PY_EXEC_TIMEOUT_S", 60,
     min_val=5, max_val=600,
 )
 TESTS_TIMEOUT_S: int = _env_int(
-    "BRAIN_TESTS_TIMEOUT_S", 120,
+    "BRAIN_TESTS_TIMEOUT_S", 180,
     min_val=10, max_val=1800,
 )
 PYTEST_COVERAGE_TIMEOUT_S: int = _env_int(
@@ -249,6 +340,70 @@ BANDIT_TIMEOUT_S: int = _env_int(
 
 
 # ═══════════════════════════════════════════════════════════
+# 🆕 Agent config
+# ═══════════════════════════════════════════════════════════
+AGENT_API_TIMEOUT_S: float = _env_float(
+    "BRAIN_AGENT_API_TIMEOUT_S", 240.0,
+    min_val=10.0, max_val=1800.0,
+)
+AGENT_MAX_TOKENS: int = _env_int(
+    "BRAIN_AGENT_MAX_TOKENS", 8192,
+    min_val=256, max_val=32_000,
+)
+AGENT_TEMPERATURE: float = _env_float(
+    "BRAIN_AGENT_TEMPERATURE", 0.1,
+    min_val=0.0, max_val=2.0,
+)
+
+
+# ═══════════════════════════════════════════════════════════
+# 🆕 Think config
+# ═══════════════════════════════════════════════════════════
+THINK_TIMEOUT_S: float = _env_float(
+    "BRAIN_THINK_TIMEOUT_S", 60.0,
+    min_val=5.0, max_val=300.0,
+)
+THINK_MAX_TOKENS: int = _env_int(
+    "BRAIN_THINK_MAX_TOKENS", 4096,
+    min_val=256, max_val=16_000,
+)
+THINK_TEMPERATURE: float = _env_float(
+    "BRAIN_THINK_TEMPERATURE", 0.1,
+    min_val=0.0, max_val=2.0,
+)
+
+
+# ═══════════════════════════════════════════════════════════
+# 🆕 Context
+# ═══════════════════════════════════════════════════════════
+CONTEXT_RECENT: int = _env_int(
+    "BRAIN_CONTEXT_RECENT", 10,
+    min_val=1, max_val=50,
+)
+CONTEXT_API_N: int = _env_int(
+    "BRAIN_CONTEXT_API_N", 5,
+    min_val=1, max_val=20,
+)
+CONTEXT_CHROMA_N: int = _env_int(
+    "BRAIN_CONTEXT_CHROMA_N", 5,
+    min_val=1, max_val=20,
+)
+
+
+# ═══════════════════════════════════════════════════════════
+# 🆕 Pending tasks + Compression
+# ═══════════════════════════════════════════════════════════
+MAX_PENDING_TASKS: int = _env_int(
+    "BRAIN_MAX_PENDING_TASKS", 100,
+    min_val=10, max_val=10_000,
+)
+COMPRESS_THRESHOLD: int = _env_int(
+    "BRAIN_COMPRESS_THRESHOLD", 15,
+    min_val=3, max_val=200,
+)
+
+
+# ═══════════════════════════════════════════════════════════
 # مدل و provider (از config.AI)
 # ═══════════════════════════════════════════════════════════
 DEFAULT_MODEL: str = (
@@ -257,7 +412,6 @@ DEFAULT_MODEL: str = (
     or "qwen2.5:3b"
 )
 
-# 🎯 FIX: fallback از «ollama» به «auto» (سازگار با config.AI_PRIORITY)
 DEFAULT_PROVIDER: str = (
     (AI or {}).get("priority")
     or "auto"
@@ -307,6 +461,25 @@ def get_stats() -> dict[str, Any]:
             "max_agent_steps": MAX_AGENT_STEPS,
             "max_context_tokens": MAX_CONTEXT_TOKENS,
             "cache_ttl_days": CACHE_TTL_DAYS,
+            "max_short_term": MAX_SHORT_TERM,
+        },
+        "chunk_reading": {
+            "enabled": CHUNK_AUTO,
+            "chunk_size": CHUNK_SIZE,
+            "auto_threshold": CHUNK_AUTO_THRESHOLD,
+            "max_chunks": CHUNK_MAX_PER_FILE,
+        },
+        "persistent_memory": {
+            "enabled": PERSISTENT_MEMORY_ENABLED,
+            "db_path": PERSISTENT_DB_PATH,
+            "max_rows": PERSISTENT_MAX_ROWS,
+            "remember_conversations": (
+                PERSISTENT_REMEMBER_CONVERSATIONS
+            ),
+        },
+        "semantic": {
+            "disabled": DISABLE_SEMANTIC,
+            "max_results": SEMANTIC_MAX_RESULTS,
         },
         "timeouts": {
             "default": DEFAULT_TIMEOUT_S,
@@ -314,6 +487,25 @@ def get_stats() -> dict[str, Any]:
             "tests": TESTS_TIMEOUT_S,
             "coverage": PYTEST_COVERAGE_TIMEOUT_S,
             "bandit": BANDIT_TIMEOUT_S,
+            "agent_api": AGENT_API_TIMEOUT_S,
+            "think": THINK_TIMEOUT_S,
+        },
+        "agent": {
+            "max_tokens": AGENT_MAX_TOKENS,
+            "temperature": AGENT_TEMPERATURE,
+        },
+        "think": {
+            "max_tokens": THINK_MAX_TOKENS,
+            "temperature": THINK_TEMPERATURE,
+        },
+        "context": {
+            "recent": CONTEXT_RECENT,
+            "api_n": CONTEXT_API_N,
+            "chroma_n": CONTEXT_CHROMA_N,
+        },
+        "pending": {
+            "max_tasks": MAX_PENDING_TASKS,
+            "compress_threshold": COMPRESS_THRESHOLD,
         },
         "model": {
             "default": DEFAULT_MODEL,
@@ -327,3 +519,80 @@ def get_stats() -> dict[str, Any]:
             "action": SLOW_ACTION_MS,
         },
     }
+
+
+# ═══════════════════════════════════════════════════════════
+# __all__ — همهٔ ثابت‌های public
+# ═══════════════════════════════════════════════════════════
+__all__ = [
+    # ─── paths ───
+    "BRAIN_DIR",
+    "MEMORY_DIR",
+    "CACHE_DIR",
+    "BACKUP_DIR",
+    "HOOKS_DIR",
+    "PROJECT_BASE",
+    "STORAGE_DIR",
+    "DB_DIR",
+    "BACKUPS_DIR",
+    "LOGS_DIR",
+    # ─── limits ───
+    "MAX_FILE_SIZE_BYTES",
+    "MAX_CONTENT_LENGTH",
+    "MAX_AGENT_STEPS",
+    "MAX_CONTEXT_TOKENS",
+    "CACHE_TTL_DAYS",
+    "LOG_TAIL_BYTES",
+    "CACHE_SAVE_INTERVAL_S",
+    "MAX_SHORT_TERM",
+    # ─── chunk reading ───
+    "CHUNK_SIZE",
+    "CHUNK_AUTO",
+    "CHUNK_MAX_PER_FILE",
+    "CHUNK_AUTO_THRESHOLD",
+    # ─── persistent memory ───
+    "PERSISTENT_MEMORY_ENABLED",
+    "PERSISTENT_DB_PATH",
+    "PERSISTENT_MAX_ROWS",
+    "PERSISTENT_REMEMBER_CONVERSATIONS",
+    # ─── semantic ───
+    "DISABLE_SEMANTIC",
+    "SEMANTIC_MAX_RESULTS",
+    # ─── timeouts ───
+    "DEFAULT_TIMEOUT_S",
+    "PY_EXEC_TIMEOUT_S",
+    "TESTS_TIMEOUT_S",
+    "PYTEST_COVERAGE_TIMEOUT_S",
+    "BANDIT_TIMEOUT_S",
+    # ─── agent ───
+    "AGENT_API_TIMEOUT_S",
+    "AGENT_MAX_TOKENS",
+    "AGENT_TEMPERATURE",
+    # ─── think ───
+    "THINK_TIMEOUT_S",
+    "THINK_MAX_TOKENS",
+    "THINK_TEMPERATURE",
+    # ─── context ───
+    "CONTEXT_RECENT",
+    "CONTEXT_API_N",
+    "CONTEXT_CHROMA_N",
+    # ─── pending ───
+    "MAX_PENDING_TASKS",
+    "COMPRESS_THRESHOLD",
+    # ─── model ───
+    "DEFAULT_MODEL",
+    "DEFAULT_PROVIDER",
+    "DEFAULT_BASE_URL",
+    # ─── slow thresholds ───
+    "SLOW_STEP_MS",
+    "SLOW_TOOL_MS",
+    "SLOW_THINK_MS",
+    "SLOW_ACTION_MS",
+    "LOG_PREVIEW_LEN",
+    # ─── config exports ───
+    "AI",
+    "AI_ENABLED",
+    "PLUGINS_CONFIG",
+    # ─── debug ───
+    "get_stats",
+]

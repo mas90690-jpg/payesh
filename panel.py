@@ -3,29 +3,22 @@ Control panel for the Srooyesh lead-monitoring bot — numeric menu.
 
 Run: double-click panel.bat  (or: python panel.py)
 
-نسخهٔ ۱۴ (این نسخه):
-  - 🎯 NEW: ذخیره خودکار خروجی هر تست در فایل لاگ.
-      • تست‌های تکی → storage/test_reports/console_logs/<name>_<ts>.log
-      • تست‌های گروهی → storage/test_reports/console_logs/only_<name>_<ts>.log
-      • Health Check → storage/test_reports/console_logs/healthcheck_<ts>.log
-      • Storage/Database → storage/test_reports/console_logs/<name>_<ts>.log
-      • همه با هم → storage/test_reports/console_logs/<name>_<ts>.log
-  - 🎯 NEW: گزینه [19] Console Logs در منوی System.
-      • نمایش آخرین لاگ‌ها با حجم و تاریخ
-      • قابلیت باز کردن پوشه در Explorer
-  - 🐛 FIX: label پلتفرم‌ها به انگلیسی snake_case برای نام فایل.
-  - ✅ حفظ همهٔ ۱۸ عملکرد قبلی.
+نسخهٔ ۱۶ (این نسخه):
+  - 🆕 گزینه [12] YouTube در Tests menu.
+  - 🆕 "youtube" در _PLATFORM_LABELS.
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۱۵.
 
-نسخهٔ ۱۳ (قبلی):
-  - 🌐 همهٔ متن‌ها انگلیسی (کاملاً انگلیسی).
-  - 🎨 منوی جمع‌وجور شبکه‌ای (grid, 4 columns).
-  - 🎨 تراز کامل با _visible_len + _pad (ANSI-safe).
-  - 🎯 نوار وضعیت زنده در هدر.
-  - 🎯 تعداد پلتفرم‌های فعال پویا از config.
-  - 🐛 FIX: متن «7 platforms» outdated بود → حالا پویا از
-    `config.PLATFORMS_ACTIVE` می‌آید.
-  - 🐛 FIX: _LOG_PREVIEW_LEN حذف شد (استفاده نمی‌شد).
-  - ✅ حفظ همهٔ ۱۸ عملکرد (سازگاری عقب‌رو).
+نسخهٔ ۱۵:
+  - 🎯 `data_paths.CONSOLE_LOGS` به‌جای مسیر دستی.
+  - 🎯 `_re` کامپایل‌شده در سطح ماژول (performance).
+  - 🎯 `_open_path()` عمومی برای باز کردن فایل/پوشه.
+  - 🐛 FIX: `_platforms_count_text()` حذف شد.
+  - 🐛 FIX: `_print` و `_cprint` ادغام شدند.
+  - ✅ حفظ همهٔ ۱۹ عملکرد نسخهٔ ۱۴.
+
+نسخهٔ ۱۴:
+  - ذخیره خودکار خروجی هر تست در فایل لاگ.
+  - گزینه [19] Console Logs.
 """
 from __future__ import annotations
 
@@ -80,7 +73,6 @@ except Exception:
 # ══════════════════════════════════════════════════════════════════════
 #  Paths & constants
 # ══════════════════════════════════════════════════════════════════════
-# 🎯 P0: مسیرها از data.paths (منبع حقیقت)
 from data import paths as data_paths
 
 ROOT = str(data_paths.PROJECT_ROOT)
@@ -93,9 +85,13 @@ REPORTS_DIR = str(data_paths.REPORTS_DIR)
 LOG_FILE = str(data_paths.LOG_FILE)
 REQUESTS_FILE = str(data_paths.REQUESTS_FILE)
 
-# ─── Console logs (v14 — NEW) ───
-CONSOLE_LOGS_DIR = os.path.join(
-    ROOT, "storage", "test_reports", "console_logs"
+# ─── Console logs (v14+) ───
+CONSOLE_LOGS_DIR = str(
+    getattr(
+        data_paths,
+        "CONSOLE_LOGS",
+        os.path.join(ROOT, "storage", "test_reports", "console_logs"),
+    )
 )
 
 # ─── Timeouts و limits ───
@@ -114,6 +110,11 @@ _HEADER_INNER_WIDTH = 56
 _MENU_COLS = 4
 _MENU_CELL_W = 17
 
+# ─── Regex (compiled once) ───
+_ANSI_RE = re.compile(r"\033\[[0-9;]*m")
+_SAFE_FILENAME_RE_1 = re.compile(r"[^\w\s\-]+")
+_SAFE_FILENAME_RE_2 = re.compile(r"[\s\-]+")
+
 try:
     import psutil
 except ImportError:
@@ -124,20 +125,19 @@ except ImportError:
 #  🎯 Platform count (پویا از config)
 # ══════════════════════════════════════════════════════════════════════
 def _platforms_count() -> int:
-    """تعداد پلتفرم‌های فعال — از config."""
+    """تعداد پلتفرم‌های فعال — از config + youtube از env."""
     try:
         from config import PLATFORMS_ACTIVE
-        return len(PLATFORMS_ACTIVE)
+        count = len(PLATFORMS_ACTIVE)
     except Exception:
-        return 0
+        count = 0
 
+    # 🆕 یوتیوب هنوز در PLUGINS_CONFIG نیست — env چک کن
+    yt_raw = os.getenv("YOUTUBE_ENABLED", "false").strip().lower()
+    if yt_raw in ("true", "1", "yes", "on"):
+        count += 1
 
-def _platforms_count_text() -> str:
-    """متن آماده برای نمایش — مثل «7 platforms» یا «platforms»."""
-    n = _platforms_count()
-    if n > 0:
-        return f"{n} platform{'s' if n != 1 else ''}"
-    return "platforms"
+    return count
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -178,9 +178,6 @@ if not _COLORS_OK:
 # ══════════════════════════════════════════════════════════════════════
 #  Helpers
 # ══════════════════════════════════════════════════════════════════════
-_ANSI_RE = re.compile(r"\033\[[0-9;]*m")
-
-
 def _visible_len(s: str) -> int:
     """Visible length (ignores ANSI codes)."""
     return len(_ANSI_RE.sub("", s))
@@ -191,33 +188,58 @@ def _pad(s: str, width: int) -> str:
     return s + " " * max(0, width - _visible_len(s))
 
 
-def _print(msg: str = "") -> None:
+def _print(msg: str = "", color: str = "") -> None:
+    """چاپ با رنگ اختیاری — اگه color خالی باشه، بدون رنگ."""
     try:
-        print(msg)
+        if color and _COLORS_OK:
+            print(f"{color}{msg}{C.RESET}")
+        else:
+            print(msg)
     except Exception:
         pass
 
 
 def _cprint(color: str, msg: str) -> None:
-    if _COLORS_OK and color:
-        _print(f"{color}{msg}{C.RESET}")
-    else:
-        _print(msg)
+    """سازگاری عقب‌رو — همون _print با color."""
+    _print(msg, color)
 
 
 def _safe_filename(s: str) -> str:
     """
     نام فایل امن از یک label.
-    
+
     مثال:
-        "All enabled platforms + Health Check" 
+        "All enabled platforms + Health Check"
         → "all_enabled_platforms_health_check"
     """
     s = s.lower().strip()
-    s = re.sub(r"[^\w\s\-]+", "", s)  # فقط حروف، عدد، _، -، فاصله
-    s = re.sub(r"[\s\-]+", "_", s)     # فاصله و - → _
+    s = _SAFE_FILENAME_RE_1.sub("", s)
+    s = _SAFE_FILENAME_RE_2.sub("_", s)
     s = s.strip("_")
     return s[:60] or "test"
+
+
+def _open_path(path: str, in_explorer: bool = False) -> bool:
+    """
+    باز کردن فایل یا پوشه با اپلیکیشن پیش‌فرض سیستم.
+
+    Args:
+        path: مسیر فایل یا پوشه.
+        in_explorer: اگه True و path پوشه، در Explorer باز کن.
+
+    Returns:
+        True اگه موفق.
+    """
+    try:
+        if os.name == "nt":
+            os.startfile(path)  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", path])
+        else:
+            subprocess.Popen(["xdg-open", path])
+        return True
+    except Exception:
+        return False
 
 
 class _Cancelled(Exception):
@@ -237,12 +259,18 @@ _PLATFORM_LABELS: dict[str, str] = {
     "web": "Web",
     "linkedin": "LinkedIn",
     "instagram": "Instagram",
+    "youtube": "YouTube",       # 🆕
 }
 
 try:
-    from core.services.daily_reporter import PLATFORM_ORDER
+    from config import PLATFORMS_ORDER
+    # 🆕 یوتیوب هنوز در PLATFORMS_ORDER نیست ولی در لیست انتخابی می‌خواهیم باشد
+    _order = list(PLATFORMS_ORDER)
+    if "youtube" not in _order:
+        _order.append("youtube")
+
     _PLATFORM_CHOICES: list[tuple[str, str]] = [
-        (p, _PLATFORM_LABELS.get(p, p)) for p in PLATFORM_ORDER
+        (p, _PLATFORM_LABELS.get(p, p)) for p in _order
     ]
 except Exception:
     _PLATFORM_CHOICES = list(_PLATFORM_LABELS.items())
@@ -269,9 +297,7 @@ def _menu_lead_count() -> str:
     try:
         conn = sqlite3.connect(DB_PATH, timeout=_MENU_DB_TIMEOUT_S)
         cur = conn.cursor()
-        cur.execute(
-            "SELECT COUNT(*) FROM messages WHERE keywords != ''"
-        )
+        cur.execute("SELECT COUNT(*) FROM messages WHERE keywords != ''")
         row = cur.fetchone()
         conn.close()
         n = int(row[0]) if row else 0
@@ -295,19 +321,10 @@ def _confirm(prompt: str) -> bool:
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  📁 Console logs — ذخیره خودکار خروجی (v14 — NEW)
+#  📁 Console logs — ذخیره خودکار خروجی
 # ══════════════════════════════════════════════════════════════════════
 def _new_log_path(label: str, prefix: str = "") -> str:
-    """
-    ساخت مسیر یکتا برای لاگ.
-    
-    Args:
-        label: نام تست یا پلتفرم.
-        prefix: پیشوند اختیاری (مثلاً "only_" یا "all_").
-    
-    Returns:
-        مسیر کامل فایل لاگ.
-    """
+    """ساخت مسیر یکتا برای لاگ."""
     os.makedirs(CONSOLE_LOGS_DIR, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe = _safe_filename(label)
@@ -323,27 +340,20 @@ def _run_with_tee(
     header_extra: str = "",
 ) -> tuple[int, str]:
     """
-    اجرای یک دستور با tee — خروجی هم به کنسول هم به فایل.
-    
-    Args:
-        cmd: دستور برای اجرا (list).
-        label: نام تست برای لاگ.
-        cwd: پوشه کاری.
-        log_prefix: پیشوند اختیاری نام فایل.
-        header_extra: خط اضافی برای هدر لاگ.
-    
+    اجرای دستور با tee — خروجی هم به کنسول هم به فایل.
+
     Returns:
         (exit_code, log_path)
     """
     log_path = _new_log_path(label, prefix=log_prefix)
     rel_log = os.path.relpath(log_path, ROOT)
-    
+
     print()
     _cprint(C.CYAN, f"  ▶  {label}")
     _cprint(C.DIM, "  " + "─" * 56)
     _cprint(C.GRAY, f"  📁 Log: {rel_log}")
     print()
-    
+
     rc = -1
     try:
         with open(log_path, "w", encoding="utf-8", errors="replace") as logf:
@@ -355,7 +365,7 @@ def _run_with_tee(
                 logf.write(f"# {header_extra}\n")
             logf.write("# " + "=" * 70 + "\n\n")
             logf.flush()
-            
+
             # ─── اجرا با pipe ───
             proc = subprocess.Popen(
                 cmd,
@@ -365,24 +375,23 @@ def _run_with_tee(
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                bufsize=1,  # line-buffered
+                bufsize=1,
             )
-            
+
             try:
-                for line in proc.stdout:  # type: ignore
-                    # کنسول
+                assert proc.stdout is not None
+                for line in proc.stdout:
                     try:
                         sys.stdout.write(line)
                         sys.stdout.flush()
                     except Exception:
                         pass
-                    # فایل
                     try:
                         logf.write(line)
                         logf.flush()
                     except Exception:
                         pass
-                
+
                 rc = proc.wait()
             except KeyboardInterrupt:
                 proc.terminate()
@@ -393,14 +402,14 @@ def _run_with_tee(
                 _cprint(C.GRAY, "\n  i) Cancelled.")
                 logf.write("\n# CANCELLED BY USER\n")
                 return (-1, log_path)
-            
+
             # ─── Footer ───
-            logf.write(f"\n# " + "=" * 70 + "\n")
+            logf.write("\n# " + "=" * 70 + "\n")
             logf.write(f"# Exit code: {rc}\n")
             logf.write(f"# Finished: {datetime.now().isoformat()}\n")
-        
+
         return (rc, log_path)
-    
+
     except Exception as e:
         _cprint(C.RED, f"\n  ✗ {label} failed: {type(e).__name__}: {e}")
         try:
@@ -412,28 +421,24 @@ def _run_with_tee(
 
 
 def _run_script(filename: str, label: str) -> bool:
-    """
-    اجرای یک اسکریپت تست + ذخیره خروجی در فایل.
-    
-    Wrapper سبک برای سازگاری با کدهای قبلی.
-    """
+    """اجرای یک اسکریپت تست + ذخیره خروجی."""
     path = os.path.join(ROOT, "tests", filename)
     if not os.path.exists(path):
         _cprint(C.RED, f"  ✗ Not found: {path}")
         return False
-    
+
     rc, log_path = _run_with_tee(
         cmd=[PYEXE, path],
         label=label,
         log_prefix="",
     )
     rel_log = os.path.relpath(log_path, ROOT)
-    
+
     if rc == 0:
         _cprint(C.GREEN, f"\n  ✓ {label} PASSED.")
         _cprint(C.GRAY, f"     Log: {rel_log}")
         return True
-    
+
     _cprint(C.YELLOW, f"\n  ! {label} FAILED (rc={rc}).")
     _cprint(C.GRAY, f"     Log: {rel_log}")
     return False
@@ -791,7 +796,10 @@ def report() -> None:
         return
 
     label = platform or "all platforms"
-    _cprint(C.CYAN, f"  ..) Generating reports (days={days or 'all'}, {label})...")
+    _cprint(
+        C.CYAN,
+        f"  ..) Generating reports (days={days or 'all'}, {label})...",
+    )
 
     date_from = None
     if days and days > 0:
@@ -838,7 +846,10 @@ def crm() -> None:
         else "multi_sheet" if multi_sheet
         else (platform or "all")
     )
-    _cprint(C.CYAN, f"  ..) Exporting CRM (days={days or 'all'}, mode={mode_label})...")
+    _cprint(
+        C.CYAN,
+        f"  ..) Exporting CRM (days={days or 'all'}, mode={mode_label})...",
+    )
 
     try:
         from core.services.crm_export import export_crm
@@ -861,7 +872,10 @@ def _print_crm_result(res: dict[str, Any], split: bool) -> None:
         if not by:
             _cprint(C.GRAY, "  i) No platform had any leads.")
             return
-        _cprint(C.GREEN, f"\n  ✓ {res.get('count', 0)} leads across {len(by)} platforms:")
+        _cprint(
+            C.GREEN,
+            f"\n  ✓ {res.get('count', 0)} leads across {len(by)} platforms:",
+        )
         for p, info in by.items():
             _cprint(C.WHITE, f"      • {p}: {info.get('count', 0)} leads")
             if info.get("csv"):
@@ -905,7 +919,7 @@ def recent_reports() -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  🎯 Tests menu (v14 — با ذخیره خودکار خروجی)
+#  🎯 Tests menu
 # ══════════════════════════════════════════════════════════════════════
 def tests() -> None:
     print()
@@ -916,11 +930,11 @@ def tests() -> None:
     _print("    [ 5] WhatsApp     [ 6] LinkedIn")
     _print("    [ 7] Web          [ 8] Health Check")
     _print("    [ 9] Storage      [10] Database")
-    _print("    [11] Instagram")
+    _print("    [11] Instagram    [12] YouTube")     # 🆕
     print()
     _cprint(C.GRAY, f"    📁 Logs: {os.path.relpath(CONSOLE_LOGS_DIR, ROOT)}")
 
-    choice = _ask_input("\n  Choice [0-11] (Enter = all): ")
+    choice = _ask_input("\n  Choice [0-12] (Enter = all): ")   # 🆕
     if choice is None:
         _cprint(C.GRAY, "  i) Cancelled.")
         return
@@ -948,6 +962,7 @@ def tests() -> None:
         "6": ["linkedin"],
         "7": ["web"],
         "11": ["instagram"],
+        "12": ["youtube"],      # 🆕
     }
 
     if choice not in _TEST_PLATFORMS:
@@ -974,18 +989,17 @@ def tests() -> None:
         return
 
     cmd = [PYEXE, runner, "--only"] + platforms
-    label = f"only_{'_'.join(platforms)}"
-    
+
     _cprint(C.CYAN, f"\n  ..) Running tests for: {', '.join(platforms)}...")
     _cprint(C.GRAY, "      (may take a few minutes)")
-    
+
     rc, log_path = _run_with_tee(
         cmd=cmd,
         label=f"Only: {', '.join(platforms)}",
         log_prefix="only_",
     )
     rel_log = os.path.relpath(log_path, ROOT)
-    
+
     if rc == 0:
         _cprint(C.GREEN, "\n  ✓ Tests PASSED.")
         _cprint(C.GRAY, f"     Log: {rel_log}")
@@ -1129,7 +1143,7 @@ def requests_and_errors() -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  🎯 Console Logs viewer (v14 — NEW)
+#  🎯 Console Logs viewer
 # ══════════════════════════════════════════════════════════════════════
 def console_logs() -> None:
     """نمایش آخرین console logs با قابلیت باز کردن پوشه."""
@@ -1160,30 +1174,29 @@ def console_logs() -> None:
         _cprint(C.GRAY, "  i) No .log files.")
         return
 
-    # ─── آمار کلی ───
     total_size = sum(s for _, _, s in files)
-    _cprint(C.CYAN, f"\n  📁 Console Logs")
+    _cprint(C.CYAN, "\n  📁 Console Logs")
     _cprint(C.DIM, f"     Folder: {os.path.relpath(CONSOLE_LOGS_DIR, ROOT)}")
-    _cprint(C.DIM, f"     Total:  {len(files)} file(s), "
-                   f"{total_size/1024/1024:.1f} MB")
+    _cprint(
+        C.DIM,
+        f"     Total:  {len(files)} file(s), {total_size/1024/1024:.1f} MB",
+    )
     print()
 
-    # ─── جدول ───
     _cprint(C.BOLD, f"    {'Date/Time':<19s} {'Size':>9s}  Name")
     _cprint(C.DIM, "    " + "─" * 70)
 
     for mtime, name, size in files[:25]:
         ts = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
         size_kb = size / 1024
-        # رنگ بر اساس حجم
+
         if size_kb > 500:
-            color = C.RED       # خیلی بزرگ
+            color = C.RED
         elif size_kb > 100:
-            color = C.YELLOW    # بزرگ
+            color = C.YELLOW
         else:
             color = C.WHITE
 
-        # رنگ بر اساس نوع لاگ
         if name.startswith("healthcheck_"):
             name_str = f"🔬 {name}"
         elif name.startswith("only_"):
@@ -1198,7 +1211,6 @@ def console_logs() -> None:
     if len(files) > 25:
         _cprint(C.GRAY, f"    ... and {len(files) - 25} more")
 
-    # ─── اقدامات ───
     print()
     _cprint(C.DIM, "  ─── Actions ───")
     _cprint(C.WHITE, "    [o] Open folder in Explorer")
@@ -1212,53 +1224,36 @@ def console_logs() -> None:
     action = action.strip().lower()
 
     if action == "o":
-        _open_folder(CONSOLE_LOGS_DIR)
+        if _open_path(CONSOLE_LOGS_DIR):
+            _cprint(C.GREEN, f"  ✓ Opened: {os.path.relpath(CONSOLE_LOGS_DIR, ROOT)}")
+        else:
+            _cprint(C.RED, "  ✗ Cannot open folder")
     elif action == "l":
         _open_latest_log(files[0][1])
     elif action == "c":
         _clear_console_logs(files)
 
 
-def _open_folder(folder: str) -> None:
-    """باز کردن پوشه در Explorer/Finder."""
-    try:
-        if os.name == "nt":
-            os.startfile(folder)  # type: ignore[attr-defined]
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", folder])
-        else:
-            subprocess.Popen(["xdg-open", folder])
-        _cprint(C.GREEN, f"  ✓ Opened: {os.path.relpath(folder, ROOT)}")
-    except Exception as e:
-        _cprint(C.RED, f"  ✗ Cannot open folder: {e}")
-
-
 def _open_latest_log(name: str) -> None:
-    """باز کردن آخرین لاگ."""
+    """باز کردن آخرین لاگ در notepad."""
     path = os.path.join(CONSOLE_LOGS_DIR, name)
     _cprint(C.CYAN, f"  ..) Opening: {name}")
-    try:
-        if os.name == "nt":
-            subprocess.Popen(["notepad.exe", path])
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", path])
-        else:
-            subprocess.Popen(["xdg-open", path])
+    if _open_path(path):
         _cprint(C.GREEN, "  ✓ Opened.")
-    except Exception as e:
-        _cprint(C.RED, f"  ✗ Cannot open: {e}")
+    else:
+        _cprint(C.RED, "  ✗ Cannot open.")
         _cprint(C.GRAY, f"     Path: {path}")
 
 
-def _clear_console_logs(
-    files: list[tuple[float, str, int]]
-) -> None:
+def _clear_console_logs(files: list[tuple[float, str, int]]) -> None:
     """پاک کردن همه console logs."""
     if not files:
         return
     total_mb = sum(s for _, _, s in files) / 1024 / 1024
-    _cprint(C.YELLOW, f"\n  ! About to delete {len(files)} file(s) "
-                      f"({total_mb:.1f} MB)")
+    _cprint(
+        C.YELLOW,
+        f"\n  ! About to delete {len(files)} file(s) ({total_mb:.1f} MB)",
+    )
     if not _confirm("  Are you sure? [y/N]: "):
         _cprint(C.GRAY, "  i) Cancelled.")
         return
@@ -1299,7 +1294,9 @@ def _git(args: list[str]) -> tuple[int, str]:
 
 def _git_branch() -> str:
     rc, out = _git(["rev-parse", "--abbrev-ref", "HEAD"])
-    return (out or "main").strip() or "main" if rc == 0 else "main"
+    if rc == 0:
+        return (out or "main").strip() or "main"
+    return "main"
 
 
 def _git_has_remote(name: str) -> bool:
@@ -1354,7 +1351,9 @@ def _git_restore_files(files: list[str]) -> int:
     return restored
 
 
-def _git_print_status_lines(status_out: str, limit: int = _GIT_PREVIEW_LIMIT) -> None:
+def _git_print_status_lines(
+    status_out: str, limit: int = _GIT_PREVIEW_LIMIT,
+) -> None:
     lines = [ln for ln in (status_out or "").strip().splitlines() if ln]
     for line in lines[:limit]:
         _cprint(C.WHITE, f"      {line}")
@@ -1370,7 +1369,10 @@ def github_push() -> None:
 
     rc, tracked = _git(["ls-files", ".env"])
     if ".env" in (tracked or ""):
-        _cprint(C.RED, "  ✗ ABORT: .env is tracked by git — pushing would leak secrets")
+        _cprint(
+            C.RED,
+            "  ✗ ABORT: .env is tracked by git — pushing would leak secrets",
+        )
         _cprint(C.GRAY, "      Fix: git rm --cached .env")
         return
 
@@ -1533,7 +1535,7 @@ _ACTIONS: dict[str, Callable[[], None]] = {
     "10": cleanup, "11": github_push, "12": health,
     "13": ai_status, "14": requests_and_errors, "15": open_chat,
     "16": recent_reports, "17": github_pull, "18": github_status,
-    "19": console_logs,   # ← v14 NEW
+    "19": console_logs,
 }
 
 
@@ -1541,6 +1543,7 @@ def _show_header() -> None:
     """Compact header with live status."""
     running = _is_running()
     leads = _menu_lead_count()
+    platforms = _platforms_count()
 
     if running:
         dot = f"{C.GREEN}●{C.RESET}" if _COLORS_OK else "●"
@@ -1551,7 +1554,10 @@ def _show_header() -> None:
 
     W = _HEADER_INNER_WIDTH
     title_line = "  Srooyesh Lead-Monitor"
-    status_line = f"  {status_str}     Leads: {leads}"
+    status_line = (
+        f"  {status_str}     Leads: {leads}   "
+        f"Platforms: {platforms}"
+    )
 
     _cprint(C.BOLD + C.MAGENTA, "╭" + "─" * W + "╮")
     _cprint(C.WHITE, f"│{_pad(title_line, W)}│")
@@ -1559,17 +1565,19 @@ def _show_header() -> None:
     _cprint(C.BOLD + C.MAGENTA, "╰" + "─" * W + "╯")
 
 
+def _render_cell(num: str, label: str) -> str:
+    """رندر یک سلول منو با رنگ‌آمیزی."""
+    if _COLORS_OK:
+        return f"{C.GRAY}[{num:>2}]{C.RESET} {label}"
+    return f"[{num:>2}] {label}"
+
+
 def _section(title: str, items: list[tuple[str, str]]) -> None:
     """Render a section as a 4-column grid."""
     print()
     _cprint(C.BOLD + C.CYAN, f"  {title}")
 
-    cells: list[str] = []
-    for num, label in items:
-        if _COLORS_OK:
-            cells.append(f"{C.GRAY}[{num:>2}]{C.RESET} {label}")
-        else:
-            cells.append(f"[{num:>2}] {label}")
+    cells = [_render_cell(num, label) for num, label in items]
 
     for i in range(0, len(cells), _MENU_COLS):
         row = cells[i:i + _MENU_COLS]
@@ -1606,7 +1614,7 @@ def show_menu() -> None:
         ("14", "Requests"),
         ("15", "AI Chat"),
         ("16", "Recent"),
-        ("19", "Logs"),       # ← v14 NEW
+        ("19", "Logs"),
     ])
 
     _section("🌿  Git", [
@@ -1651,7 +1659,7 @@ def main() -> None:
         except Exception as e:
             _cprint(C.RED, f"  ✗ Error: {type(e).__name__}: {e}")
 
-        if os.name == "nt":
+        if os.name == "nt" and not _COLORS_OK:
             try:
                 os.system("pause >nul")
             except Exception:

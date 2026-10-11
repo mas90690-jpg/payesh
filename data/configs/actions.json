@@ -1,13 +1,15 @@
 {
-  "version": "1.0.0",
+  "version": "1.0.1",
   "safe_actions": [
     "status", "report", "crm", "logs", "keywords",
     "add_keyword", "remove_keyword", "has_keyword",
     "platform_status", "health", "lead_details",
     "get_param", "set_param", "restart", "explain_logs",
-    "feature_request", "ask", "help"
+    "feature_request", "ask", "help",
+    "reload_prompt"
   ],
   "handled_locally": [
-    "help", "add_keyword", "remove_keyword", "feature_request"
+    "help", "add_keyword", "remove_keyword", "feature_request",
+    "reload_prompt"
   ]
 }

@@ -487,7 +487,7 @@ class InfoMixin:
 
         try:
             src = self._safepath(source)
-        except Exception as e:
+        except Exception:
             return f"⛔ مسیر نامعتبر: {source}"
 
         if not src.exists():
@@ -510,9 +510,7 @@ class InfoMixin:
             try:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 base = str(dst).replace(".zip", "")
-                result_path = shutil.make_archive(
-                    base, "zip", src
-                )
+                shutil.make_archive(base, "zip", src)
                 log_success(
                     f"✅ [BRAIN:zip:compress] {source} → {dest}"
                 )

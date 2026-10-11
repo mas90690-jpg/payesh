@@ -366,7 +366,7 @@ class BackupService:
         ok = _atomic_write_json(self.stats_file, stats)
         if not ok:
             log_warning(
-                f"⚠️ [BACKUP:stats] ذخیره ناموفق"
+                "⚠️ [BACKUP:stats] ذخیره ناموفق"
             )
 
     def _load_stats(self) -> dict[str, Any]:
@@ -447,7 +447,7 @@ class BackupService:
         ok = _atomic_write_json(self.hash_file, hashes)
         if not ok:
             log_warning(
-                f"⚠️ [BACKUP:hashes] ذخیره ناموفق"
+                "⚠️ [BACKUP:hashes] ذخیره ناموفق"
             )
 
     # ═══════════════════════════════════════════
@@ -938,7 +938,7 @@ class BackupService:
         )
         if not ok:
             log_warning(
-                f"⚠️ [BACKUP:mark_daily] ذخیره ناموفق"
+                "⚠️ [BACKUP:mark_daily] ذخیره ناموفق"
             )
 
     def _should_backup_full(self) -> bool:
@@ -962,7 +962,7 @@ class BackupService:
         )
         if not ok:
             log_warning(
-                f"⚠️ [BACKUP:mark_full] ذخیره ناموفق"
+                "⚠️ [BACKUP:mark_full] ذخیره ناموفق"
             )
 
     # ═══════════════════════════════════════════

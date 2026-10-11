@@ -21,7 +21,6 @@
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import sys
@@ -70,6 +69,7 @@ class C:
     FAIL = "\033[91m"
     WARN = "\033[93m"
     INFO = "\033[96m"
+    DIM = "\033[2m"      # ← 🆕 اضافه کن
     BOLD = "\033[1m"
     END = "\033[0m"
 
@@ -396,7 +396,7 @@ def report_scrape_to_db(
     report.add("db.scrape_saved", status, detail)
 
     if result["details_in_db"]:
-        print(f"\n  📥 نمونهٔ پیام‌های ذخیره‌شده در DB:")
+        print("\n  📥 نمونهٔ پیام‌های ذخیره‌شده در DB:")
         for mid, info in list(result["details_in_db"].items())[:sample_size]:
             chat = (info.get("chat_name") or "?")[:25]
             txt = (info.get("text") or "")[:50]
@@ -405,7 +405,7 @@ def report_scrape_to_db(
             print(f"        id={mid[:30]} | kw={kw[:40]}")
 
     if result["details_missing"]:
-        print(f"\n  ❌ نمونهٔ پیام‌های ذخیره‌نشده:")
+        print("\n  ❌ نمونهٔ پیام‌های ذخیره‌نشده:")
         for mid in result["details_missing"]:
             print(f"     id={mid[:50]}")
 
@@ -443,7 +443,7 @@ def report_keyword_verification(
                 f"پیام با «{sample_kw}» در DB هست | "
                 f"tier={msg.get('tier')} | kw={msg.get('keywords')}",
             )
-            print(f"\n  🎯 پیدا شد در DB:")
+            print("\n  🎯 پیدا شد در DB:")
             print(f"     id={msg['id']}")
             print(f"     chat={msg['chat_name']}")
             print(f"     text={(msg['text'] or '')[:60]}")
@@ -481,7 +481,7 @@ def report_db_final_stats(
         recent = get_recent_messages(platform, limit=3)
         if recent:
             print(
-                f"\n  📋 آخرین ۳ پیام ذخیره‌شده در DB "
+                "\n  📋 آخرین ۳ پیام ذخیره‌شده در DB "
                 f"({platform}):"
             )
             for r in recent:
@@ -504,7 +504,7 @@ def report_all_platforms(report: TestReport) -> None:
             )
             return
 
-        print(f"\n  📊 آمار همهٔ پلتفرم‌ها:")
+        print("\n  📊 آمار همهٔ پلتفرم‌ها:")
         print(f"  {'Platform':15s} | {'Total':>8s} | {'Leads':>8s}")
         print(f"  {'-'*15}-+-{'-'*8}-+-{'-'*8}")
 

@@ -1,16 +1,26 @@
 """
-ChatOps admin handler — نسخهٔ ۱۳ (داده‌محور).
+ChatOps admin handler — نسخهٔ ۱۶ (حافظهٔ تمیز).
 
 همهٔ لیست‌ها و پیام‌ها از data/ می‌آید:
   - data/configs/domain.json     → in_domain / anti_domain / reply
   - data/configs/messages.json   → empty_reply / fallback prefixes
 
-نسخهٔ ۱۳ (این نسخه):
-  - 🎯 `DomainGuard.config_path` حالا از `data_paths.DOMAIN` می‌آید
-    (به‌جای hardcode کردن مسیر).
-  - 🐛 FIX: `_is_safebrain_fallback` حالا fallback prefixes رو
-    یک‌بار cache می‌کنه (به‌جای خواندن هر بار از فایل).
-  - ✅ حفظ همهٔ رفتار نسخهٔ ۱۲.
+نسخهٔ ۱۶ (این نسخه):
+  - 🐛 FIX بحرانی: `_remember` حالا پاسخ‌های fallback را ذخیره نمی‌کند.
+    قبلاً پاسخ‌های «هوش در دسترس نیست» و «حالت آفلاین» در
+    PersistentMemory ذخیره می‌شدند و بار بعد به‌جای پاسخ واقعی
+    برگردانده می‌شدند.
+  - 🐛 FIX بحرانی: `_recall_persistent` حالا پاسخ‌های fallback را
+    رد می‌کند (double-protection).
+  - 🐛 FIX: `_recall_persistent` حالا از `self._is_safebrain_fallback`
+    استفاده می‌کند (DRY).
+  - 🎯 `_log_fallback_skip()` helper جدید.
+  - ✅ حفظ همهٔ رفتار نسخهٔ ۱۵.
+
+نسخهٔ ۱۵ (قبلی):
+  - 🎯 اتصال به `PersistentMemory` از SafeBrain.
+  - 🎯 `_remember_persistent()` — ذخیره در SQLite + FTS5.
+  - 🎯 `_recall_persistent()` — جستجو قبل از AI.
 """
 from __future__ import annotations
 
@@ -20,17 +30,13 @@ from typing import Any
 
 from analyzers.keyword_finder import get_keyword_finder
 from core.adapters import messenger_registry
-from core.adapters.command_parser import (
-    extract_value,
-    parse_command,
-    platform_in,
-)
+from core.adapters.command_parser import parse_command
 from core.contracts.base_handler import BaseHandler
 from core.kernel.logger import log_error, log_info, log_success, log_warning
-from core.safe_brain import SafeBrain, get_safe_brain
+from core.safe_brain import get_safe_brain
 from core.services.ai_assistant import get_ai_assistant
 from data.loader import load_json
-from handlers._ai_utils import fa_platform, is_valid_ai_answer
+from handlers._ai_utils import is_valid_ai_answer
 from handlers.admin_actions import AdminActions
 from handlers.admin_memory import AdminMemory
 from handlers.keyword_admin import KeywordAdmin
@@ -91,6 +97,19 @@ def _env_float(name, default, min_val=None, max_val=None) -> float:
     return v
 
 
+def _env_bool(name: str, default: bool = True) -> bool:
+    """خواندن bool از env."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    v = str(raw).strip().lower()
+    if v in ("true", "1", "yes", "on", "y", "t"):
+        return True
+    if v in ("false", "0", "no", "off", "n", "f"):
+        return False
+    return default
+
+
 # ═══════════════════════════════════════════
 # ثابت‌ها (فقط env-based)
 # ═══════════════════════════════════════════
@@ -103,6 +122,19 @@ _DOMAIN_RELOAD_SECONDS = _env_float(
     "ADMIN_DOMAIN_RELOAD_S", 120.0, 10.0, 3600.0
 )
 
+# 🆕 PersistentMemory settings
+_PERSISTENT_ENABLED = _env_bool(
+    "BRAIN_PERSISTENT_MEMORY", True
+)
+_PERSISTENT_REMEMBER = _env_bool(
+    "SAFE_BRAIN_REMEMBER_CONVERSATIONS", True
+)
+_PERSISTENT_CATEGORY = "conversation"
+_PERSISTENT_IMPORTANCE = _env_float(
+    "ADMIN_PERSISTENT_IMPORTANCE", 0.5,
+    min_val=0.0, max_val=1.0,
+)
+
 _VALID_PLATFORMS = frozenset(PLATFORMS_ORDER)
 
 
@@ -113,7 +145,7 @@ _fallback_cache: dict | None = None
 
 
 def _get_fallback_config() -> dict:
-    """🎯 خواندن fallback prefixes از domain.json — با cache.
+    """خواندن fallback prefixes از domain.json — با cache.
 
     Returns:
         dict با کلیدهای ai_fallback_prefixes، safebrain_prefixes،
@@ -153,7 +185,6 @@ class DomainGuard:
     """
 
     def __init__(self, config_path: str | None = None):
-        # 🎯 FIX: از data_paths.DOMAIN
         self.config_path = (
             config_path or str(data_paths.DOMAIN)
         )
@@ -243,13 +274,11 @@ class DomainGuard:
         in_d = self.in_domain
         anti_d = self.anti_domain
 
-        # ─── گارد خاموش ───
         if not in_d and not anti_d:
             return True
 
         text_lower = text.strip().lower()
 
-        # ─── anti_domain اول ───
         for kw in anti_d:
             if kw and kw in text_lower:
                 log_info(
@@ -258,7 +287,6 @@ class DomainGuard:
                 )
                 return False
 
-        # ─── in_domain ───
         for kw in in_d:
             if kw and kw in text_lower:
                 return True
@@ -267,10 +295,8 @@ class DomainGuard:
 
     def get_reply(self, query: str) -> str:
         """پیام آماده برای سؤال خارج از حوزه — از messages.json."""
-        # ─── اول: از domain.json ───
         tpl = self._data.get("out_of_domain_reply", "")
 
-        # ─── fallback: از messages.json ───
         if not tpl:
             msgs = load_json("messages")
             tpl = msgs.get(
@@ -331,6 +357,38 @@ class AdminHandler(BaseHandler):
             else ("env" if os.environ.get("DEEPSEEK_API_KEY") else "none")
         )
         self.safe_brain = get_safe_brain(api_key=api_key)
+
+        # ═══════════════════════════════════════════
+        # PersistentMemory — از SafeBrain
+        # ═══════════════════════════════════════════
+        self.persistent_memory: Any | None = None
+        if _PERSISTENT_ENABLED:
+            try:
+                pm = getattr(
+                    self.safe_brain, "persistent_memory", None
+                )
+                if pm is not None:
+                    self.persistent_memory = pm
+                    log_success(
+                        f"✅ [ADMIN:init:persistent] اتصال | "
+                        f"count={pm.count()}"
+                    )
+                else:
+                    log_warning(
+                        "⚠️ [ADMIN:init:persistent] "
+                        "SafeBrain.persistent_memory = None"
+                    )
+            except Exception as e:
+                log_warning(
+                    f"⚠️ [ADMIN:init:persistent] "
+                    f"{type(e).__name__}: {e}"
+                )
+                self.persistent_memory = None
+        else:
+            log_info(
+                "ℹ️ [ADMIN:init:persistent] غیرفعال "
+                "(BRAIN_PERSISTENT_MEMORY=false)"
+            )
 
         log_info(
             f"🔑 [ADMIN:init:safebrain] api_key "
@@ -405,12 +463,17 @@ class AdminHandler(BaseHandler):
         )
 
         if self.enabled:
+            persistent_status = (
+                "✅" if self.persistent_memory else "❌"
+            )
             log_success(
                 f"✅ [ADMIN:init] فعال | "
                 f"platform={self.platform} | "
                 f"admins={len(self.admin_ids)} | "
                 f"platform_enabled={self._platform_enabled} | "
                 f"api_key={self._api_key_source} | "
+                f"memory_path={memory_path} | "
+                f"persistent={persistent_status} | "
                 f"domain_guard=✅"
             )
         else:
@@ -450,6 +513,112 @@ class AdminHandler(BaseHandler):
             return ""
 
     # ═══════════════════════════════════════
+    # ذخیره در حافظه (JSONL + SQLite)
+    # ═══════════════════════════════════════
+    def _remember(self, text: str, reply: str) -> None:
+        """ذخیرهٔ گفتگو در حافظه — JSONL + PersistentMemory.
+
+        🐛 FIX: پاسخ‌های fallback ذخیره نمی‌شوند.
+
+        Args:
+            text: پیام کاربر.
+            reply: پاسخ ربات.
+        """
+        if not text or not reply:
+            return
+
+        # ═══════════════════════════════════════════
+        # 🐛 FIX: پاسخ‌های fallback ذخیره نشوند
+        # ═══════════════════════════════════════════
+        if self._is_safebrain_fallback(reply):
+            log_info(
+                f"⏭️ [ADMIN:memory] fallback — ذخیره نشد | "
+                f"{reply[:60]!r}"
+            )
+            return
+
+        # ─── ۱) AdminMemory (JSONL) ───
+        try:
+            self._memory.remember(text, reply)
+        except Exception as e:
+            log_warning(
+                f"⚠️ [ADMIN:memory] ذخیره JSONL ناموفق | "
+                f"{type(e).__name__}: {e}"
+            )
+
+        # ─── ۲) PersistentMemory (SQLite) ───
+        if self.persistent_memory and _PERSISTENT_REMEMBER:
+            try:
+                self.persistent_memory.remember(
+                    category=_PERSISTENT_CATEGORY,
+                    key=text[:500],
+                    value=reply[:10000],
+                    importance=_PERSISTENT_IMPORTANCE,
+                )
+            except Exception as e:
+                log_warning(
+                    f"⚠️ [ADMIN:memory:persistent] ذخیره ناموفق | "
+                    f"{type(e).__name__}: {e}"
+                )
+
+    # ═══════════════════════════════════════
+    # recall از PersistentMemory
+    # ═══════════════════════════════════════
+    def _recall_persistent(self, text: str) -> str | None:
+        """جستجو در PersistentMemory.
+
+        🐛 FIX: پاسخ‌های fallback رد می‌شوند.
+
+        Args:
+            text: سؤال کاربر.
+
+        Returns:
+            پاسخ یا None.
+        """
+        if not self.persistent_memory:
+            return None
+        if not text or len(text) < 3:
+            return None
+
+        try:
+            results = self.persistent_memory.recall(
+                query=text,
+                category=_PERSISTENT_CATEGORY,
+                limit=1,
+            )
+            if not results:
+                return None
+
+            best = results[0]
+            answer = best.get("value") or ""
+            if not answer or len(answer) < 10:
+                return None
+
+            # ═══════════════════════════════════════════
+            # 🐛 FIX: پاسخ‌های fallback برنگردند
+            # ═══════════════════════════════════════════
+            if self._is_safebrain_fallback(answer):
+                log_info(
+                    f"⏭️ [ADMIN:recall:persistent] "
+                    f"fallback در حافظه — رد شد | "
+                    f"'{text[:40]}'"
+                )
+                return None
+
+            log_success(
+                f"🎯 [ADMIN:recall:persistent] '{text[:40]}' → "
+                f"'{answer[:40]}' | "
+                f"imp={best.get('importance', 0)}"
+            )
+            return answer
+        except Exception as e:
+            log_warning(
+                f"⚠️ [ADMIN:recall:persistent] "
+                f"{type(e).__name__}: {e}"
+            )
+            return None
+
+    # ═══════════════════════════════════════
     # BaseHandler contract
     # ═══════════════════════════════════════
     @property
@@ -464,11 +633,7 @@ class AdminHandler(BaseHandler):
     # ═══════════════════════════════════════
     @staticmethod
     def _is_safebrain_fallback(reply: str | None) -> bool:
-        """تشخیص پاسخ «هوش در دسترس نیست» — با cache.
-
-        🐛 FIX: از `_get_fallback_config()` استفاده می‌کند
-        (به‌جای خواندن فایل در هر بار).
-        """
+        """تشخیص پاسخ «هوش در دسترس نیست» — با cache."""
         if not reply:
             return True
 
@@ -481,12 +646,10 @@ class AdminHandler(BaseHandler):
         sb_prefixes = cfg["safebrain_prefixes"]
         min_len = cfg["safebrain_min_real_len"]
 
-        # ─── AIAssistant fallback ───
         for prefix in ai_fallbacks:
             if prefix and s.startswith(prefix):
                 return True
 
-        # ─── SafeBrain prefix ───
         if sb_prefixes and s.startswith(sb_prefixes):
             return len(s) < min_len
 
@@ -595,7 +758,7 @@ class AdminHandler(BaseHandler):
         return None
 
     # ═══════════════════════════════════════
-    # entry point
+    # entry point (بله)
     # ═══════════════════════════════════════
     async def handle(self, event):
         t0 = time.monotonic()
@@ -651,6 +814,20 @@ class AdminHandler(BaseHandler):
             return
 
         # ═══════════════════════════════════════════
+        # ۲.۵) PersistentMemory — اول از همه
+        # ═══════════════════════════════════════════
+        if is_admin:
+            cached = self._recall_persistent(text)
+            if cached:
+                elapsed_ms = (time.monotonic() - t0) * 1000
+                log_success(
+                    f"✅ [ADMIN:handle:persistent] "
+                    f"پاسخ از حافظه | {elapsed_ms:.0f}ms"
+                )
+                await self._reply(raw, cached)
+                return
+
+        # ═══════════════════════════════════════════
         # ۳) ManualBrain
         # ═══════════════════════════════════════════
         if is_admin and self.manual_brain:
@@ -666,6 +843,7 @@ class AdminHandler(BaseHandler):
                         f"✅ [ADMIN:layer:manual] پاسخ | "
                         f"{layer_ms:.0f}ms"
                     )
+                    self._remember(text, manual_reply)
                     await self._reply(raw, manual_reply)
                     return
             except Exception as e:
@@ -702,6 +880,8 @@ class AdminHandler(BaseHandler):
         if not reply:
             reply = self._domain.get_empty_reply()
 
+        self._remember(text, reply)
+
         await self._reply(raw, reply)
 
         total_ms = (time.monotonic() - t0) * 1000
@@ -711,7 +891,6 @@ class AdminHandler(BaseHandler):
             )
 
     async def _handle_command(self, action, value, raw_text):
-        t0 = time.monotonic()
         reply = None
         try:
             reply = await self.safe_brain.process(raw_text)
@@ -752,33 +931,77 @@ class AdminHandler(BaseHandler):
 
         return self._domain.get_empty_reply()
 
+    # ═══════════════════════════════════════
+    # entry point (وب)
+    # ═══════════════════════════════════════
     async def process_text(self, text: str) -> str:
-        """مسیر وب — برای /chat در OBS server."""
+        """مسیر وب — برای /chat در OBS server.
+
+        دقیقاً مثل بله — با PersistentMemory.
+        """
         text = (text or "").strip()
         if not text:
             return ""
 
+        # ═══════════════════════════════════════
+        # گارد حوزه
+        # ═══════════════════════════════════════
         if not self._is_in_domain(text):
-            return self._out_of_domain_reply(text)
+            log_info(
+                f"🚫 [ADMIN:web] خارج از حوزه | "
+                f"text={text[:_LOG_PREVIEW_LEN]!r}"
+            )
+            reply = self._out_of_domain_reply(text)
+            self._remember(text, reply)
+            return reply
 
+        # ═══════════════════════════════════════
+        # PersistentMemory — اول
+        # ═══════════════════════════════════════
+        cached = self._recall_persistent(text)
+        if cached:
+            log_success(
+                "✅ [ADMIN:web:persistent] پاسخ از حافظه"
+            )
+            return cached
+
+        # ═══════════════════════════════════════
+        # ۱) ManualBrain
+        # ═══════════════════════════════════════
         if self.manual_brain:
             try:
                 manual_reply = await self.manual_brain.process(
-                    text, sender="local_web", ai_fallback=self._ai_fallback,
+                    text, sender="local_web",
+                    ai_fallback=self._ai_fallback,
                 )
                 if manual_reply:
+                    log_success(
+                        "✅ [ADMIN:web:manual] پاسخ"
+                    )
+                    self._remember(text, manual_reply)
                     return manual_reply
             except Exception as e:
-                log_warning(f"⚠️ [ADMIN:web:manual] {type(e).__name__}: {e}")
+                log_warning(
+                    f"⚠️ [ADMIN:web:manual] {type(e).__name__}: {e}"
+                )
 
+        # ═══════════════════════════════════════
+        # ۲) دستورات + AI
+        # ═══════════════════════════════════════
         action, value = parse_command(text)
 
         try:
             if action is None:
                 reply = await self._handle_free_text(text)
             else:
-                reply = await self._handle_command(action, value, text)
-            return reply or self._domain.get_empty_reply()
+                reply = await self._handle_command(
+                    action, value, text
+                )
+            reply = reply or self._domain.get_empty_reply()
+
+            self._remember(text, reply)
+
+            return reply
         except Exception as e:
             log_error(f"❌ [ADMIN:web] {type(e).__name__}: {e}")
             return f"❌ خطا: {e}"
@@ -849,3 +1072,32 @@ class AdminHandler(BaseHandler):
 
     def get_domain_stats(self) -> dict:
         return self._domain.get_stats()
+
+    # ═══════════════════════════════════════
+    # debug
+    # ═══════════════════════════════════════
+    def get_persistent_stats(self) -> dict:
+        """آمار PersistentMemory."""
+        if not self.persistent_memory:
+            return {"enabled": False}
+        try:
+            return {
+                "enabled": True,
+                **self.persistent_memory.get_stats(),
+            }
+        except Exception as e:
+            return {
+                "enabled": True,
+                "error": f"{type(e).__name__}: {e}",
+            }
+
+    def get_stats(self) -> dict:
+        """آمار کامل — برای debug."""
+        base = super().get_stats()
+        return {
+            **base,
+            "domain": self._domain.get_stats(),
+            "persistent_memory": self.get_persistent_stats(),
+            "admin_ids_count": len(self.admin_ids),
+            "platform": self.platform,
+        }
