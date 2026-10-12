@@ -553,7 +553,7 @@ Provide only corrected code.
                 response = (
                     await self.agent.client
                     .chat.completions.create(
-                        model="deepseek-flash",
+                        model="deepseek-v4-pro",
                         messages=[{
                             "role": "user",
                             "content": prompt,
@@ -627,7 +627,7 @@ Return only test code.
         try:
             response = (
                 await self.agent.client.chat.completions.create(
-                    model="deepseek-flash",
+                    model="deepseek-v4-pro",
                     messages=[{
                         "role": "user",
                         "content": prompt,
@@ -779,7 +779,7 @@ Review this code (bugs, security, smells, perf):
         try:
             response = (
                 await self.agent.client.chat.completions.create(
-                    model="deepseek-flash",
+                    model="deepseek-v4-pro",
                     messages=[{
                         "role": "user",
                         "content": prompt,

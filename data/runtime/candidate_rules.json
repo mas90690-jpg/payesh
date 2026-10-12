@@ -128,5 +128,31 @@
     "learned": true,
     "source": "ai",
     "created_at": "2026-10-12T08:02:29.466584"
+  },
+  {
+    "name": "ai_learned_1791788380",
+    "triggers": [
+      "core/brain/main.py را بررسی کن"
+    ],
+    "action": {
+      "type": "text",
+      "text": "بررسی کامل انجام شد. ابزار `pyflakes`/`flake8` توی venv نصب نبودن، پس تحلیل رو دستی و دقیق روی خود فایل + متدهای ارجاع‌شده انجام دادم.\n\n# 📋 گزارش بررسی `core/brain/main.py`\n\n**مشخصات:** ۴۴۲ خط | ۱۵.۶KB | آخرین تغییر: 2026-10-11\n**ساختار:** ۱ کلاس (`Brain`) + ۴ تابع، ۱۹ ایمپورت، ۶ mixin\n**نتیجهٔ کلی:** ❌ هیچ باگ کرش‌کننده پیدا نشد. کد سالم است، ولی چند مشکل «صحت مستندات» و «تمیزی» دارد.\n\n---\n\n## 🔴 جدی\n**موردی پیدا نشد.** همهٔ متدهای ارجاع‌شده در `_TOOL_METHODS` واقعاً وجود دارن (چک شد):\n- `_read_all`, `_read_chunk`, `_read_lines`, `_read_range`, `_file_info`, `_file_exists`, `_file_hash`, `_find_files` → در `mixin_files.py` ✅\n- `_diagnose_platform`, `_run_platform_as_user`, `_list_all_platforms`, `_control_platform`, `_control_stats` → در `mixin_platforms.py` ✅\n- `set_event_bus`, `set_database`, `_build_tools`, `_background_index` → در `mixin_agent.py` ✅\n- فراخوانی `func(self, **args)` با `getattr(Brain, name)` (unbound) سازگار است ✅\n\n---\n\n## 🟠 متوسط\n\n### ۱. عدد ابزارها در مستندات غلط است\n- 📁 `core/brain/main.py`\n- 📍 خطوط ۱۴ و ۶۶/۷۸/۹۲/۱۳۰ (کامنت هر بخش)\n- ❌ docstring می‌گه «مجموع ابزارها: ۵۳» ولی من شمردم **۶۴** ابزار. کامنت هر بخش هم غلطه:\n  - «فایل (read) — ۹ ابزار» → در واقع **۱۰**\n  - «فایل (write) — ۴ ابزار» → در واقع **۵**\n  - «اجرا — ۴ ابزار» → در واقع **۵**\n  - «تنظیمات — ۵ ابزار» → در واقع **۶**\n- ✅ عدد رو به ۶۴ اصلاح کن و کامنت هر بخش رو با تعداد واقعی هم‌تراز کن. (چون مدل/بات بر اساس این اعداد تصمیم می‌گیره، گمراه‌کننده‌ست.)\n- ⚠️ نسخهٔ ۶ فقط ابزارهای chunk/file را شمرده و افزوده‌های بعدی (platforms/control) را در docstring بازتاب نداده.\n\n### ۲. متد جاافتاده فقط «warning» می‌دهد، نه خطا\n- 📁 `core/brain/main.py`\n- 📍 خطوط ۳۳۳–۳۴۴ (`_build_tool_map`)\n- ❌ اگر اسم متدی تایپی/غلط باشه، فقط لاگ warning می‌شه و ابزار بی‌صدا از `TOOL_MAP` حذف می‌شه → خطا دیر کشف می‌شه.\n- ✅ در حالت توسعه/تست، لیست `missing` رو به‌عنوان خطا بالا بده (مثلاً با یک فلگ `strict` یا `assert not missing` در تست).\n\n### ۳. ساید‌افکت در زمان import\n- 📁 `core/brain/main.py`\n- 📍 خط ۳۵۴: `Brain.TOOL_MAP = _build_tool_map()`\n- ❌ به‌محض `import core.brain.main`، تابع `_build_tool_map` صدا زده می‌شه و `log_warning/log_success` اجرا می‌شه (لاگ در زمان import).\n- ✅ ساخت TOOL_MAP رو داخل `Brain.__init__` یا یک تابع `init_tools()` ببر، یا حداقل لاگ رو در import نزن.\n\n### ۴. تکیه بر truthiness در `get_brain`\n- 📁 `core/brain/main.py`\n- 📍 خطوط ۴۰۰ (`if db and not _brain_instance.db`) و ۳۹۷ (`if event_bus and ...`)\n- ❌ اگر `db` یا `event_bus` شیء معتبر ولی falsy باشه (کلاس با `__bool__`/`__len__`)، نادیده گرفته می‌شه.\n- ✅ از `is not None` استفاده کن.\n\n---\n\n## 🟡 جزئی\n\n### ۵. ترتیب ایمپورت‌ها\n- 📁 `core/brain/main.py`\n- 📍 خط ۲۲\n- ❌ `from core.brain.mixin_platforms import PlatformMixin` **قبل از** ایمپورت‌های استاندارد (`threading`, `time`) اومده.\n- ✅ اول stdlib، بعد third-party، بعد لوکال.\n\n### ۶. هدر نسخه در docstring قدیمی است\n- 📍 خطوط ۱–۲۰: توضیح «نسخهٔ ۶» فقط تغییرات chunk/file را می‌گه؛ افزوده‌های بعدی ثبت نشدن.\n\n---\n\n## 🧰 نکتهٔ ابزار\n- 📍 محیط پروژه: `pyflakes` و `flake8` نصب نیستن → `audit_file` و `audit_code` بی‌نتیجه موندن.\n- ✅ برای پایش خودکارِ دقیق: `pip install pyflakes flake8`\n- چیزهای سالم تأیید شد: ✅ هیچ ایمپورت بی‌استفاده‌ای نیست — ✅ هیچ f-string بی‌placeholder نیست — ✅ همهٔ mixinها و ایمپورت‌های learning/memory مصرف می‌شن.\n\n---\n\n## 🎯 خلاصه\nکد **از نظر عملکردی سالم** است؛ مشکلات فقط «دقت مستندات (عدد ۵۳ در مقابل ۶۴)» و «تمیزی/سخت‌گیری» هستن. اولویت اصلاح: مورد ۱ و ۲.\n\nمی‌تونم این کارها رو بکنم:\n- فایل `core/brain/main.py` رو audit کنم بعد از نصب `pyflakes`/`flake8` (اگه اجازه بدی نصب کنم)\n- عدد و کامنت‌های docstring رو به ۶۴ اصلاح کنم (`edit_file`)\n- متدهای تست‌شدهٔ `core/safe_brain/main.py` (۵۱KB) رو هم بررسی و با این نسخه مقایسه کنم\n- فایل `tests/test_brain.py` رو بخونم و تعداد خطوط و پوشش تست‌ها رو بگم\n- برای `_build_tool_map` یک حالت strict + تست بنویسم که اسم متد جاافتاده رو fail کنه\n- `test_ai_deepseek_only.py` رو بررسی کنم که چک TOOL_MAP کامله یا نه\n\nکدوم رو شروع کنم؟"
+    },
+    "learned": true,
+    "source": "ai",
+    "created_at": "2026-10-12T10:29:40.212876"
+  },
+  {
+    "name": "ai_learned_1791789456",
+    "triggers": [
+      "روشن کن یله"
+    ],
+    "action": {
+      "type": "text",
+      "text": "سلام! 👋\n\n«یله» رو توی لیست پلتفرم‌ها پیدا نمی‌کنم. احتمالاً منظور یکی از این‌هاست:\n\n- **بله** (Bale) ← شاید «یله» اشتباه تایپیِ «بله» باشه؟\n- **ایتا** (Eitaa)\n- **روبیکا** (Rubika)\n\nیه کم دقیق‌تر بگو: **کدوم پلتفرم رو روشن کنم؟** 🔧\n\nمی‌تونم این کارها رو بکنم:\n- روشن/خاموش کردن هر پلتفرم\n- چک کردن وضعیت و سلامت پلتفرم‌ها\n- عیب‌یابی عمیق اتصال\n- اجرای یک چرخهٔ کامل (connect → fetch → disconnect)"
+    },
+    "learned": true,
+    "source": "ai",
+    "created_at": "2026-10-12T10:47:36.137453"
   }
 ]

@@ -44,7 +44,7 @@ patch_console(verbose=False)
 # ═══════════════════════════════════════════
 _BOOT_BANNER_WIDTH = 60
 _OBS_CLEANUP_TIMEOUT_S = 10.0
-_ORCH_CLEANUP_TIMEOUT_S = 10.0
+_ORCH_CLEANUP_TIMEOUT_S = 60.0
 _HANDLER_STOP_TIMEOUT_S = 5.0
 
 
@@ -205,6 +205,63 @@ def _signal_handler(signum=None, frame=None) -> None:
             f"❌ [MAIN:signal] set | {type(e).__name__}: {e}"
         )
 
+
+    # 🆕 fallback: اگه ظرف ۳۰ ثانیه cleanup تموم نشد،
+    #    پروسه‌های chrome مربوط به پروفایل‌های ما رو بکش
+    import threading
+
+    def _fallback_kill_chrome():
+        threading.Event().wait(30.0)
+        import subprocess
+        import re as _re
+        import os as _os
+        try:
+            out = subprocess.run(
+                ["wmic", "process", "where", "name='chrome.exe'",
+                 "get", "ProcessId,CommandLine"],
+                capture_output=True, text=True, timeout=10,
+                encoding="utf-8", errors="ignore",
+            ).stdout
+        except Exception:
+            return
+
+        sessions_dir = _os.path.normcase(
+            r"F:\payesh plat\storage\sessions"
+        )
+        killed = 0
+        for line in out.splitlines():
+            if "--user-data-dir" not in line:
+                continue
+            if sessions_dir not in _os.path.normcase(line):
+                continue
+            m = _re.search(r"(\d+)\s*$", line.strip())
+            if not m:
+                continue
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/PID", m.group(1), "/T"],
+                    capture_output=True, timeout=5,
+                )
+                killed += 1
+            except Exception:
+                pass
+        if killed:
+            try:
+                _safe_log_warning(
+                    f"🧹 [MAIN:fallback] {killed} پروسه chrome "
+                    f"بعد از timeout کشته شد"
+                )
+            except Exception:
+                pass
+
+    try:
+        threading.Thread(
+            target=_fallback_kill_chrome,
+            daemon=True,
+            name="chrome_fallback_killer",
+        ).start()
+    except Exception:
+        pass
 
 def _safe_log_warning(msg: str) -> None:
     """لاگ warning با fallback به stderr."""

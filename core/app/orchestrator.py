@@ -7,33 +7,13 @@
   - بعد از وصل، پیام‌های ازدست‌رفته را از last_poll می‌خواند (catch-up)
   - هر دور موفق، last_poll را به‌روز می‌کند (ضربان زنده)
 
-نسخهٔ ۵ (این نسخه):
-  - 🐛 FIX: `_SLOW_POLL_MS`, `_SLOW_INITIAL_MS`, `_GREET_TIMEOUT_S`,
-    `_LOG_PREVIEW_LEN` حالا env-based.
-  - 🐛 FIX: `Orchestrator.__init__` حالا لیست خالی collectors را
-    warning می‌دهد.
-  - 🐛 FIX: `start()` حالا `_pending_tasks` reference نگه می‌دارد
-    (جلوگیری از GC در cancel).
-  - 🐛 FIX: `_process_messages` حالا timeout دارد (env-based).
-  - 🐛 FIX: `_catch_up`, `_initial_fetch` حالا timeout دارند.
-  - 🐛 FIX: `_poll_messages` حالا `interval` را sanitize می‌کند
-    (min 1s).
-  - 🐛 FIX: `_supervise_reconnect` حالا `_stop_event` را چک
-    می‌کند (بیداری فوری در stop).
-  - 🐛 FIX: `stop()` حالا `_stop_event` را set می‌کند (cancel
-    سریع taskهای خواب‌رفته).
-  - 🐛 FIX: `_greet_admins` حالا `messenger_registry` import را
-    امن می‌کند.
-  - 🐛 FIX: `_warm_ai` حالا timeout دارد.
-  - 🐛 FIX: `_process_messages` حالا `db.get_last_poll` failure
-    را امن handle می‌کند.
-  - 🐛 FIX: `_generate_report` حالا timeout دارد.
-  - 🎯 `_RECONNECT_DELAYS`, `_RECONNECT_MAX_ATTEMPTS` env-based.
-  - 🎯 `_POLL_TIMEOUT_S`, `_CATCHUP_TIMEOUT_S`, `_INITIAL_TIMEOUT_S`
-    env-based.
-  - 🎯 `get_stats()` متد جدید.
-  - 🎯 `__all__` export.
-  - ✅ حفظ همهٔ FIXهای نسخهٔ ۴ (ترتیب start).
+نسخهٔ ۶ (این نسخه):
+  - 🐛 FIX: `stop()` حالا با timeout 15s هر collector را disconnect
+    می‌کند و در صورت timeout پروسه‌های chrome همان collector را
+    می‌کشد.
+  - 🐛 FIX: `_initial_fetch_all` به شکل درست (connect + catch-up).
+  - 🐛 FIX: `_kill_collector_chrome` متد مستقل (نه داخل poll).
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۵.
 """
 from __future__ import annotations
 
@@ -126,6 +106,10 @@ _INITIAL_TIMEOUT_S = _env_float(
 _WARM_AI_TIMEOUT_S = _env_float(
     "ORCH_WARM_AI_TIMEOUT_S", 60.0,
     min_val=5.0, max_val=600.0,
+)
+_DISCONNECT_TIMEOUT_S = _env_float(
+    "ORCH_DISCONNECT_TIMEOUT_S", 15.0,
+    min_val=2.0, max_val=120.0,
 )
 
 # backoff connection
@@ -309,6 +293,9 @@ class Orchestrator:
         except asyncio.CancelledError:
             log_info("🛑 [ORCH:start] تسک‌ها cancel شدند")
 
+    # ═══════════════════════════════════════════
+    # initial_fetch_all
+    # ═══════════════════════════════════════════
     async def _initial_fetch_all(self) -> None:
         """initial_fetch سری برای همهٔ کلکتورها."""
         for i, collector in enumerate(self.collectors, 1):
@@ -320,8 +307,8 @@ class Orchestrator:
             try:
                 await self._initial_fetch(collector)
             except Exception as e:
-                log_error(
-                    f"❌ [ORCH:init] initial_fetch {name} | "
+                log_warning(
+                    f"⚠️ [ORCH:init] {name} | "
                     f"{type(e).__name__}: {e}"
                 )
         log_success("✅ [ORCH:init] initial_fetch همه تمام شد")
@@ -442,6 +429,61 @@ class Orchestrator:
             f"iterations={iteration}"
         )
 
+    # ═══════════════════════════════════════════
+    # kill chrome پروسه‌های یک collector
+    # ═══════════════════════════════════════════
+    def _kill_collector_chrome(self, collector) -> None:
+        """فقط پروسه‌های chrome مربوط به user-data-dir این collector
+        را می‌کشد (نه Chrome شخصی کاربر، نه collectorهای دیگر)."""
+        import os as _os
+        import re as _re
+        import subprocess as _sp
+
+        # مسیر user_data_dir collector را پیدا کن
+        user_data_dir = None
+        for attr in (
+            "_user_data_dir", "user_data_dir",
+            "_profile_dir", "_user_data",
+        ):
+            v = getattr(collector, attr, None)
+            if v:
+                user_data_dir = str(v)
+                break
+
+        if not user_data_dir:
+            return
+
+        normalized = _os.path.normcase(user_data_dir)
+
+        try:
+            out = _sp.run(
+                ["wmic", "process", "where", "name='chrome.exe'",
+                 "get", "ProcessId,CommandLine"],
+                capture_output=True, text=True, timeout=10,
+                encoding="utf-8", errors="ignore",
+            ).stdout
+        except Exception:
+            return
+
+        for line in out.splitlines():
+            if "--user-data-dir" not in line:
+                continue
+            if normalized not in _os.path.normcase(line):
+                continue
+            m = _re.search(r"(\d+)\s*$", line.strip())
+            if not m:
+                continue
+            try:
+                _sp.run(
+                    ["taskkill", "/F", "/PID", m.group(1), "/T"],
+                    capture_output=True, timeout=5,
+                )
+            except Exception:
+                pass
+
+    # ═══════════════════════════════════════════
+    # sleep_or_stop
+    # ═══════════════════════════════════════════
     async def _sleep_or_stop(self, seconds: float) -> bool:
         """خواب یا بیداری زودتر در stop.
 
@@ -492,7 +534,20 @@ class Orchestrator:
 
             # ─── disconnect ───
             try:
-                await collector.disconnect()
+                await asyncio.wait_for(
+                    collector.disconnect(),
+                    timeout=_DISCONNECT_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                log_warning(
+                    f"⏰ [ORCH:reconnect:{platform}] "
+                    f"disconnect timeout "
+                    f"{_DISCONNECT_TIMEOUT_S}s — kill chrome"
+                )
+                try:
+                    self._kill_collector_chrome(collector)
+                except Exception:
+                    pass
             except Exception as e:
                 log_warning(
                     f"⚠️ [ORCH:reconnect:{platform}] "
@@ -1053,11 +1108,27 @@ class Orchestrator:
                 collector, "platform_name", "?"
             )
             try:
-                await collector.disconnect()
+                await asyncio.wait_for(
+                    collector.disconnect(),
+                    timeout=_DISCONNECT_TIMEOUT_S,
+                )
                 log_info(
                     f"🔌 [ORCH:stop] {i}/"
                     f"{len(self.collectors)} {name} قطع شد"
                 )
+            except asyncio.TimeoutError:
+                log_warning(
+                    f"⏰ [ORCH:stop] {name} | "
+                    f"timeout {_DISCONNECT_TIMEOUT_S}s — "
+                    f"kill پروسه‌های chrome"
+                )
+                try:
+                    self._kill_collector_chrome(collector)
+                except Exception as ke:
+                    log_warning(
+                        f"⚠️ [ORCH:stop] {name} kill | "
+                        f"{type(ke).__name__}: {ke}"
+                    )
             except Exception as e:
                 log_warning(
                     f"⚠️ [ORCH:stop] {name} | "

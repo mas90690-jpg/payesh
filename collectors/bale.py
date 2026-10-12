@@ -485,16 +485,36 @@ class BaleCollector(BaseCollector):
                 pass
 
     def _force_kill_chrome(self):
+        """فقط chrome های پروفایل خودمون رو می‌کشه (نه Chrome شخصی کاربر)."""
+        import subprocess
+        import re as _re
         try:
-            import subprocess
-            subprocess.run(
-                ["taskkill", "/F", "/IM", "chrome.exe"],
-                capture_output=True,
-                timeout=5,
-            )
+            out = subprocess.run(
+                ["wmic", "process", "where", "name='chrome.exe'",
+                 "get", "ProcessId,CommandLine"],
+                capture_output=True, text=True, timeout=10,
+                encoding="utf-8", errors="ignore",
+            ).stdout
         except Exception:
-            pass
+            return
 
+        target = os.path.normcase(self._user_data_dir)
+        for line in out.splitlines():
+            if "--user-data-dir" not in line:
+                continue
+            if target not in os.path.normcase(line):
+                continue
+            m = _re.search(r"(\d+)\s*$", line.strip())
+            if not m:
+                continue
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/PID", m.group(1), "/T"],
+                    capture_output=True, timeout=5,
+                )
+            except Exception:
+                pass
+                
     async def _launch_context(self, use_headless: bool):
         from config import CHROME_PATH
 

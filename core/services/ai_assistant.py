@@ -5,7 +5,7 @@
     اگر `DEEPSEEK_API_URL` در env به‌صورت base_url باشد (مثل
     `https://api.deepseek.com/v1`)، کد خودش `/chat/completions`
     را اضافه می‌کند. اگر کامل باشد، دست نمی‌زند.
-  - 🐛 FIX: fallback model از `deepseek-chat` به `deepseek-flash`
+  - 🐛 FIX: fallback model از `deepseek-chat` به `deepseek-v4-pro`
     تغییر یافت (چون `deepseek-chat` بازنشسته شده).
   - ✅ حفظ همهٔ FIXهای نسخهٔ ۴.
 
@@ -268,7 +268,7 @@ class AIAssistant:
         self._deepseek_model = (
             _env_str("DEEPSEEK_MODEL")
             or str(self._config.get("deepseek_model", ""))
-            or "deepseek-flash"
+            or "deepseek-v4-pro"
         )
 
         # ─── Ollama ───
