@@ -1,27 +1,35 @@
 """ثابت‌ها + کش کلیدواژه + مسیرها — برای SafeBrain.
 
-نسخهٔ ۳ (این نسخه):
-  - 🎯 `SAFE_ACTIONS` و `SAFE_ACTIONS_HANDLED_LOCALLY` حالا از
+نسخهٔ ۴ (این نسخه):
+  - 🐛 FIX بحرانی: `MAX_API_CALLS_PER_HOUR` حالا `min_val=1` دارد
+    (قبلاً `0` می‌توانست ربات را کاملاً بی‌صدا کند).
+  - 🐛 FIX: `_write_custom_kw_dict` حالا از `_normalize_tier` استفاده
+    می‌کند (DRY با `_read_custom_kw_dict`).
+  - 🎯 `_normalize_tier()` helper جدید — منبع یکتا برای نرمال‌سازی tier.
+  - 🐛 FIX: `_kw_file_path` fallback حالا `resolve()` می‌شود
+    (جلوگیری از مسیرهای `..` غیرعادی).
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۳.
+
+نسخهٔ ۳ (قبلی):
+  - 🎯 `SAFE_ACTIONS` و `SAFE_ACTIONS_HANDLED_LOCALLY` از
     `data/configs/actions.json` خوانده می‌شوند (تمرکز داده‌ها).
   - 🎯 `_load_actions_from_data()` — تابع جدید با fallback امن.
-  - ✅ حفظ همهٔ FIXهای نسخهٔ ۲ (سازگاری کامل عقب‌رو).
 
-نسخهٔ ۲ (قبلی):
-  - 🎯 مسیرهای SafeBrain حالا از `data.paths` می‌آیند (منبع یکتا).
-  - 🐛 FIX: `MAX_API_CALLS_PER_HOUR` حالا با `_env_int` (sanitize).
-  - 🐛 FIX: `_BRAIN_FAIL_RETRY_S` حالا env-based.
+نسخهٔ ۲ (قدیمی‌تر):
+  - 🎯 مسیرهای SafeBrain از `data.paths` می‌آیند (منبع یکتا).
+  - 🐛 FIX: `MAX_API_CALLS_PER_HOUR` با `_env_int` (sanitize).
+  - 🐛 FIX: `_BRAIN_FAIL_RETRY_S` env-based.
   - 🐛 FIX: `_CACHE_SAVE_INTERVAL_S`, `_MEM_SAVE_INTERVAL_S`,
-    `_SLOW_ACTION_MS`, `_LOG_PREVIEW_LEN` حالا env-based.
-  - 🐛 FIX: `_write_custom_kw_dict` حالا `os.fsync` + dir fsync
+    `_SLOW_ACTION_MS`, `_LOG_PREVIEW_LEN` env-based.
+  - 🐛 FIX: `_write_custom_kw_dict` با `os.fsync` + dir fsync
     + cleanup tmp در exception.
-  - 🐛 FIX: `SAFE_ACTIONS` حالا شامل همهٔ اکشن‌های
+  - 🐛 FIX: `SAFE_ACTIONS` شامل همهٔ اکشن‌های
     `ai_assistant._ALLOWED_ACTIONS` است (هماهنگی کامل).
-  - 🐛 FIX: `mkdir` حالا با try/except (crash نمی‌کند).
+  - 🐛 FIX: `mkdir` با try/except (crash نمی‌کند).
   - 🎯 `is_safe_action()` + `is_locally_handled()` helperها.
   - 🎯 `reset_kw_cache()` alias برای `_invalidate_kw_cache()`.
   - 🎯 `get_stats()` برای debug.
   - 🎯 `__all__` export.
-  - ✅ حفظ همهٔ رفتار نسخهٔ ۱.
 """
 from __future__ import annotations
 
@@ -127,38 +135,30 @@ _FALLBACK_HANDLED_LOCALLY: frozenset[str] = frozenset({
 
 
 def _load_actions_from_data() -> tuple[frozenset[str], frozenset[str]]:
-    """🎯 خواندن اکشن‌ها از data/configs/actions.json — با fallback امن.
-
-    Returns:
-        (safe_actions, handled_locally)
-        اگه فایل نبود یا خراب بود → مقادیر fallback.
-    """
-    try:
-        from data.loader import load_json
-        data = load_json("actions", default={})
-
-        if not isinstance(data, dict):
-            return _FALLBACK_SAFE_ACTIONS, _FALLBACK_HANDLED_LOCALLY
-
-        safe = data.get("safe_actions")
-        local = data.get("handled_locally")
-
-        # validate: باید list و غیرخالی باشد
-        safe_set: frozenset[str] = (
-            frozenset(str(x) for x in safe)
-            if isinstance(safe, list) and safe
-            else _FALLBACK_SAFE_ACTIONS
+    """خواندن اکشن‌ها از data/configs/actions.json — منبع یکتا."""
+    from data.loader import load_json
+    data = load_json("actions")
+    
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            "actions.json نامعتبر — باید dict باشد"
         )
-        local_set: frozenset[str] = (
-            frozenset(str(x) for x in local)
-            if isinstance(local, list) and local
-            else _FALLBACK_HANDLED_LOCALLY
+    
+    safe = data.get("safe_actions")
+    local = data.get("handled_locally")
+    
+    if not isinstance(safe, list) or not safe:
+        raise RuntimeError(
+            "actions.json کلید safe_actions ندارد یا خالی است"
         )
-        return safe_set, local_set
-    except Exception:
-        # هر خطایی → fallback
-        return _FALLBACK_SAFE_ACTIONS, _FALLBACK_HANDLED_LOCALLY
-
+    if not isinstance(local, list):
+        local = []
+    
+    return (
+        frozenset(str(x) for x in safe if str(x).strip()),
+        frozenset(str(x) for x in local if str(x).strip()),
+    )
+    
 
 SAFE_ACTIONS, SAFE_ACTIONS_HANDLED_LOCALLY = _load_actions_from_data()
 
@@ -217,9 +217,11 @@ BLOCKED_SUBSTRINGS: tuple[str, ...] = (
 # ════════════════════════════════════════════
 # تنظیمات (env-based)
 # ════════════════════════════════════════════
+
+# 🐛 FIX بحرانی: min_val=1 — اگر 0 باشد ربات کاملاً بی‌صدا می‌شود
 MAX_API_CALLS_PER_HOUR: int = _env_int(
     "SAFE_BRAIN_MAX_API_HOUR", 20,
-    min_val=0, max_val=10_000,
+    min_val=1, max_val=10_000,
 )
 
 # cache منفی برین
@@ -260,13 +262,40 @@ _KW_CACHE_MTIME: float = 0.0
 _KW_LOCK = threading.Lock()
 
 
+# 🎯 NEW: helper برای نرمال‌سازی tier — منبع یکتا
+def _normalize_tier(t: Any) -> str:
+    """نرمال‌سازی tier — منبع یکتا برای read و write.
+
+    Args:
+        t: مقدار tier (str, None, dict, ...).
+
+    Returns:
+        یکی از T1/T2/T3 (پیش‌فرض T1).
+    """
+    if t is None:
+        return "T1"
+    try:
+        t_str = str(t).strip().upper()
+    except Exception:
+        return "T1"
+    return t_str if t_str in _VALID_TIERS else "T1"
+
+
 def _kw_file_path() -> Path:
     """مسیر فایل keywords_custom.json."""
     try:
         from data import paths as data_paths
         return data_paths.KEYWORDS_CUSTOM
     except Exception:
-        return SAFE_BRAIN_DIR / ".." / "runtime" / "keywords_custom.json"
+        # 🐛 FIX: resolve برای جلوگیری از مسیرهای `..` غیرعادی
+        try:
+            return (
+                SAFE_BRAIN_DIR.parent
+                / "runtime"
+                / "keywords_custom.json"
+            ).resolve()
+        except Exception:
+            return SAFE_BRAIN_DIR / ".." / "runtime" / "keywords_custom.json"
 
 
 def _read_custom_kw_dict(
@@ -350,15 +379,12 @@ def _read_custom_kw_dict(
                 name = str(k).strip()
                 if not name:
                     continue
+                # 🎯 FIX: استفاده از helper مشترک
                 if isinstance(meta, dict):
-                    tier = str(
-                        meta.get("tier", "T1")
-                    ).upper()
+                    tier = _normalize_tier(meta.get("tier"))
                 elif isinstance(meta, str):
-                    tier = meta.upper()
+                    tier = _normalize_tier(meta)
                 else:
-                    tier = "T1"
-                if tier not in _VALID_TIERS:
                     tier = "T1"
                 out[name] = tier
         elif isinstance(kws, list):
@@ -409,11 +435,8 @@ def _write_custom_kw_dict(
             "updated_at": datetime.now().isoformat(),
             "keywords": {
                 k.strip(): {
-                    "tier": (
-                        t.upper()
-                        if t and t.upper() in _VALID_TIERS
-                        else "T1"
-                    )
+                    # 🎯 FIX: استفاده از helper مشترک
+                    "tier": _normalize_tier(t)
                 }
                 for k, t in kw_tier.items()
                 if k and k.strip()
@@ -517,6 +540,7 @@ __all__ = [
     # تنظیمات
     "MAX_API_CALLS_PER_HOUR",
     # kw cache
+    "_normalize_tier",
     "_read_custom_kw_dict",
     "_write_custom_kw_dict",
     "_invalidate_kw_cache",

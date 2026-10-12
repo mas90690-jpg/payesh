@@ -1,15 +1,18 @@
 {
-  "version": "1.0.1",
   "safe_actions": [
     "status", "report", "crm", "logs", "keywords",
     "add_keyword", "remove_keyword", "has_keyword",
     "platform_status", "health", "lead_details",
     "get_param", "set_param", "restart", "explain_logs",
     "feature_request", "ask", "help",
-    "reload_prompt"
+    "start_platform", "stop_platform",
+    "platform_health", "platform_diagnose",
+    "platform_run_once", "list_platforms",
+    "diagnose_platform", "run_platform_as_user",
+    "list_all_platforms",
+    "control_platform", "control_stats"
   ],
   "handled_locally": [
-    "help", "add_keyword", "remove_keyword", "feature_request",
-    "reload_prompt"
+    "help", "add_keyword", "remove_keyword", "feature_request"
   ]
 }

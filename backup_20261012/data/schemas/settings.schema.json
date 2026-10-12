@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Settings",
+  "type": "object",
+  "properties": {
+    "matching": {
+      "type": "object",
+      "properties": {
+        "fuzzy_threshold": {"type": "number", "minimum": 0, "maximum": 1},
+        "min_trigger_length": {"type": "integer", "minimum": 1}
+      }
+    },
+    "learning": {
+      "type": "object",
+      "properties": {
+        "min_repeat_for_auto_promote": {"type": "integer", "minimum": 1},
+        "max_unknown_lines": {"type": "integer", "minimum": 100},
+        "max_learned_rules": {"type": "integer", "minimum": 10}
+      }
+    },
+    "security": {
+      "type": "object",
+      "properties": {
+        "max_query_length": {"type": "integer"},
+        "allowed_prefix": {"type": "string"}
+      }
+    }
+  }
+}

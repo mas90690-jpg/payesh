@@ -356,8 +356,7 @@ def _dedup_rows(rows: list[Any]) -> list[Any]:
             continue
         seen.add(key)
         out.append(r)
-    return out
-
+    return out  
 
 # ═══════════════════════════════════════════
 # خواندن داده

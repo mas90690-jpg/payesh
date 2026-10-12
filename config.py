@@ -888,7 +888,7 @@ AI_MODE_PROMPTS: dict[str, str] = _load_ai_mode_prompts()
 
 
 def reload_ai_prompts() -> None:
-    """🎯 hot-reload prompt های AI بدون ری‌استارت.
+    """🎯 hot-reload prompt های AI بدون ریاستارت.
 
     Example:
         >>> from config import reload_ai_prompts
@@ -900,21 +900,44 @@ def reload_ai_prompts() -> None:
     AI_SYSTEM_PROMPT = _load_ai_system_prompt()
     AI_MODE_PROMPTS = _load_ai_mode_prompts(force=True)
 
+    # 🎯 FIX: پاک کردن cache ai_assistant
+    try:
+        from core.services.ai_assistant import (
+            _load_persona, _load_intent_system,
+        )
+        _load_persona.cache_clear()
+        _load_intent_system.cache_clear()
+    except Exception:
+        pass
+
     _warn(
         f"🔄 [config:reload] AI prompt ها | "
         f"persona={AI_PERSONA.get('name')} | "
         f"modes={len(AI_MODE_PROMPTS)}"
     )
-
+    
 
 def get_ai_persona() -> dict[str, Any]:
     """دسترسی به شخصیت AI."""
     return AI_PERSONA
 
 
-def get_ai_system_prompt() -> str:
-    """دسترسی به system prompt."""
-    return AI_SYSTEM_PROMPT
+def get_ai_system_prompt(mode: str = "") -> str:
+    """دسترسی به system prompt — با پشتیبانی از mode.
+
+    Args:
+        mode: حالت (chat, code, precise, analyze, ...).
+              اگر خالی باشد، فقط system prompt پایه برمیگردد.
+
+    Returns:
+        متن system prompt.
+    """
+    prompt = AI_SYSTEM_PROMPT
+    if mode:
+        mode_prompt = AI_MODE_PROMPTS.get(mode, "")
+        if mode_prompt:
+            prompt = prompt + "\n\n" + mode_prompt
+    return prompt
 
 
 def get_ai_mode_prompt(mode: str) -> str:

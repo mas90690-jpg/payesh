@@ -587,9 +587,9 @@ class AgentMixin:
             or len(task) > _LONG_TASK_LEN
         ):
             log_info(
-                "🎯 [BRAIN:model] deepseek-reasoner انتخاب شد"
+                "🎯 [BRAIN:model] deepseek-flash انتخاب شد"
             )
-            return "deepseek-reasoner"
+            return "deepseek-flash"
         return self.model
 
     def _build_system_prompt(self, mode: str) -> str:

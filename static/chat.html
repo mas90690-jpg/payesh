@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <title>WinDoctor Chat</title>
+  <style>
+    body { font-family: Tahoma; max-width: 800px; margin: 20px auto; padding: 10px; background: #f5f5f5; }
+    #log { border: 1px solid #ccc; padding: 15px; height: 500px; overflow-y: scroll; background: white; border-radius: 8px; }
+    .user { color: blue; font-weight: bold; }
+    .bot { color: #2e7d32; }
+    .msg { margin: 8px 0; padding: 8px; border-radius: 6px; }
+    .user-msg { background: #e3f2fd; }
+    .bot-msg { background: #f1f8e9; }
+    #input { width: 78%; padding: 10px; font-size: 14px; border: 1px solid #ccc; border-radius: 6px; }
+    #send { padding: 10px 25px; font-size: 14px; background: #1976d2; color: white; border: none; border-radius: 6px; cursor: pointer; }
+    #send:hover { background: #1565c0; }
+    #send:disabled { background: #999; cursor: not-allowed; }
+    h2 { color: #333; }
+    .status { font-size: 12px; color: #666; margin-top: 5px; }
+  </style>
+</head>
+<body>
+  <h2>🤖 WinDoctor Chat</h2>
+  <div id="log"></div>
+  <br>
+  <input id="input" placeholder="پیام..." autofocus>
+  <button id="send" onclick="sendMsg()">ارسال</button>
+  <div class="status">پورت: 8787 | سرور: OBS</div>
+
+  <script>
+    const log = document.getElementById('log');
+    const inp = document.getElementById('input');
+    const sendBtn = document.getElementById('send');
+
+    inp.addEventListener('keypress', e => {
+      if (e.key === 'Enter' && !sendBtn.disabled) sendMsg();
+    });
+
+    async function sendMsg() {
+      const text = inp.value.trim();
+      if (!text) return;
+      inp.value = '';
+      sendBtn.disabled = true;
+      sendBtn.textContent = '...';
+      log.innerHTML += `<div class="msg user-msg"><span class="user">👤 شما:</span> ${escapeHtml(text)}</div>`;
+      log.scrollTop = log.scrollHeight;
+
+      try {
+        const r = await fetch('/chat', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({message: text})
+        });
+        const data = await r.json();
+        const reply = data.reply || data.response || JSON.stringify(data);
+        log.innerHTML += `<div class="msg bot-msg"><span class="bot">🤖:</span> ${escapeHtml(reply)}</div>`;
+      } catch (e) {
+        log.innerHTML += `<div class="msg" style="color:red">❌ خطا: ${escapeHtml(e.message)}</div>`;
+      }
+      log.scrollTop = log.scrollHeight;
+      sendBtn.disabled = false;
+      sendBtn.textContent = 'ارسال';
+      inp.focus();
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+  </script>
+</body>
+</html>

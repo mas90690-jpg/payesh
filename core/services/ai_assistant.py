@@ -1,26 +1,26 @@
 """AIAssistant — دستیار هوش مصنوعی (Ollama + DeepSeek).
 
-نسخهٔ ۴ (این نسخه):
+نسخهٔ ۵ (این نسخه):
+  - 🐛 FIX: `_deepseek_url` حالا همیشه `/chat/completions` را دارد.
+    اگر `DEEPSEEK_API_URL` در env به‌صورت base_url باشد (مثل
+    `https://api.deepseek.com/v1`)، کد خودش `/chat/completions`
+    را اضافه می‌کند. اگر کامل باشد، دست نمی‌زند.
+  - 🐛 FIX: fallback model از `deepseek-chat` به `deepseek-flash`
+    تغییر یافت (چون `deepseek-chat` بازنشسته شده).
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۴.
+
+نسخهٔ ۴:
   - 🐛 FIX: `_deepseek_key` حالا اولویت با `config.AI` دارد (نه env).
-    این با `main.py` و `admin_handler.py` هماهنگ است که api_key را از
-    config می‌خوانند.
   - 🐛 FIX: `_deepseek_model` حالا از `config.AI` قابل تنظیم است.
-  - 🐛 FIX: `_AVAILABLE_CACHE_S` پیش‌فرض از 30 به 60 تغییر یافت
-    (هماهنگ با توصیهٔ design).
+  - 🐛 FIX: `_AVAILABLE_CACHE_S` پیش‌فرض از 30 به 60 تغییر یافت.
   - 🐛 FIX: `available()` حالا در حالت DeepSeek با کلید، فقط چک
-    کلید می‌کند (بدون ping که کند است). این طراحی موازی DeepSeek +
-    Ollama را تقویت می‌کند.
-  - 🐛 FIX: `_call_deepseek` حالا یک retry ساده دارد (در صورت
-    429/500/timeout یک بار دیگر تلاش می‌کند).
+    کلید می‌کند (بدون ping که کند است).
+  - 🐛 FIX: `_call_deepseek` حالا یک retry ساده دارد.
   - 🐛 FIX: `_call_deepseek` حالا در صورت 401 (کلید نامعتبر) هشدار
     واضح می‌دهد.
-  - 🐛 FIX: `_call_ollama` حالا در صورت اتصال نبود، پیام واضح می‌دهد
-    (نه فقط "خطا").
-  - 🐛 FIX: `_FALLBACK_PREFIX` حالا با `admin_handler._AI_FALLBACK_PREFIXES`
-    هماهنگ است.
-  - 🎯 `get_stats()` حالا `deepseek_key_source` را نشان می‌دهد
-    (config یا env).
-  - ✅ حفظ همهٔ FIXهای نسخهٔ ۳.
+  - 🐛 FIX: `_call_ollama` حالا در صورت اتصال نبود، پیام واضح می‌دهد.
+  - 🐛 FIX: `_FALLBACK_PREFIX` حالا با `admin_handler` هماهنگ است.
+  - 🎯 `get_stats()` حالا `deepseek_key_source` را نشان می‌دهد.
 """
 from __future__ import annotations
 
@@ -105,7 +105,7 @@ def _env_str(name: str, default: str = "") -> str:
 
 
 # ═══════════════════════════════════════════
-# Persona (از data/prompts/persona.md)
+# Persona
 # ═══════════════════════════════════════════
 _DEFAULT_PERSONA = (
     "تو «WinDoctor» هستی؛ مغزِ هوشمندِ پروژهٔ پایشِ سرنخِ فروشِ "
@@ -149,7 +149,7 @@ _INTENT_SYSTEM = _load_intent_system()
 
 
 # ═══════════════════════════════════════════
-# اکشن‌های مجاز (هماهنگ با safe_brain.constants)
+# اکشن‌های مجاز
 # ═══════════════════════════════════════════
 try:
     from core.safe_brain.constants import (
@@ -159,13 +159,18 @@ try:
         _SAFE_ACTIONS_FROM_SB
     )
 except ImportError:
-    # fallback — هماهنگ با system.md
     _ALLOWED_ACTIONS = frozenset({
         "status", "report", "crm", "logs", "keywords",
         "add_keyword", "remove_keyword", "has_keyword",
         "platform_status", "health", "lead_details",
         "get_param", "set_param", "restart", "explain_logs",
         "feature_request", "ask", "help",
+        "start_platform", "stop_platform",
+        "platform_health", "platform_diagnose",
+        "platform_run_once", "list_platforms",
+        "diagnose_platform", "run_platform_as_user",
+        "list_all_platforms",
+        "control_platform", "control_stats",
     })
 
 _LOG_PREVIEW_LEN = _env_int(
@@ -173,11 +178,6 @@ _LOG_PREVIEW_LEN = _env_int(
     min_val=20, max_val=500,
 )
 
-# ═══════════════════════════════════════════
-# 🎯 FIX: fallback prefix — هماهنگ با admin_handler
-# ═══════════════════════════════════════════
-# admin_handler._AI_FALLBACK_PREFIXES شامل این می‌شود.
-# هرگز این رشته را بدون هماهنگی با admin_handler عوض نکن.
 _FALLBACK_PREFIX = "⚠️ هوش در دسترس نیست"
 
 
@@ -197,7 +197,6 @@ _MAX_PROMPT_LEN = _env_int(
     min_val=500, max_val=200_000,
 )
 
-# 🎯 retry برای DeepSeek (در صورت خطای گذرا)
 _DEEPSEEK_MAX_RETRY = _env_int(
     "AI_DEEPSEEK_MAX_RETRY", 1,
     min_val=0, max_val=5,
@@ -212,19 +211,9 @@ _DEEPSEEK_RETRY_DELAY_S = _env_float(
 # AIAssistant
 # ═══════════════════════════════════════════
 class AIAssistant:
-    """دستیار هوش مصنوعی — سبک، بدون DB، فقط AI.
-
-    thread-safe (با `_lock`).
-
-    طراحی موازی DeepSeek + Ollama:
-      - DeepSeek اول (وقتی کلید هست)
-      - Ollama دوم (fallback خودکار)
-      - هر دو timeout مستقل دارند
-      - هیچ‌کدام منتظر دیگری نمی‌ماند
-    """
+    """دستیار هوش مصنوعی — سبک، بدون DB، فقط AI."""
 
     def __init__(self):
-        # ─── config (اولویت) → env (fallback) ───
         try:
             from config import AI as _AI_CFG
         except Exception:
@@ -232,14 +221,11 @@ class AIAssistant:
 
         self._config = _AI_CFG or {}
 
-        # ─── enabled ───
         self.enabled = (
             _env_bool("AI_ENABLED", True)
             and _env_bool("AI_ASSISTANT_ENABLED", True)
         )
 
-        # ─── priority ───
-        # اولویت: env > config > auto
         self._priority = (
             _env_str("AI_PRIORITY", "").lower()
             or str(self._config.get("priority", "auto")).lower()
@@ -247,10 +233,8 @@ class AIAssistant:
         )
 
         # ═══════════════════════════════════════════
-        # 🎯 FIX: DeepSeek key — اولویت config.AI
+        # DeepSeek key — اولویت config.AI
         # ═══════════════════════════════════════════
-        # قبلاً env اول بود → ناسازگار با main.py و admin_handler.
-        # حالا config.AI اول (منبع یکتا)، env به‌عنوان fallback.
         _cfg_key = (self._config.get("deepseek_api_key") or "").strip()
         _env_key = _env_str("DEEPSEEK_API_KEY")
 
@@ -264,19 +248,27 @@ class AIAssistant:
             self._deepseek_key = ""
             self._deepseek_key_source = "none"
 
-        # ─── DeepSeek URL ───
-        self._deepseek_url = (
+        # ═══════════════════════════════════════════
+        # 🐛 FIX نسخهٔ ۵: DeepSeek URL — نرمال‌سازی
+        # ═══════════════════════════════════════════
+        # اگر کاربر base_url داد (بدون /chat/completions)، خودمان
+        # اضافه می‌کنیم. اگر کامل داد، دست نمی‌زنیم.
+        _raw_url = (
             _env_str("DEEPSEEK_API_URL")
-            or "https://api.deepseek.com/v1/chat/completions"
-        )
+            or "https://api.deepseek.com/v1"
+        ).rstrip("/")
+        if _raw_url.endswith("/chat/completions"):
+            self._deepseek_url = _raw_url
+        else:
+            self._deepseek_url = _raw_url + "/chat/completions"
 
         # ═══════════════════════════════════════════
-        # 🎯 FIX: DeepSeek model — از config.AI هم می‌آید
+        # 🐛 FIX نسخهٔ ۵: DeepSeek model — fallback flash
         # ═══════════════════════════════════════════
         self._deepseek_model = (
             _env_str("DEEPSEEK_MODEL")
             or str(self._config.get("deepseek_model", ""))
-            or "deepseek-chat"
+            or "deepseek-flash"
         )
 
         # ─── Ollama ───
@@ -307,7 +299,6 @@ class AIAssistant:
         self._available_cache: bool | None = None
         self._available_cache_at: float = 0.0
 
-        # 🎯 lock برای همه state
         self._lock = threading.RLock()
 
         log_info(
@@ -316,6 +307,7 @@ class AIAssistant:
             f"deepseek_key={'✅' if self._deepseek_key else '❌'}"
             f"({self._deepseek_key_source}) | "
             f"model={self._deepseek_model} | "
+            f"url={self._deepseek_url} | "
             f"ollama={self._ollama_url} ({self._ollama_model}) | "
             f"available_cache={_AVAILABLE_CACHE_S}s | "
             f"deepseek_retry={_DEEPSEEK_MAX_RETRY}"
@@ -325,26 +317,16 @@ class AIAssistant:
     # available (با cache)
     # ═══════════════════════════════════════════
     async def available(self) -> bool:
-        """آیا هیچ providerی آماده است؟
-
-        نتیجه تا `_AVAILABLE_CACHE_S` ثانیه cache می‌شود.
-
-        🎯 طراحی موازی: در حالت `priority=deepseek` با کلید،
-        بلافاصله True برمی‌گرداند (بدون ping) — چون DeepSeek
-        از راه دور است و ping هر بار ۳ ثانیه طول می‌کشد.
-        این طراحی به موازی بودن DeepSeek + Ollama کمک می‌کند.
-        """
+        """آیا هیچ providerی آماده است؟"""
         if not self.enabled or aiohttp is None:
             return False
 
-        # ─── چک سریع: priority=deepseek بدون کلید ───
         if (
             self._priority == "deepseek"
             and not self._deepseek_key
         ):
             return False
 
-        # ─── cache check ───
         now = time.monotonic()
         with self._lock:
             if (
@@ -355,7 +337,6 @@ class AIAssistant:
             ):
                 return self._available_cache
 
-        # ─── ping واقعی (خارج از lock) ───
         result = await self._check_available_inner()
 
         with self._lock:
@@ -365,19 +346,7 @@ class AIAssistant:
         return result
 
     async def _check_available_inner(self) -> bool:
-        """قلب چک `available` — بدون lock.
-
-        🎯 طراحی موازی:
-          ۱) اگر priority=deepseek + کلید → True فوری
-          ۲) اگر priority=auto + کلید → True فوری (بدون ping)
-          ۳) اگر priority=ollama → ping Ollama
-        """
-        # ═══════════════════════════════════════════
-        # 🎯 FIX: DeepSeek اول — بدون ping (سریع)
-        # ═══════════════════════════════════════════
-        # در حالت priority=deepseek یا auto، اگر کلید باشد،
-        # True برمی‌گردانیم. ping واقعی در _call_deepseek انجام
-        # می‌شود که timeout خودش را دارد.
+        """قلب چک `available` — بدون lock."""
         if self._deepseek_key and self._priority in (
             "deepseek", "auto",
         ):
@@ -388,9 +357,6 @@ class AIAssistant:
             )
             return True
 
-        # ═══════════════════════════════════════════
-        # ping Ollama (لوکال) — سریع، ۳s
-        # ═══════════════════════════════════════════
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
@@ -412,7 +378,6 @@ class AIAssistant:
                 f"{type(e).__name__}: {e}"
             )
 
-        # ─── fallback: deepseek key (اگر priority=ollama) ───
         if self._deepseek_key:
             log_info(
                 "ℹ️ [AI:available] Ollama نیست ولی "
@@ -433,7 +398,13 @@ class AIAssistant:
     # chat
     # ═══════════════════════════════════════════
     async def chat(self, text: str, system: str = "") -> str:
-        """چت آزاد — در صورت شکست، prefix fallback برمی‌گرداند."""
+        """چت آزاد — با system prompt پیش‌فرض WinDoctor."""
+        if not system:
+            try:
+                from config import get_ai_system_prompt
+                system = get_ai_system_prompt("chat")
+            except Exception:
+                system = ""
         response, _ok = await self.chat_with_status(
             text, system
         )
@@ -442,13 +413,14 @@ class AIAssistant:
     async def chat_with_status(
         self, text: str, system: str = ""
     ) -> tuple[str, bool]:
-        """چت با پرچم موفقیت/شکست.
+        """چت با پرچم موفقیت/شکست."""
+        if not system:
+            try:
+                from config import get_ai_system_prompt
+                system = get_ai_system_prompt("chat")
+            except Exception:
+                pass
 
-        Returns:
-            (response_text, success_flag)
-            success_flag=False → fallback (cache نباید بشود)
-        """
-        # 🐛 FIX: type-check
         if text is None:
             return "", False
         if not isinstance(text, str):
@@ -462,7 +434,6 @@ class AIAssistant:
         if not self.enabled:
             return "", False
 
-        # 🐛 FIX: limit prompt
         if len(text) > _MAX_PROMPT_LEN:
             text = text[:_MAX_PROMPT_LEN]
 
@@ -556,7 +527,6 @@ class AIAssistant:
         ).strip().lower()
         args = parsed.get("args") or {}
 
-        # 🐛 FIX: validate args
         if not isinstance(args, dict):
             args = {}
         else:
@@ -579,16 +549,14 @@ class AIAssistant:
         return {"action": action, "args": args}
 
     # ═══════════════════════════════════════════
-    # provider order (با cache)
+    # provider order
     # ═══════════════════════════════════════════
-    def _provider_order(self) -> list[str]:
-        """ترتیب providerها بر اساس priority — cache شده.
+    def get_provider_order(self) -> list[str]:
+        """🎯 API عمومی برای provider order."""
+        return self._provider_order()
 
-        طراحی موازی:
-          - DeepSeek اول (سریع، دقیق)
-          - Ollama دوم (لوکال، همیشه هست)
-          - اگر DeepSeek شکست خورد → Ollama بلافاصله
-        """
+    def _provider_order(self) -> list[str]:
+        """ترتیب providerها بر اساس priority — cache شده."""
         with self._lock:
             if self._provider_cache is not None:
                 return list(self._provider_cache)
@@ -618,10 +586,7 @@ class AIAssistant:
     async def _call_ollama(
         self, prompt: str, format_json: bool = False
     ) -> str | None:
-        """تماس با Ollama (لوکال).
-
-        🎯 FIX: پیام‌های واضح‌تر برای خطاها.
-        """
+        """تماس با Ollama (لوکال)."""
         if aiohttp is None:
             return None
 
@@ -682,11 +647,7 @@ class AIAssistant:
     async def _call_deepseek(
         self, prompt: str, format_json: bool = False
     ) -> str | None:
-        """تماس با DeepSeek — با retry ساده.
-
-        🎯 FIX: retry برای خطاهای گذرا (429، 500، timeout).
-        🎯 FIX: پیام واضح برای 401 (کلید نامعتبر).
-        """
+        """تماس با DeepSeek — با retry ساده."""
         if not self._deepseek_key or aiohttp is None:
             return None
 
@@ -707,7 +668,6 @@ class AIAssistant:
             "Content-Type": "application/json",
         }
 
-        # ─── retry loop ───
         last_error = "unknown"
         for attempt in range(_DEEPSEEK_MAX_RETRY + 1):
             try:
@@ -720,9 +680,6 @@ class AIAssistant:
                             total=self._timeout
                         ),
                     ) as resp:
-                        # ═══════════════════════════════
-                        # 200: موفق
-                        # ═══════════════════════════════
                         if resp.status == 200:
                             data = await resp.json()
                             return (
@@ -731,9 +688,6 @@ class AIAssistant:
                                 .get("content")
                             )
 
-                        # ═══════════════════════════════
-                        # 401: کلید نامعتبر (بدون retry)
-                        # ═══════════════════════════════
                         if resp.status == 401:
                             log_warning(
                                 "❌ [AI:deepseek] 401 — "
@@ -742,9 +696,6 @@ class AIAssistant:
                             )
                             return None
 
-                        # ═══════════════════════════════
-                        # 402: موجودی تمام
-                        # ═══════════════════════════════
                         if resp.status == 402:
                             log_warning(
                                 "❌ [AI:deepseek] 402 — "
@@ -753,9 +704,6 @@ class AIAssistant:
                             )
                             return None
 
-                        # ═══════════════════════════════
-                        # 429: rate limit → retry
-                        # ═══════════════════════════════
                         if resp.status == 429:
                             last_error = "429 rate limit"
                             if attempt < _DEEPSEEK_MAX_RETRY:
@@ -777,9 +725,6 @@ class AIAssistant:
                             )
                             return None
 
-                        # ═══════════════════════════════
-                        # 500/502/503: server error → retry
-                        # ═══════════════════════════════
                         if resp.status in (500, 502, 503, 504):
                             last_error = f"{resp.status} server error"
                             if attempt < _DEEPSEEK_MAX_RETRY:
@@ -798,9 +743,6 @@ class AIAssistant:
                             )
                             return None
 
-                        # ═══════════════════════════════
-                        # بقیه کدها
-                        # ═══════════════════════════════
                         try:
                             body = (await resp.text())[
                                 :_LOG_PREVIEW_LEN
@@ -856,7 +798,6 @@ class AIAssistant:
 
         s = str(text).strip()
 
-        # ─── ۱) تلاش مستقیم ───
         try:
             data = json.loads(s)
             if isinstance(data, dict):
@@ -864,7 +805,6 @@ class AIAssistant:
         except (json.JSONDecodeError, ValueError):
             pass
 
-        # ─── ۲) markdown code block ───
         m = re.search(
             r"`{3}(?:json|JSON)?\s*\n?(.*?)\n?`{3}",
             s,
@@ -879,7 +819,6 @@ class AIAssistant:
             except (json.JSONDecodeError, ValueError):
                 pass
 
-        # ─── ۳) اولین { ... } متوازن ───
         start = s.find("{")
         end = s.rfind("}")
         if start != -1 and end > start:
@@ -891,7 +830,6 @@ class AIAssistant:
             except (json.JSONDecodeError, ValueError):
                 pass
 
-        # ─── ۴) regex غیرحریص ───
         m = re.search(r"\{.*?\}", s, re.DOTALL)
         if m:
             try:

@@ -1,0 +1,15 @@
+{
+  "version": "1.2.0",
+  "description": "مترادف‌های پلتفرم‌ها — منبع یکتا (commands.json دیگر platforms ندارد)",
+
+  "platforms": {
+    "eitaa": ["ایتا", "ایتاوب", "eitaa"],
+    "bale": ["بله", "بله‌وب", "bale"],
+    "rubika": ["روبیکا", "rubika"],
+    "telegram": ["تلگرام", "telegram", "tg"],
+    "whatsapp": ["واتساپ", "واتس‌اپ", "واتس اپ", "whatsapp", "wa"],
+    "web": ["وب", "سایت", "web", "site"],
+    "linkedin": ["لینکدین", "linkedin", "li"],
+    "instagram": ["اینستاگرام", "اینستا", "اینستگرام", "instagram", "insta", "ig"]
+  }
+}

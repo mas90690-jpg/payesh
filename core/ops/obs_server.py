@@ -35,9 +35,15 @@ import sqlite3
 import threading
 import time
 import traceback
+import pathlib
 from datetime import datetime, timedelta
 from typing import Any
 
+# ─── مسیر پوشهٔ static ───
+_STATIC_DIR = (
+    pathlib.Path(__file__).resolve()
+    .parent.parent.parent / "static"
+)
 from core.kernel.logger import (
     log_error,
     log_info,
@@ -944,7 +950,38 @@ async def start_obs_server(
             )
 
     async def chat_page(request):
-        log_info("🌐 [OBS:/chat] 200 HTML")
+        """GET /chat — سرو کردن chat.html از پوشهٔ static."""
+        # تلاش برای خواندن از static/chat.html
+        chat_file = _STATIC_DIR / "chat.html"
+        if chat_file.exists():
+            try:
+                content = chat_file.read_text(encoding="utf-8")
+                log_info("🌐 [OBS:/chat] 200 HTML (از static/)")
+                return web.Response(
+                    text=content,
+                    content_type="text/html",
+                    charset="utf-8",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Content-Security-Policy": (
+                            "default-src 'self'; "
+                            "script-src 'self' 'unsafe-inline'; "
+                            "style-src 'self' 'unsafe-inline'; "
+                            "connect-src 'self'"
+                        ),
+                        "X-Content-Type-Options": "nosniff",
+                    },
+                )
+            except Exception as e:
+                log_warning(
+                    f"⚠️ [OBS:/chat] خواندن static/chat.html | "
+                    f"{type(e).__name__}: {e}"
+                )
+
+        # Fallback: HTML درون‌خطی
+        log_warning(
+            "⚠️ [OBS:/chat] static/chat.html نیست — fallback inline"
+        )
         return web.Response(
             text=_CHAT_HTML,
             content_type="text/html",
@@ -959,7 +996,7 @@ async def start_obs_server(
                 "X-Content-Type-Options": "nosniff",
             },
         )
-
+        
     async def chat_api(request):
         t0 = time.monotonic()
 

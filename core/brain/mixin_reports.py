@@ -1,16 +1,16 @@
 """
-گزارش‌ها و تنظیمات — settings, status, keywords, logs.
+گزارشها و تنظیمات — settings, status, keywords, logs.
 
 نسخهٔ ۲ (این نسخه):
-  - 🎯 `PLATFORMS_ORDER` از `config` (شامل instagram) — به‌جای hardcode.
-  - 🎯 `_get_recent_logs` حالا از `data.paths.LOG_FILE` می‌خواند.
-  - 🎯 `_set_setting` حالا `os.fsync` می‌زند (durability).
+  - 🎯 `PLATFORMS_ORDER` از `config` (شامل instagram) — بهجای hardcode.
+  - 🎯 `_get_recent_logs` حالا از `data.paths.LOG_FILE` میخواند.
+  - 🎯 `_set_setting` حالا `os.fsync` میزند (durability).
   - 🎯 `_get_health_report` — timeout از `AI_CONFIG` (env-based).
-  - 🎯 `generate_report` حالا `days` را اعمال می‌کند (پارامتر بی‌استفاده بود).
+  - 🎯 `generate_report` حالا `days` را اعمال میکند (پارامتر بیاستفاده بود).
   - 🐛 FIX: `_get_setting` حالا از `config` هم برای پارامترهای top-level
-    استفاده می‌کند (ADMIN_ENABLED, ...).
+    استفاده میکند (ADMIN_ENABLED, ...).
   - 🐛 FIX: `_platform_status` حالا `PLATFORMS_ORDER` را از config
-    می‌گیرد.
+    میگیرد.
   - 🎯 `_env_float` helper برای thresholds.
   - ✅ حفظ همهٔ رفتار نسخهٔ ۱.
 """
@@ -70,7 +70,7 @@ _HEALTH_TIMEOUT_S = _env_float(
     "BRAIN_HEALTH_TIMEOUT_S", 15.0, min_val=2.0, max_val=120.0
 )
 
-# سقف نمایش در پاسخ‌ها
+# سقف نمایش در پاسخها
 _MAX_HEALTH_RESPONSE_LEN = 3000
 
 # 🎯 پارامترهای top-level config (خواندنی)
@@ -82,7 +82,7 @@ _CONFIG_PARAMS = {
 
 
 class ReportsMixin:
-    """گزارش‌ها و تنظیمات — به Brain اضافه می‌شود."""
+    """گزارشها و تنظیمات — به Brain اضافه میشود."""
 
     # ═══════════════════════════════════════════
     # تنظیمات
@@ -110,7 +110,7 @@ class ReportsMixin:
                 )
 
         # env-based
-        val = os.getenv(key_u, "(تنظیم‌نشده)")
+        val = os.getenv(key_u, "(تنظیمنشده)")
         log_info(
             f"⚙️ [BRAIN:setting:get] {key_u} (source=env)"
         )
@@ -166,11 +166,11 @@ class ReportsMixin:
 
             log_success(
                 f"✅ [BRAIN:setting:set] {key_u}={value} | "
-                f"{'به‌روز' if found else 'جدید'}"
+                f"{'بهروز' if found else 'جدید'}"
             )
             return (
                 f"✅ {key_u}={value} ذخیره شد.\n"
-                f"(برای اعمال، ری‌استارت کن.)"
+                f"(برای اعمال، ریاستارت کن.)"
             )
         except Exception as e:
             if tmp_path and os.path.exists(tmp_path):
@@ -221,7 +221,7 @@ class ReportsMixin:
                 if platform != "all" and platform in platforms
                 else list(platforms)
             )
-            lines = ["📊 وضعیت پلتفرم‌ها:"]
+            lines = ["📊 وضعیت پلتفرمها:"]
             for p in targets:
                 cfg = _PC.get(f"{p}collector", {})
                 enabled = cfg.get("enabled", False)
@@ -270,12 +270,12 @@ class ReportsMixin:
         mem = self.memory
         return (
             f"🧠 **وضعیت مغز**\n"
-            f"━━━━━━━━━━━━━━━\n"
+            f"───────────────\n"
             f"🔹 مدل: {self.model}\n"
             f"🔹 حالت: {self.current_mode}\n"
             f"🔹 کلاینت: "
             f"{'✅ فعال' if self.client else '❌ آفلاین'}\n"
-            f"🔹 فقط‌خواندنی: "
+            f"🔹 فقطخواندنی: "
             f"{'✅' if self.read_only else '❌'}\n"
             f"🔹 دسترسی کامل: "
             f"{'✅' if self.full_access else '❌'}\n"
@@ -294,7 +294,7 @@ class ReportsMixin:
     def get_help(self) -> str:
         return (
             "📚 **راهنمای مغز**\n"
-            "━━━━━━━━━━━━━\n"
+            "─────────────\n"
             "💬 /status یا «وضعیت»\n"
             "💬 /help یا «راهنما»\n"
             "💬 /stats یا «آمار»\n"
@@ -370,14 +370,14 @@ class ReportsMixin:
             return f"❌ خطا: {e}"
 
     async def _get_keywords_report(self) -> str:
-        """آمار کلیدواژه‌ها از DB."""
+        """آمار کلیدواژهها از DB."""
         if not self.db:
             return "⚠️ دیتابیس متصل نیست."
         try:
             stats = await self.db.get_keyword_stats(limit=30)
             if not stats:
-                return "📭 کلیدواژه‌ای ثبت نشده."
-            lines = ["📊 **کلیدواژه‌ها**"]
+                return "📭 کلیدواژهای ثبت نشده."
+            lines = ["📊 **کلیدواژهها**"]
             for kw, count in stats[:20]:
                 lines.append(f"• {kw}: {count}")
             return "\n".join(lines)
@@ -395,7 +395,7 @@ class ReportsMixin:
         try:
             last_poll = await self.db.get_last_poll(platform)
             if not last_poll:
-                return f"📡 **{platform}**: داده‌ای نیست."
+                return f"📡 **{platform}**: دادهای نیست."
 
             # 🎯 FIX: safe date diff
             now = datetime.now()
@@ -427,8 +427,8 @@ class ReportsMixin:
             daily = await self.db.get_daily_stats(days=7)
             lines = [
                 "📊 **گزارش سریع**",
-                f"🔹 پیام‌ها: {total.get('messages', 0)}",
-                f"🔹 سرنخ‌ها: {total.get('leads', 0)}",
+                f"🔹 پیامها: {total.get('messages', 0)}",
+                f"🔹 سرنخها: {total.get('leads', 0)}",
                 "📅 **۷ روز اخیر:**",
             ]
             for d in daily[:7]:
@@ -476,7 +476,7 @@ class ReportsMixin:
                 f"lines≈{len(lines)} showing={len(recent)}"
             )
             return (
-                f"📋 **لاگ‌ها ({log_path.name}):**\n"
+                f"📋 **لاگها ({log_path.name}):**\n"
                 + "\n".join(recent)
             )
         except Exception as e:
@@ -500,7 +500,7 @@ class ReportsMixin:
                 return "📭 سرنخی نیست."
             lead = leads[0]
             return (
-                f"📌 **سرنخ**\n"
+                f"🔎 **سرنخ**\n"
                 f"پلتفرم: {lead.get('platform', '?')}\n"
                 f"چت: {lead.get('chat_name', '?')}\n"
                 f"متن: {str(lead.get('text', ''))[:200]}\n"
@@ -534,13 +534,13 @@ class ReportsMixin:
                 if matches:
                     preview = "، ".join(matches[:5])
                     return (
-                        f"✅ '{kw}' شامل کلیدواژه‌های "
-                        f"ثبت‌شده است:\n   {preview}"
+                        f"✅ '{kw}' شامل کلیدواژههای "
+                        f"ثبتشده است:\n   {preview}"
                     )
                 return f"✅ '{kw}' وجود دارد."
 
             return (
-                f"❌ '{kw}' کلیدواژهٔ ثبت‌شده نیست.\n"
+                f"❌ '{kw}' کلیدواژهٔ ثبتشده نیست.\n"
                 f"   (نه در products.py و نه در "
                 f"keywords_custom.json)\n"
                 f"   برای افزودن: کلیدواژه «{kw}» را اضافه کن"
@@ -553,7 +553,7 @@ class ReportsMixin:
             return f"❌ خطا: {e}"
 
     def generate_report(self, days: int = 7) -> str:
-        """🎯 FIX: پارامتر days اعمال می‌شود (قبلاً بی‌استفاده بود)."""
+        """🎯 FIX: پارامتر days اعمال میشود (قبلاً بیاستفاده بود)."""
         return (
             f"📊 **گزارش Agent ({days} روز)**\n"
             f"دستورات: {self.stats['commands_processed']}\n"
@@ -566,7 +566,7 @@ class ReportsMixin:
         )
 
     def analyze_logs(self, category: str = None) -> str:
-        """تحلیل لاگ‌ها — دسته‌بندی خطاها بر اساس نوع."""
+        """تحلیل لاگها — دستهبندی خطاها بر اساس نوع."""
         try:
             logs_text = self._get_recent_logs(limit=200)
             if not logs_text or "لاگ" in logs_text[:20]:

@@ -1,24 +1,27 @@
 """SafeBrain — گارد امن + کش + حافظه + PersistentMemory.
 
-نسخهٔ ۸ (این نسخه):
-  - 🎯 NEW: اتصال به `PersistentMemory` (SQLite + FTS5):
-      * `self.persistent_memory` در `__init__`
-      * `_try_persistent_recall()` — جستجو قبل از پاسخ
-      * `_try_persistent_remember()` — ذخیره بعد از پاسخ
-      * `_is_from_persistent()` — تشخیص پاسخ از حافظه
-  - 🎯 NEW: `_get_persistent_memory()` lazy accessor.
-  - 🎯 NEW: `_remember_conversation()` — ذخیره در حافظهٔ پایدار.
+نسخهٔ ۹ (این نسخه):
+  - 🐛 FIX بحرانی: `_try_ai` حالا از `get_provider_order()` public
+    استفاده می‌کند (نه `ai._provider_order()` private).
+  - 🐛 FIX بحرانی: `_try_ai` حالا از `_has_api_budget()` استفاده
+    می‌کند (budget را هدر نمی‌دهد).
+  - 🐛 FIX: `_get_ai` حالا اگر `get_ai_assistant()` خطا بدهد،
+    `_ai_assistant` را None نگه می‌دارد (نه که instance خالی
+    برگرداند).
+  - 🎯 `_has_api_budget()` helper جدید — فقط چک می‌کند،
+    افزایش نمی‌دهد.
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۸.
+
+نسخهٔ ۸ (قبلی):
+  - 🎯 اتصال به `PersistentMemory` (SQLite + FTS5).
+  - 🎯 `_try_persistent_recall()` و `_try_persistent_remember()`.
+  - 🎯 `_persistent_context()` برای context.
   - 🎯 در `_process_inner`: قبل از AI، اول PersistentMemory چک می‌شود.
   - 🎯 در `_try_ai`: context از PersistentMemory هم اضافه می‌شود.
-  - 🎯 `get_stats()` حالا آمار PersistentMemory را هم می‌دهد.
-  - 🎯 `close()` حالا PersistentMemory را هم می‌بندد.
-  - 🎯 `flush()` حالا PersistentMemory را هم flush می‌کند.
-  - ✅ حفظ همهٔ FIXهای نسخهٔ ۷.
 
-نسخهٔ ۷ (قبلی):
+نسخهٔ ۷ (قدیمی‌تر):
   - 🎯 پیام‌های خطا از `data/configs/errors.json`.
   - 🎯 `_err()` helper.
-  - ✅ حفظ همهٔ FIXهای نسخهٔ ۶.
 """
 from __future__ import annotations
 
@@ -204,11 +207,11 @@ _DELEGATE = _DelegateType()
 class SafeBrain:
     """مغز امن ربات — لایهٔ نازک روی Brain + حافظهٔ پایدار.
 
-    نسخهٔ ۸:
+    نسخهٔ ۹:
       - PersistentMemory (SQLite + FTS5) — هیچ‌وقت پاک نمی‌شود.
       - پاسخ‌های قبلی از حافظه بازیابی می‌شوند.
       - پیام‌های خطا از `data/configs/errors.json`.
-      - rate-limit DeepSeek.
+      - rate-limit DeepSeek (بدون هدر دادن budget).
       - پاسخ fallback کش نمی‌شود.
     """
 
@@ -498,6 +501,7 @@ class SafeBrain:
                 return None
 
     def _get_ai(self) -> Any | None:
+        """🎯 FIX: اگر خطا داد، None نگه‌دار (نه instance خالی)."""
         with self._ai_lock:
             if self._ai_assistant is not None:
                 return self._ai_assistant
@@ -512,19 +516,46 @@ class SafeBrain:
                     f"🔗 [SAFEBRAIN:ai] اتصال | "
                     f"{elapsed_ms:.0f}ms"
                 )
+                return self._ai_assistant
             except Exception as e:
                 log_warning(
                     f"⚠️ [SAFEBRAIN:ai] در دسترس نیست | "
                     f"{type(e).__name__}: {e}"
                 )
                 return None
-            return self._ai_assistant
 
     # ═══════════════════════════════════════════
     # rate limit
     # ═══════════════════════════════════════════
+    def _has_api_budget(self) -> bool:
+        """🎯 NEW: چک بودجهٔ API — بدون افزایش شمارنده.
+
+        این متد برای تصمیم‌گیری «آیا AI را صدا بزنم؟» استفاده
+        می‌شود، بدون اینکه بودجه هدر برود.
+
+        Returns:
+            True اگر بودجه در دسترس باشد.
+        """
+        if self.full_access:
+            return True
+
+        with self._api_lock:
+            now = time.monotonic()
+            # ─── پنجره منقضی شده ───
+            if now - self._api_hour_start > 3600:
+                return True
+            # ─── چک سقف ───
+            return (
+                self._api_calls_this_hour
+                < MAX_API_CALLS_PER_HOUR
+            )
+
     def _can_call_api(self) -> bool:
-        """چک محدودیت ساعتی تماس‌های API."""
+        """چک بودجه + افزایش شمارنده (برای استفادهٔ واقعی).
+
+        🐛 FIX: این متد فقط وقتی صدا زده می‌شود که واقعاً
+        می‌خواهیم API را صدا بزنیم.
+        """
         with self._api_lock:
             now = time.monotonic()
             if now - self._api_hour_start > 3600:
@@ -689,6 +720,7 @@ class SafeBrain:
             return ai_result
 
         # ─── ۶) Brain.agent ───
+        # 🎯 FIX: استفاده از _can_call_api فقط وقتی واقعاً می‌خواهیم
         if self.api_key and self._can_call_api():
             brain = self._get_brain()
             if brain:
@@ -793,6 +825,9 @@ class SafeBrain:
     ) -> str | None:
         """تلاش برای پاسخ با AI.
 
+        🐛 FIX: حالا از `get_provider_order()` public و
+        `_has_api_budget()` استفاده می‌کند (budget را هدر نمی‌دهد).
+
         - rate limit روی DeepSeek.
         - `chat_with_status()` برای دقت.
         - پاسخ fallback کش نمی‌شود.
@@ -811,14 +846,28 @@ class SafeBrain:
             if not await ai.available():
                 return None
 
-            # rate limit
+            # ═══════════════════════════════════════════
+            # 🐛 FIX: provider order از public API
+            # ═══════════════════════════════════════════
             try:
-                provider_order = ai._provider_order()
-            except Exception:
+                if hasattr(ai, "get_provider_order"):
+                    provider_order = ai.get_provider_order()
+                else:
+                    # fallback: اگر متد public نبود، از _provider_order
+                    provider_order = ai._provider_order()
+            except Exception as e:
+                log_warning(
+                    f"⚠️ [SAFEBRAIN:_try_ai] "
+                    f"provider_order | "
+                    f"{type(e).__name__}: {e}"
+                )
                 provider_order = []
 
+            # ═══════════════════════════════════════════
+            # 🐛 FIX: چک بودجه بدون هدر دادن
+            # ═══════════════════════════════════════════
             if "deepseek" in provider_order:
-                if not self._can_call_api():
+                if not self._has_api_budget():
                     log_warning(
                         "⚠️ [SAFEBRAIN:_try_ai] "
                         "محدودیت API DeepSeek — "
