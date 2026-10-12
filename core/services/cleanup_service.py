@@ -1,31 +1,29 @@
-"""سرویس پاک‌سازی خودکار (Retention + Caches).
+"""سرویس پاک‌سازی خودکار (Retention + Caches) — نسخهٔ ۶.
 
 طبق تنظیمات `config.RETENTION`:
   - عکس/فایل‌های قدیمی‌تر از `media_days` حذف می‌شوند.
   - گزارش‌های قدیمی‌تر از `reports_days` حذف می‌شوند.
   - پیام‌های دیتابیس قدیمی‌تر از `messages_days` حذف می‌شوند
     (۰ = هرگز).
-  - کش‌های AI (SafeBrain + Brain) و pycache هم پاک می‌شوند.
+  - کش‌های موقت AI + pycache پاک می‌شوند.
 
 هر `interval_hours` ساعت یک‌بار اجرا می‌شود (و یک‌بار هنگام شروع).
 
-نسخهٔ ۵ (این نسخه):
-  - 🐛 FIX: `MEDIA_DIR`, `REPORTS_DIR`, `STORAGE_DIR` از
-    `data.paths` می‌آیند.
-  - 🐛 FIX: `_CACHE_DIRS`, `_CACHE_FILES` از `data.paths`.
-  - 🐛 FIX: `_SLOW_STEP_MS`, `_SLEEP_CHUNK_S` env-based.
-  - 🐛 FIX: `_env_int` حالا `min_val`/`max_val` دارد.
-  - 🐛 FIX: `_resolve_retention_value()` helper (type-safe).
-  - 🐛 FIX: `run_once` — `stats["db"]` حالا تعداد پیام‌های
-    حذف‌شده است (نه days).
-  - 🐛 FIX: `run_periodic` حالا `_stop_event` دارد.
-  - 🐛 FIX: `start_cleanup_service` حالا reference task نگه
-    می‌دارد.
-  - 🐛 FIX: `_cleanup_caches` حالا `normcase` برای skip.
-  - 🎯 `CLEANUP_TYPE_MEDIA`, `CLEANUP_TYPE_REPORTS` constants.
-  - 🎯 `get_stats()`, `__repr__`, `is_running()`.
-  - 🎯 `__all__` export.
-  - ✅ حفظ همهٔ FIXهای نسخهٔ ۴.
+نسخهٔ ۶ (این نسخه) — تغییرات نسبت به ۵:
+  - 🐛 FIX بحرانی: `is_running` از `@property` به متد تبدیل شد
+    (در همهٔ جاها با `cs.is_running()` صدا زده می‌شود).
+  - 🐛 FIX بحرانی: `learned_patterns.json` و `plans.json` از
+    لیست cache حذف شدند — این‌ها «حافظهٔ Brain» هستند، نه cache.
+  - 🐛 FIX: `stats["db"]` اگر result غیر-int بود، ۰ می‌شود
+    (قبلاً اشتباهاً days را برمی‌گرداند).
+  - 🐛 FIX: `project_root` با `abspath` محاسبه می‌شود.
+  - 🎯 `_last_stats` ذخیره می‌شود تا در گارد اجرای هم‌زمان
+    برگردانده شود.
+  - 🎯 `_in_progress` جدا از `_running` — جلوگیری از اجرای
+    هم‌زمان دو `run_once`.
+  - 🎯 در `run_once` هر بخش در `try/except` مستقل + `finally`
+    برای ریست `_in_progress`.
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۵.
 """
 from __future__ import annotations
 
@@ -67,7 +65,7 @@ def _env_int(
 def _resolve_retention_value(
     value: Any, default: int = 0
 ) -> int:
-    """🎯 FIX: نوع امن از RETENTION dict."""
+    """تبدیل type-safe مقدار RETENTION."""
     try:
         return max(0, int(value))
     except (TypeError, ValueError):
@@ -123,16 +121,18 @@ _SLEEP_CHUNK_S = _env_int(
     min_val=1, max_val=60,
 )
 
-# 🎯 نوع cleanup
 CLEANUP_TYPE_MEDIA = "media"
 CLEANUP_TYPE_REPORTS = "reports"
 
 
 # ═══════════════════════════════════════════
-# پوشه‌ها/فایل‌های cache
+# پوشه‌ها/فایل‌های cache — فقط کش موقت!
 # ═══════════════════════════════════════════
+# ⚠️ توجه: اینجا فقط cache موقت می‌آید. حافظهٔ Brain (learned_patterns,
+# plans) از این لیست حذف شده — چون state است، نه cache.
+
 def _build_cache_dirs() -> list[str]:
-    """🎯 FIX: پوشه‌های cache از data.paths."""
+    """پوشه‌های cache موقت — امن برای پاک کردن."""
     dirs: list[str] = []
     try:
         dirs.extend([
@@ -150,7 +150,6 @@ def _build_cache_dirs() -> list[str]:
             os.path.join(STORAGE_DIR, "brain", "memory"),
             os.path.join(STORAGE_DIR, "pycache"),
         ])
-    # فیلتر تکراری‌ها
     seen: set[str] = set()
     out: list[str] = []
     for d in dirs:
@@ -161,20 +160,18 @@ def _build_cache_dirs() -> list[str]:
 
 
 def _build_cache_files() -> list[str]:
-    """🎯 FIX: فایل‌های cache از data.paths."""
+    """فایل‌های cache موقت.
+
+    ⚠️ فقط cache. حافظهٔ Brain (learned_patterns.json, plans.json)
+    اینجا نیست — چون state است.
+    """
     files: list[str] = []
     try:
-        files.extend([
-            str(_data_paths.REPORT_CACHE),
-            str(_data_paths.LEARNED_PATTERNS),
-            str(_data_paths.BRAIN_PLANS),
-        ])
+        files.append(str(_data_paths.REPORT_CACHE))
     except Exception:
-        files.extend([
-            os.path.join(STORAGE_DIR, "database", "report_cache.json"),
-            os.path.join(STORAGE_DIR, "brain", "learned_patterns.json"),
-            os.path.join(STORAGE_DIR, "brain", "plans.json"),
-        ])
+        files.append(
+            os.path.join(STORAGE_DIR, "database", "report_cache.json")
+        )
     seen: set[str] = set()
     out: list[str] = []
     for f in files:
@@ -187,11 +184,12 @@ def _build_cache_files() -> list[str]:
 _CACHE_DIRS: list[str] = _build_cache_dirs()
 _CACHE_FILES: list[str] = _build_cache_files()
 
-# 🎯 پوشه‌هایی که در scan __pycache__ نباید بره داخلشون
+# پوشه‌هایی که در scan __pycache__ نباید بره داخلشون
 _SKIP_DIRS_FOR_PYCACHE: tuple[str, ...] = (
     "venv", ".venv", "env", ".env",
     ".git", "node_modules",
     os.path.join("storage", "sessions"),
+    os.path.join("storage", "backups"),
 )
 
 
@@ -199,15 +197,22 @@ _SKIP_DIRS_FOR_PYCACHE: tuple[str, ...] = (
 # CleanupService
 # ═══════════════════════════════════════════
 class CleanupService:
-    """پاک‌سازی خودکار فایل‌های قدیمی + پیام‌های دیتابیس + کش‌ها."""
+    """پاک‌سازی خودکار فایل‌های قدیمی + پیام‌های دیتابیس + کش‌های موقت."""
 
     def __init__(self, db=None):
         self.db = db
+
+        # 🎯 `_running` = سرویس زنده است (حلقه periodic ادامه بده)
         self._running = True
+        # 🎯 `_in_progress` = یک run_once در حال اجراست
+        self._in_progress = False
+        # 🎯 آخرین نتیجه — برای debug و برگرداندن در گارد
+        self._last_stats: dict[str, int] = {}
+
         self._stop_event: asyncio.Event | None = None
         self._pending_tasks: list[asyncio.Task] = []
 
-        # 🐛 FIX: type-safe
+        # retention
         self.keep_media_days = _resolve_retention_value(
             RETENTION.get("media_days", 0), 0
         )
@@ -254,10 +259,13 @@ class CleanupService:
     # ═══════════════════════════════════════════
     # helpers
     # ═══════════════════════════════════════════
-    @property
     def is_running(self) -> bool:
-        """🎯 آیا سرویس در حال اجراست؟"""
+        """🎯 سرویس زنده است؟ (حلقه periodic ادامه بده؟)"""
         return self._running
+
+    def is_busy(self) -> bool:
+        """🎯 آیا همین حالا run_once در حال اجراست؟"""
+        return self._in_progress
 
     @staticmethod
     def _safe_remove(path: str) -> bool:
@@ -298,7 +306,7 @@ class CleanupService:
 
     @staticmethod
     def _should_skip_pycache_dir(root: str) -> bool:
-        """🎯 FIX: چک case-insensitive."""
+        """چک case-insensitive برای skip پوشه‌ها."""
         root_norm = os.path.normcase(root).replace("\\", "/")
         for sd in _SKIP_DIRS_FOR_PYCACHE:
             sd_norm = os.path.normcase(sd).replace("\\", "/")
@@ -314,7 +322,6 @@ class CleanupService:
         folder: str, days: int, label: str
     ) -> int:
         """حذف فایل‌های قدیمی‌تر از `days` روز."""
-        # 🐛 FIX: کلیپ منفی
         if days <= 0:
             log_info(
                 f"ℹ️ [CLEANUP:files:{label}] "
@@ -363,7 +370,6 @@ class CleanupService:
                         )
 
         elapsed_ms = (time.monotonic() - t0) * 1000
-
         newest_age_days = (
             (time.time() - newest_mtime) / 86400
             if newest_mtime > 0 else 0.0
@@ -398,18 +404,7 @@ class CleanupService:
     # ═══════════════════════════════════════════
     @staticmethod
     def _cleanup_caches() -> dict[str, Any]:
-        """پاک‌سازی کش‌های AI + pycache.
-
-        Returns:
-            {
-                "ai_files": N,
-                "ai_dirs": M,
-                "pycache_storage": K,
-                "pycache_global": L,
-                "freed_kb": float,
-                "errors": E,
-            }
-        """
+        """پاک‌سازی کش‌های موقت AI + pycache."""
         t0 = time.monotonic()
         log_info("▶️ [CLEANUP:caches] شروع")
 
@@ -422,11 +417,10 @@ class CleanupService:
             "errors": 0,
         }
 
-        # ─── ۱) پاک فایل‌های AI ───
+        # ─── ۱) پاک فایل‌های داخل پوشه‌های cache ───
         for d in _CACHE_DIRS:
             if not os.path.isdir(d):
                 continue
-
             try:
                 for name in os.listdir(d):
                     path = os.path.join(d, name)
@@ -440,8 +434,7 @@ class CleanupService:
                             stats["errors"] += 1
                             log_warning(
                                 f"⚠️ [CLEANUP:caches] "
-                                f"{type(e).__name__}: {e} | "
-                                f"{path}"
+                                f"{type(e).__name__}: {e} | {path}"
                             )
                     elif os.path.isdir(path):
                         try:
@@ -457,7 +450,7 @@ class CleanupService:
                     f"{type(e).__name__}: {e} | {d}"
                 )
 
-        # ─── ۲) پاک فایل‌های تک AI ───
+        # ─── ۲) پاک فایل‌های تک cache (report_cache فقط) ───
         for f in _CACHE_FILES:
             if os.path.isfile(f):
                 try:
@@ -473,33 +466,22 @@ class CleanupService:
                     )
 
         # ─── ۳) پاک storage/pycache ───
-        pycache_storage = os.path.join(
-            STORAGE_DIR, "pycache"
-        )
+        pycache_storage = os.path.join(STORAGE_DIR, "pycache")
         if os.path.isdir(pycache_storage):
             try:
                 for name in os.listdir(pycache_storage):
-                    path = os.path.join(
-                        pycache_storage, name
-                    )
+                    path = os.path.join(pycache_storage, name)
                     if os.path.isdir(path):
                         try:
-                            size = (
-                                CleanupService._dir_size_kb(
-                                    path
-                                )
-                            )
-                            shutil.rmtree(
-                                path, ignore_errors=True
-                            )
+                            size = CleanupService._dir_size_kb(path)
+                            shutil.rmtree(path, ignore_errors=True)
                             stats["pycache_storage"] += 1
                             stats["freed_kb"] += size
                         except Exception as e:
                             stats["errors"] += 1
                             log_warning(
                                 f"⚠️ [CLEANUP:caches] "
-                                f"{type(e).__name__}: {e} | "
-                                f"{path}"
+                                f"{type(e).__name__}: {e} | {path}"
                             )
                     elif os.path.isfile(path):
                         try:
@@ -513,36 +495,26 @@ class CleanupService:
                 stats["errors"] += 1
                 log_warning(
                     f"⚠️ [CLEANUP:caches] "
-                    f"{type(e).__name__}: {e} | "
-                    f"{pycache_storage}"
+                    f"{type(e).__name__}: {e} | {pycache_storage}"
                 )
 
         # ─── ۴) پاک __pycache__ تو کل پروژه ───
-        project_root = os.path.dirname(
-            os.path.normpath(STORAGE_DIR)
+        project_root = os.path.abspath(
+            os.path.join(STORAGE_DIR, os.pardir)
         )
 
         for root, dirs, _ in os.walk(
             project_root, followlinks=False
         ):
-            # 🎯 FIX: case-insensitive skip
-            if CleanupService._should_skip_pycache_dir(
-                root
-            ):
+            if CleanupService._should_skip_pycache_dir(root):
                 dirs[:] = []
                 continue
 
             if "__pycache__" in dirs:
-                pyc_path = os.path.join(
-                    root, "__pycache__"
-                )
+                pyc_path = os.path.join(root, "__pycache__")
                 try:
-                    size = CleanupService._dir_size_kb(
-                        pyc_path
-                    )
-                    shutil.rmtree(
-                        pyc_path, ignore_errors=True
-                    )
+                    size = CleanupService._dir_size_kb(pyc_path)
+                    shutil.rmtree(pyc_path, ignore_errors=True)
                     stats["pycache_global"] += 1
                     stats["freed_kb"] += size
                 except Exception:
@@ -553,7 +525,6 @@ class CleanupService:
                     pass
 
         elapsed_ms = (time.monotonic() - t0) * 1000
-
         log_success(
             f"🧹 [CLEANUP:caches] کامل | "
             f"ai_files={stats['ai_files']} | "
@@ -564,20 +535,29 @@ class CleanupService:
             f"errors={stats['errors']} | "
             f"{elapsed_ms:.0f}ms"
         )
-
         if elapsed_ms > _SLOW_STEP_MS:
             log_warning(
-                f"🐌 [CLEANUP:caches] کند | "
-                f"{elapsed_ms:.0f}ms"
+                f"🐌 [CLEANUP:caches] کند | {elapsed_ms:.0f}ms"
             )
-
         return stats
 
     # ═══════════════════════════════════════════
     # run_once
     # ═══════════════════════════════════════════
     async def run_once(self) -> dict[str, int]:
-        """یک دور پاک‌سازی کامل."""
+        """یک دور پاک‌سازی کامل — با گارد اجرای هم‌زمان."""
+        # 🎯 گارد: اگر run_once دیگری در حال اجراست، رد کن
+        if self._in_progress:
+            log_warning(
+                "⚠️ [CLEANUP:run] قبلاً در حال اجراست — رد شد"
+            )
+            return dict(self._last_stats)
+
+        if not self._running:
+            log_info("ℹ️ [CLEANUP:run] _running=False — رد شد")
+            return dict(self._last_stats)
+
+        self._in_progress = True
         t_all = time.monotonic()
         log_info("▶️ [CLEANUP:run] شروع دور کامل")
 
@@ -589,122 +569,99 @@ class CleanupService:
             "pycache_dirs": 0,
         }
 
-        if not self._running:
-            log_info(
-                "ℹ️ [CLEANUP:run] _running=False — رد شد"
-            )
-            return stats
-
-        # ─── ۱) media ───
         try:
-            t_step = time.monotonic()
-            stats["media"] = self._delete_old_files(
-                MEDIA_DIR, self.keep_media_days,
-                CLEANUP_TYPE_MEDIA,
-            )
-            step_ms = (time.monotonic() - t_step) * 1000
-            log_info(f"   ✔ media | {step_ms:.0f}ms")
-        except Exception as e:
-            log_error(
-                f"❌ [CLEANUP:run:media] "
-                f"{type(e).__name__}: {e}"
-            )
-
-        if not self._running:
-            log_info(
-                "ℹ️ [CLEANUP:run] _running=False — توقف"
-            )
-            return stats
-
-        # ─── ۲) reports ───
-        try:
-            t_step = time.monotonic()
-            stats["reports"] = self._delete_old_files(
-                REPORTS_DIR, self.keep_reports_days,
-                CLEANUP_TYPE_REPORTS,
-            )
-            step_ms = (time.monotonic() - t_step) * 1000
-            log_info(f"   ✔ reports | {step_ms:.0f}ms")
-        except Exception as e:
-            log_error(
-                f"❌ [CLEANUP:run:reports] "
-                f"{type(e).__name__}: {e}"
-            )
-
-        if not self._running:
-            log_info(
-                "ℹ️ [CLEANUP:run] _running=False — توقف"
-            )
-            return stats
-
-        # ─── ۳) db ───
-        if self.db and self.keep_messages_days > 0:
+            # ─── ۱) media ───
             try:
                 t_step = time.monotonic()
-                # 🎯 FIX: تلاش برای گرفتن return value
-                result = await self.db.delete_old_messages(
-                    self.keep_messages_days
+                stats["media"] = self._delete_old_files(
+                    MEDIA_DIR, self.keep_media_days,
+                    CLEANUP_TYPE_MEDIA,
                 )
                 step_ms = (time.monotonic() - t_step) * 1000
-
-                # اگر db تعداد برگرداند، استفاده کن
-                if isinstance(result, int):
-                    stats["db"] = result
-                else:
-                    stats["db"] = self.keep_messages_days
-
-                log_success(
-                    f"🧹 [CLEANUP:run:db] پیام‌های "
-                    f"قدیمی‌تر از "
-                    f"{self.keep_messages_days} روز | "
-                    f"result={result} | {step_ms:.0f}ms"
-                )
+                log_info(f"   ✔ media | {step_ms:.0f}ms")
             except Exception as e:
                 log_error(
-                    f"❌ [CLEANUP:run:db] "
+                    f"❌ [CLEANUP:run:media] "
                     f"{type(e).__name__}: {e}"
                 )
-        elif not self.db:
-            log_info("ℹ️ [CLEANUP:run:db] db ندارد")
-        else:
-            log_info(
-                f"ℹ️ [CLEANUP:run:db] "
-                f"keep_messages_days="
-                f"{self.keep_messages_days} — "
-                f"پیام‌ها حذف نمی‌شوند"
-            )
 
-        if not self._running:
-            log_info(
-                "ℹ️ [CLEANUP:run] _running=False — توقف"
+            # ─── ۲) reports ───
+            try:
+                t_step = time.monotonic()
+                stats["reports"] = self._delete_old_files(
+                    REPORTS_DIR, self.keep_reports_days,
+                    CLEANUP_TYPE_REPORTS,
+                )
+                step_ms = (time.monotonic() - t_step) * 1000
+                log_info(f"   ✔ reports | {step_ms:.0f}ms")
+            except Exception as e:
+                log_error(
+                    f"❌ [CLEANUP:run:reports] "
+                    f"{type(e).__name__}: {e}"
+                )
+
+            # ─── ۳) db ───
+            if self.db and self.keep_messages_days > 0:
+                try:
+                    t_step = time.monotonic()
+                    result = await self.db.delete_old_messages(
+                        self.keep_messages_days
+                    )
+                    step_ms = (time.monotonic() - t_step) * 1000
+
+                    # 🐛 FIX: فقط اگر int بود، استفاده کن؛ وگرنه ۰
+                    if isinstance(result, int):
+                        stats["db"] = result
+                    else:
+                        stats["db"] = 0
+
+                    log_success(
+                        f"🧹 [CLEANUP:run:db] پیام‌های "
+                        f"قدیمی‌تر از {self.keep_messages_days} روز | "
+                        f"result={result} | {step_ms:.0f}ms"
+                    )
+                except Exception as e:
+                    log_error(
+                        f"❌ [CLEANUP:run:db] "
+                        f"{type(e).__name__}: {e}"
+                    )
+            elif not self.db:
+                log_info("ℹ️ [CLEANUP:run:db] db ندارد")
+            else:
+                log_info(
+                    f"ℹ️ [CLEANUP:run:db] "
+                    f"keep_messages_days={self.keep_messages_days} — "
+                    f"پیام‌ها حذف نمی‌شوند"
+                )
+
+            # ─── ۴) caches ───
+            try:
+                t_step = time.monotonic()
+                cache_stats = self._cleanup_caches()
+                step_ms = (time.monotonic() - t_step) * 1000
+                stats["cache_files"] = cache_stats.get("ai_files", 0)
+                stats["pycache_dirs"] = (
+                    cache_stats.get("pycache_storage", 0)
+                    + cache_stats.get("pycache_global", 0)
+                )
+                log_info(f"   ✔ caches | {step_ms:.0f}ms")
+            except Exception as e:
+                log_error(
+                    f"❌ [CLEANUP:run:caches] "
+                    f"{type(e).__name__}: {e}"
+                )
+
+            self._last_stats = dict(stats)
+            elapsed_ms = (time.monotonic() - t_all) * 1000
+            log_success(
+                f"🏁 [CLEANUP:run] کامل | "
+                f"{elapsed_ms:.0f}ms | stats={stats}"
             )
             return stats
 
-        # ─── ۴) caches ───
-        try:
-            t_step = time.monotonic()
-            cache_stats = self._cleanup_caches()
-            step_ms = (time.monotonic() - t_step) * 1000
-            stats["cache_files"] = cache_stats.get(
-                "ai_files", 0
-            )
-            stats["pycache_dirs"] = (
-                cache_stats.get("pycache_storage", 0)
-                + cache_stats.get("pycache_global", 0)
-            )
-            log_info(f"   ✔ caches | {step_ms:.0f}ms")
-        except Exception as e:
-            log_error(
-                f"❌ [CLEANUP:run:caches] "
-                f"{type(e).__name__}: {e}"
-            )
-
-        elapsed_ms = (time.monotonic() - t_all) * 1000
-        log_success(
-            f"🏁 [CLEANUP:run] کامل | "
-            f"{elapsed_ms:.0f}ms | stats={stats}"
-        )
-        return stats
+        finally:
+            # 🎯 تضمینی: حتی اگر exception رخ داد، ریست شود
+            self._in_progress = False
 
     # ═══════════════════════════════════════════
     # run_periodic
@@ -744,19 +701,17 @@ class CleanupService:
                     f"{type(e).__name__}: {e}"
                 )
 
-            # ─── sleep تکه‌تکه ───
+            # ─── sleep تکه‌تکه با بیداری سریع ───
             remaining_s = total_sleep_s
             while remaining_s > 0 and self._running:
                 chunk = min(_SLEEP_CHUNK_S, remaining_s)
 
-                # 🎯 FIX: بیداری سریع در stop
                 if self._stop_event is not None:
                     try:
                         await asyncio.wait_for(
                             self._stop_event.wait(),
                             timeout=chunk,
                         )
-                        # stop شد
                         remaining_s = 0
                         break
                     except TimeoutError:
@@ -767,8 +722,7 @@ class CleanupService:
                     except asyncio.CancelledError:
                         log_info(
                             f"🛑 [CLEANUP:periodic] "
-                            f"cancel در sleep "
-                            f"(iter#{iteration})"
+                            f"cancel در sleep (iter#{iteration})"
                         )
                         raise
 
@@ -796,13 +750,28 @@ class CleanupService:
                 pass
         log_info("🛑 [CLEANUP:stop] درخواست توقف")
 
+    async def shutdown(self) -> None:
+        """خاموشی تمیز — cancel کردن task‌ها."""
+        self.stop()
+        for t in self._pending_tasks:
+            if not t.done():
+                t.cancel()
+        for t in self._pending_tasks:
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._pending_tasks.clear()
+
     # ═══════════════════════════════════════════
     # debug
     # ═══════════════════════════════════════════
     def get_stats(self) -> dict[str, Any]:
-        """🎯 خلاصهٔ وضعیت — برای debug."""
+        """خلاصهٔ وضعیت — برای debug."""
         return {
             "running": self._running,
+            "busy": self._in_progress,
+            "last_stats": dict(self._last_stats),
             "media_dir": MEDIA_DIR,
             "reports_dir": REPORTS_DIR,
             "storage_dir": STORAGE_DIR,
@@ -821,7 +790,8 @@ class CleanupService:
             f"media={self.keep_media_days}d "
             f"reports={self.keep_reports_days}d "
             f"messages={self.keep_messages_days}d "
-            f"interval={self.interval_hours}h>"
+            f"interval={self.interval_hours}h "
+            f"alive={self._running} busy={self._in_progress}>"
         )
 
 
@@ -842,7 +812,6 @@ async def start_cleanup_service(db=None) -> CleanupService:
         raise
 
     try:
-        # 🎯 FIX: نگه‌داری reference
         task = asyncio.create_task(
             svc.run_periodic(),
             name="cleanup_periodic",
@@ -864,9 +833,6 @@ async def start_cleanup_service(db=None) -> CleanupService:
     return svc
 
 
-# ═══════════════════════════════════════════
-# __all__
-# ═══════════════════════════════════════════
 __all__ = [
     "CleanupService",
     "start_cleanup_service",

@@ -224,20 +224,28 @@ class HealthChecker:
     def register_collector(self, collector) -> None:
         """ثبت کلکتور برای بررسی سلامت (ضدتکراری)."""
         name = getattr(collector, "platform_name", "unknown")
+        # 🐛 FIX: کلید یکتا = (platform_name, class_name)
+        # چون bale و bale_bot هر دو "bale" برمی‌گردانند.
+        cls_name = type(collector).__name__
+        key = (name, cls_name)
 
         if any(
-            getattr(c, "platform_name", None) == name
+            (
+                getattr(c, "platform_name", None),
+                type(c).__name__,
+            ) == key
             for c in self._collectors
         ):
             log_warning(
                 f"⚠️ [HEALTH:register] کلکتور {name} "
-                f"قبلاً ثبت شده — نادیده گرفته شد"
+                f"({cls_name}) قبلاً ثبت شده — نادیده گرفته شد"
             )
             return
 
         self._collectors.append(collector)
         log_info(
-            f"📝 [HEALTH:register] کلکتور {name} ثبت شد "
+            f"📝 [HEALTH:register] کلکتور {name} "
+            f"({cls_name}) ثبت شد "
             f"(مجموع: {len(self._collectors)})"
         )
 

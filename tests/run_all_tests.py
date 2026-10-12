@@ -4,11 +4,21 @@
 
 اجرا:
   python tests/run_all_tests.py
-  python tests/run_all_tests.py --only bale eitaa rubika youtube
+  python tests/run_all_tests.py --only bale eitaa rubika youtube facebook
   python tests/run_all_tests.py --headless
   python tests/run_all_tests.py --include-disabled
 
-نسخهٔ ۲.۰ (این نسخه):
+نسخهٔ ۳.۰ (این نسخه):
+  - 🆕 پشتیبانی از Facebook (env-based enabled check).
+  - 🆕 Facebook در PLATFORMS list.
+  - 🎯 `_is_platform_enabled` حالا برای هر دو youtube و facebook
+    از env مستقیم استفاده می‌کند (چون ممکن است در PLUGINS_CONFIG
+    نباشند یا `enabled` نداشته باشند).
+  - 🎯 `run_test` حالا facebook را هم به لیست --headless اضافه می‌کند.
+  - 🎯 بهبود لاگ: نمایش منبع enabled برای هر پلتفرم.
+  - ✅ حفظ همهٔ رفتار نسخهٔ ۲.۰.
+
+نسخهٔ ۲.۰ (قبلی):
   - 🆕 پشتیبانی از YouTube (env-based enabled check).
   - 🆕 YouTube در PLATFORMS list.
   - ✅ حفظ همهٔ رفتار نسخهٔ ۱.
@@ -28,6 +38,9 @@ from core.kernel.console_compat import patch_console
 patch_console(verbose=False)
 
 
+# ══════════════════════════════════════════════════════════════════════
+# لیست پلتفرم‌ها (به ترتیب PLATFORMS_ORDER در config.py)
+# ══════════════════════════════════════════════════════════════════════
 PLATFORMS = [
     "bale",
     "eitaa",
@@ -36,9 +49,33 @@ PLATFORMS = [
     "whatsapp",
     "linkedin",
     "instagram",
-    "youtube",      # 🆕
+    "youtube",
+    "facebook",     # 🆕
     "web",
 ]
+
+
+# ══════════════════════════════════════════════════════════════════════
+# پلتفرم‌هایی که env-based enabled check دارند
+# (چون ممکن است در PLUGINS_CONFIG نباشند یا مقدار enabled نداشته باشند)
+# ══════════════════════════════════════════════════════════════════════
+_ENV_BASED_PLATFORMS = {"youtube", "facebook"}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# پلتفرم‌هایی که --headless را می‌پذیرند
+# (کلکتورهای مرورگری که flag --headless دارند)
+# ══════════════════════════════════════════════════════════════════════
+_HEADLESS_CAPABLE = {
+    "bale",
+    "eitaa",
+    "linkedin",
+    "instagram",
+    "telegram",
+    "whatsapp",
+    "youtube",
+    "facebook",     # 🆕
+}
 
 
 def run_test(name: str, headless: bool = False) -> tuple[bool, float]:
@@ -49,10 +86,7 @@ def run_test(name: str, headless: bool = False) -> tuple[bool, float]:
         return (False, 0.0)
 
     cmd = [sys.executable, script]
-    if headless and name in (
-        "bale", "eitaa", "linkedin", "instagram",
-        "telegram", "whatsapp", "youtube",
-    ):
+    if headless and name in _HEADLESS_CAPABLE:
         cmd.append("--headless")
 
     t0 = time.monotonic()
@@ -88,23 +122,24 @@ def run_healthcheck() -> tuple[bool, float]:
 def _is_platform_enabled(platform: str) -> bool:
     """آیا پلتفرم فعال است؟
 
-    برای یوتیوب (که هنوز در PLUGINS_CONFIG نیست)، مستقیماً env را چک
-    می‌کنیم. برای بقیه، PLUGINS_CONFIG.
+    برای پلتفرم‌های env-based (youtube, facebook) → env مستقیم.
+    برای بقیه → PLUGINS_CONFIG.
 
     اگر پلتفرم ناشناخته باشد یا config خطا داد → True (پیش‌فرض: تلاش).
     """
-    # 🆕 یوتیوب — env مستقیم
-    if platform == "youtube":
+    # ─── اول: load .env برای env-based ───
+    if platform in _ENV_BASED_PLATFORMS:
         try:
             from dotenv import load_dotenv
             load_dotenv(override=False)
         except Exception:
             pass
-        raw = os.getenv(
-            "YOUTUBE_ENABLED", "false"
-        ).strip().lower()
+
+        env_name = f"{platform.upper()}_ENABLED"
+        raw = os.getenv(env_name, "false").strip().lower()
         return raw in ("true", "1", "yes", "on")
 
+    # ─── بقیه: از PLUGINS_CONFIG ───
     try:
         from config import PLUGINS_CONFIG
         key = f"{platform}collector"
@@ -114,13 +149,29 @@ def _is_platform_enabled(platform: str) -> bool:
         return True
 
 
+def _enabled_source(platform: str) -> str:
+    """منبع enabled برای این پلتفرم — برای نمایش در لاگ."""
+    if platform in _ENV_BASED_PLATFORMS:
+        return f"env:{platform.upper()}_ENABLED"
+    return "config:PLUGINS_CONFIG"
+
+
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--only", nargs="*", default=None,
-                        help="فقط این پلتفرم‌ها")
-    parser.add_argument("--headless", action="store_true")
-    parser.add_argument("--include-disabled", action="store_true",
-                        help="تست پلتفرم‌های خاموش را هم اجرا کن")
+    parser = argparse.ArgumentParser(
+        description="اجرای همهٔ تست‌های پلتفرم + StorageHandler",
+    )
+    parser.add_argument(
+        "--only", nargs="*", default=None,
+        help="فقط این پلتفرم‌ها",
+    )
+    parser.add_argument(
+        "--headless", action="store_true",
+        help="اجرای مرورگرها در حالت headless (بدون پنجره)",
+    )
+    parser.add_argument(
+        "--include-disabled", action="store_true",
+        help="تست پلتفرم‌های خاموش را هم اجرا کن",
+    )
     args = parser.parse_args()
 
     # ─── فیلتر پلتفرم‌های خاموش ───
@@ -129,23 +180,38 @@ def main():
     skipped: list[str] = []
 
     for name in requested:
-        if args.include_disabled or _is_platform_enabled(name):
+        if name not in PLATFORMS:
+            print(f"  ⚠️ پلتفرم ناشناخته: {name} (skip)")
+            skipped.append(name)
+            continue
+
+        if args.include_disabled:
+            tests.append(name)
+        elif _is_platform_enabled(name):
             tests.append(name)
         else:
             skipped.append(name)
 
     if skipped:
-        print(f"⏭️  پلتفرم‌های خاموش (skip): {', '.join(skipped)}")
+        print(f"⏭️  پلتفرم‌های خاموش/ناشناخته (skip): {', '.join(skipped)}")
         print("   (برای اجرا: --include-disabled)")
 
     if not tests:
         print("⚠️ هیچ پلتفرم فعالی برای تست نیست.")
         sys.exit(0)
 
+    # ─── نمایش خلاصهٔ قبل از شروع ───
     print("=" * 70)
     print(f"🚀 اجرای {len(tests)} تست پلتفرم (Pipeline end-to-end)")
     print(f"   tests={tests} | headless={args.headless}")
     print("=" * 70)
+
+    # ─── نمایش منبع enabled هر پلتفرم ───
+    print("\n📋 منبع فعال بودن پلتفرم‌ها:")
+    for name in tests:
+        source = _enabled_source(name)
+        print(f"   • {name:12s} → {source}")
+    print()
 
     results: dict[str, tuple[bool, float]] = {}
     t_start = time.monotonic()

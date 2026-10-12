@@ -5,24 +5,18 @@ config.py — منبع یکتای تنظیمات پروژه (از .env).
 استفاده کند (circular). برای لاگ کردن، یا print به stderr استفاده کن، یا
 `log_config_summary()` را بعد از setup logger صدا بزن.
 
-نسخهٔ ۹ (این نسخه):
+نسخهٔ ۱۰ (این نسخه):
+  - 🆕 پلتفرم فیسبوک (Facebook) — کاربر عادی، فید + گروه‌ها
+  - 🎯 `facebookcollector` در PLUGINS_CONFIG
+  - 🎯 `get_facebook_config()` + `_PLATFORM_KEY_MAP`
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۹.
+
+نسخهٔ ۹ (قبلی):
   - 🎯 NEW: `AI_SYSTEM_PROMPT` — شخصیت متخصص پایش کد برای DeepSeek.
   - 🎯 NEW: `AI_PERSONA` — دیکشنری کامل شخصیت.
   - 🎯 NEW: `get_ai_system_prompt()` — تابع دسترسی.
   - 🎯 NEW: `AI_MODE_PROMPTS` — پرامپت‌های تخصصی برای هر mode.
   - ✅ حفظ همهٔ FIXهای نسخهٔ ۸.۱.
-
-نسخهٔ ۸ (قبلی):
-  - 🎯 افزودن top-level برای پارامترهایی که قبلاً فقط در PLUGINS_CONFIG
-    یا MAIN_CONFIG بودند.
-  - 🎯 افزودن `get_active_platforms()` با پشتیبانی کامل از instagram.
-  - 🎯 افزودن `PLATFORMS_ORDER` و `ALL_PLATFORMS`.
-  - ✅ حفظ همهٔ FIXهای نسخهٔ ۷.
-
-نسخهٔ ۸.۱ (fixes):
-  - 🐛 `_warn` حالا در صورت خطای print، به os.write fallback می‌کند.
-  - 🐛 `log_config_summary` خطاها را لاگ می‌کند (نه silent pass).
-  - 🎯 `__all__` برای public API اضافه شد (رفع هشدار Health Check).
 """
 from __future__ import annotations
 
@@ -98,7 +92,7 @@ def _env_list(
 PLATFORMS_ORDER: tuple[str, ...] = (
     "eitaa", "bale", "rubika", "telegram",
     "whatsapp", "web", "linkedin", "instagram",
-    "youtube",
+    "youtube", "facebook",
 )
 """ترتیب canonical پلتفرم‌ها — برای نمایش/گزارش/مرتب‌سازی."""
 
@@ -734,7 +728,36 @@ def _build_plugins_config() -> dict[str, Any]:
                 min_val=0.5, max_val=30.0,
             ),
         },
-        
+
+        # ═══════════════════════════════════════
+        # 🆕 فیسبوک (Facebook)
+        # ═══════════════════════════════════════
+        "facebookcollector": {
+            "session_path": os.path.join(SESSIONS_DIR, "facebook"),
+            "media_dir": os.path.join(MEDIA_DIR, "facebook"),
+            "enabled": _env_bool("FACEBOOK_ENABLED", False),
+            "headless": _env_bool("BROWSER_HEADLESS", True),
+            "poll_seconds": _env_int(
+                "FACEBOOK_POLL_SECONDS", 1800,
+                min_val=60, max_val=86400,
+            ),
+            "max_posts": _env_int(
+                "FACEBOOK_MAX_POSTS", 30, min_val=1, max_val=200
+            ),
+            "read_feed": _env_bool("FACEBOOK_READ_FEED", True),
+            "read_groups": _env_bool("FACEBOOK_READ_GROUPS", True),
+            "max_groups": _env_int(
+                "FACEBOOK_MAX_GROUPS", 20, min_val=1, max_val=100
+            ),
+            "scroll_rounds": _env_int(
+                "FACEBOOK_SCROLL_ROUNDS", 4, min_val=1, max_val=30
+            ),
+            "delay_between": _env_float(
+                "FACEBOOK_DELAY_BETWEEN", 3.0,
+                min_val=0.5, max_val=30.0,
+            ),
+        },
+
         # وب
         "webcollector": {
             "sources_file": str(data_paths.WEB_SOURCES),
@@ -1034,6 +1057,10 @@ def get_instagram_config() -> dict[str, Any]:
 
 def get_youtube_config() -> dict[str, Any]:
     return PLUGINS_CONFIG.get("youtubecollector", {})
+
+# 🆕 فیسبوک
+def get_facebook_config() -> dict[str, Any]:
+    return PLUGINS_CONFIG.get("facebookcollector", {})
     
 def get_web_config() -> dict[str, Any]:
     return PLUGINS_CONFIG.get("webcollector", {})
@@ -1049,6 +1076,7 @@ _PLATFORM_KEY_MAP: tuple[tuple[str, str], ...] = (
     ("linkedin", "linkedincollector"),
     ("instagram", "instagramcollector"),
     ("youtube", "youtubecollector"),
+    ("facebook", "facebookcollector"),   # 🆕
 )
 
 
@@ -1157,6 +1185,17 @@ def log_config_summary() -> None:
             f"name={AI_PERSONA['name']} | "
             f"expertise={len(AI_PERSONA['expertise'])} حوزه"
         )
+
+        # 🆕 فیسبوک
+        fb_cfg = PLUGINS_CONFIG.get("facebookcollector", {})
+        if fb_cfg:
+            log_info(
+                f"⚙️ [config] facebook | "
+                f"enabled={fb_cfg.get('enabled')} | "
+                f"read_feed={fb_cfg.get('read_feed')} | "
+                f"read_groups={fb_cfg.get('read_groups')} | "
+                f"poll={fb_cfg.get('poll_seconds')}s"
+            )
 
         log_info(
             f"⚙️ [config] paths | "
@@ -1514,6 +1553,7 @@ __all__ = [
     "get_telegram_config", "get_whatsapp_config",
     "get_linkedin_config", "get_instagram_config", "get_web_config",
     "get_youtube_config",
+    "get_facebook_config",   # 🆕
     "get_active_platforms",
     "log_config_summary", "reload",
 ]

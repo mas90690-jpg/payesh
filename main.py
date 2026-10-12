@@ -147,7 +147,7 @@ from core.kernel.event_bus import EventBus
 from core.kernel.logger import log_error, log_info, log_success, log_warning
 from core.ops.health_check import HealthChecker
 from core.ops.monitor import PerformanceMonitor, SystemMonitor
-
+from core.services.cleanup_service import start_cleanup_service
 
 # ═══════════════════════════════════════════
 # shutdown state
@@ -351,6 +351,7 @@ async def shutdown_cleanup(
     obs_runner=None,
     safe_brain=None,
     handlers: list[Any] | None = None,
+    cleanup_svc=None,
 ) -> None:
     """Cleanup کامل — هر مرحله جدا در try/except."""
     t0 = time.monotonic()
@@ -445,6 +446,17 @@ async def shutdown_cleanup(
                 f"   ⚠️ SafeBrain flush | {type(e).__name__}: {e}"
             )
 
+    # ۵.۵) cleanup service
+    if cleanup_svc:
+        try:
+            await cleanup_svc.shutdown()
+            log_info("   ✔ cleanup_service متوقف شد")
+        except Exception as e:
+            log_warning(
+                f"   ⚠️ cleanup_svc | {type(e).__name__}: {e}"
+            )
+
+
     # ۶) db — فقط یک‌بار، این‌جا
     if db:
         try:
@@ -478,6 +490,7 @@ async def main() -> None:
     perf_monitor: PerformanceMonitor | None = None
     safe_brain = None
     handlers: list[Any] = []
+    cleanup_svc = None
 
     try:
         # ─── ۱) DB ───
@@ -487,6 +500,15 @@ async def main() -> None:
         log_success(
             f"✅ [MAIN:db] آماده | {time.monotonic() - t:.2f}s"
         )
+
+        # ─── ۱.۵) cleanup خودکار ───
+        t = time.monotonic()
+        cleanup_svc = await start_cleanup_service(db)
+        log_success(
+            f"✅ [MAIN:cleanup] سرویس راه افتاد | "
+            f"{time.monotonic() - t:.2f}s"
+        )
+
 
         # ─── ۲) EventBus + PluginLoader ───
         event_bus = EventBus()
@@ -626,7 +648,15 @@ async def main() -> None:
         # ═══════════════════════════════════════
         ev = _get_shutdown_event()
         try:
-            await ev.wait()
+            # 🐛 FIX: polling کوتاه — تا signal روی ویندوز به
+            # handler برسد و loop گیر نکند.
+            while not ev.is_set():
+                try:
+                    await asyncio.wait_for(
+                        ev.wait(), timeout=0.5
+                    )
+                except asyncio.TimeoutError:
+                    continue
         except KeyboardInterrupt:
             _signal_handler()
         except asyncio.CancelledError:
@@ -651,6 +681,7 @@ async def main() -> None:
                 obs_runner=obs_runner,
                 safe_brain=safe_brain,
                 handlers=handlers,
+                cleanup_svc=cleanup_svc,
             )
         except Exception as e:
             log_error(
@@ -736,8 +767,21 @@ def _run() -> None:
     global _kbd_interrupt_count
 
     if sys.platform == "win32":
+        # 🐛 FIX: signal handler واقعی — تا Ctrl+C مستقیم به
+        # asyncio.run نرسد و cleanup فرصت اجرا داشته باشد.
         try:
-            asyncio.run(main())
+            signal.signal(signal.SIGINT, _signal_handler)
+        except Exception as e:
+            log_warning(
+                f"⚠️ [MAIN:signal] signal() | "
+                f"{type(e).__name__}: {e}"
+            )
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        try:
+            loop.run_until_complete(main())
         except KeyboardInterrupt:
             _kbd_interrupt_count += 1
             _signal_handler()
@@ -747,7 +791,27 @@ def _run() -> None:
                 f"❌ [MAIN:win] {type(e).__name__}: {e}"
             )
         finally:
+            try:
+                pending = [
+                    t for t in asyncio.all_tasks(loop)
+                    if not t.done()
+                ]
+                for t in pending:
+                    t.cancel()
+                if pending:
+                    loop.run_until_complete(
+                        asyncio.gather(
+                            *pending, return_exceptions=True
+                        )
+                    )
+            except Exception:
+                pass
+            try:
+                loop.close()
+            except Exception:
+                pass
             _reset_shutdown_event()
+            
     else:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)

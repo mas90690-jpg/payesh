@@ -9,6 +9,13 @@ import sys
 
 os.environ.setdefault("PYTHONUTF8", "1")
 
+# 🐛 FIX: مسیر پروژه در sys.path — تا از هر جا اجرا شود.
+_PROJECT_ROOT = os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))
+)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 from core.kernel.console_compat import patch_console  # noqa: E402
 
 patch_console()
@@ -38,13 +45,22 @@ async def main() -> None:
     loader.set_dependencies(db=db, scorer=None)
 
     from config import BRAIN_CONFIG
+    from config import AI as _AI_CFG  # 🐛 FIX: api_key
     from core.safe_brain import get_safe_brain
 
+    # 🐛 FIX: api_key از config.AI (مثل main.py)
+    _api_key = (
+        (_AI_CFG or {}).get("deepseek_api_key")
+        or os.environ.get("DEEPSEEK_API_KEY", "")
+        or ""
+    )
+
     get_safe_brain(
+        api_key=_api_key,
         full_access=BRAIN_CONFIG.get("full_access", False),
         use_api_memory=BRAIN_CONFIG.get("use_api_memory", False),
         memory_api_url=BRAIN_CONFIG.get("memory_api_url", ""),
-        memory_api_key=BRAIN_CONFIG.get("memory_api_key", ""),  # noqa: SEC-HARDCODED-SECRET
+        memory_api_key=BRAIN_CONFIG.get("memory_api_key", ""),
     )
 
     collectors = loader.discover_collectors()

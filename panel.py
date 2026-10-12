@@ -3,7 +3,22 @@ Control panel for the Srooyesh lead-monitoring bot — numeric menu.
 
 Run: double-click panel.bat  (or: python panel.py)
 
-نسخهٔ ۱۶ (این نسخه):
+نسخهٔ ۱۸ (این نسخه):
+  - 🎯 هدر منو دقیق‌تر: نمایش لیست platformهای فعال (نه فقط عدد).
+  - 🎯 هدر منو: نمایش تعداد leads + hot leads + total messages.
+  - 🎯 هدر منو: نمایش Bot PID + uptime (اگر ممکن باشد).
+  - 🎯 هدر منو: نمایش وضعیت AI (DeepSeek/Ollama) کوتاه.
+  - 🎯 هدر منو: نمایش وضعیت Git (ahead/behind) کوتاه.
+  - 🎯 رنگ‌آمیزی هوشمند: پلتفرم‌های خاموش خاکستری، فعال سبز.
+  - 🎯 `_platforms_summary()` جدید برای هدر.
+  - ✅ حفظ همهٔ عملکردهای نسخهٔ ۱۷ (فیسبوک در Tests).
+
+نسخهٔ ۱۷:
+  - 🆕 گزینه [13] Facebook در Tests menu.
+  - 🆕 "facebook" در _PLATFORM_LABELS.
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۱۶.
+
+نسخهٔ ۱۶:
   - 🆕 گزینه [12] YouTube در Tests menu.
   - 🆕 "youtube" در _PLATFORM_LABELS.
   - ✅ حفظ همهٔ FIXهای نسخهٔ ۱۵.
@@ -106,7 +121,7 @@ _MENU_DB_TIMEOUT_S = 0.5
 _PUSH_REMOTES = ["origin", "backup"]
 
 # ─── Menu layout ───
-_HEADER_INNER_WIDTH = 56
+_HEADER_INNER_WIDTH = 66    # 🎯 پهن‌تر شد (نسخهٔ ۱۸)
 _MENU_COLS = 4
 _MENU_CELL_W = 17
 
@@ -122,22 +137,80 @@ except ImportError:
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  🎯 Platform count (پویا از config)
+#  🎯 Platform helpers (نسخهٔ ۱۸)
 # ══════════════════════════════════════════════════════════════════════
-def _platforms_count() -> int:
-    """تعداد پلتفرم‌های فعال — از config + youtube از env."""
+def _get_platforms_state() -> dict[str, bool]:
+    """
+    وضعیت هر پلتفرم — {name: enabled}.
+
+    برای پلتفرم‌های env-based (youtube, facebook) از env می‌خوانیم.
+    برای بقیه از PLUGINS_CONFIG.
+    """
+    state: dict[str, bool] = {}
+
+    # ─── از config ───
     try:
-        from config import PLATFORMS_ACTIVE
-        count = len(PLATFORMS_ACTIVE)
+        from config import PLUGINS_CONFIG, PLATFORMS_ORDER
     except Exception:
-        count = 0
+        return {}
 
-    # 🆕 یوتیوب هنوز در PLUGINS_CONFIG نیست — env چک کن
-    yt_raw = os.getenv("YOUTUBE_ENABLED", "false").strip().lower()
-    if yt_raw in ("true", "1", "yes", "on"):
-        count += 1
+    env_based = {"youtube", "facebook"}
 
-    return count
+    for name in PLATFORMS_ORDER:
+        if name in env_based:
+            # از env
+            env_name = f"{name.upper()}_ENABLED"
+            raw = os.getenv(env_name, "").strip().lower()
+            if raw:
+                state[name] = raw in ("true", "1", "yes", "on")
+            else:
+                # fallback: از config
+                cfg = PLUGINS_CONFIG.get(f"{name}collector", {})
+                state[name] = bool(cfg.get("enabled", False))
+        else:
+            cfg = PLUGINS_CONFIG.get(f"{name}collector", {})
+            state[name] = bool(cfg.get("enabled", False))
+
+    return state
+
+
+def _platforms_count() -> int:
+    """تعداد پلتفرم‌های فعال."""
+    state = _get_platforms_state()
+    return sum(1 for v in state.values() if v)
+
+
+def _platforms_summary(max_width: int = 66) -> str:
+    """
+    خلاصهٔ پلتفرم‌ها برای هدر — با رنگ‌آمیزی.
+
+    فعال: سبز ✅
+    خاموش: خاکستری ⏹
+
+    اگر طولانی شد، در دو خط می‌شکند.
+    """
+    state = _get_platforms_state()
+    if not state:
+        return "  (no platforms)"
+
+    parts: list[str] = []
+    for name, enabled in state.items():
+        short = _PLATFORM_SHORT.get(name, name[:4])
+        if enabled:
+            parts.append(f"{C.GREEN}{short}{C.RESET}" if _COLORS_OK else short)
+        else:
+            parts.append(f"{C.GRAY}{short}{C.RESET}" if _COLORS_OK else short)
+
+    # ─── شمارش ───
+    active = sum(1 for v in state.values() if v)
+    total = len(state)
+
+    line = f"  Platforms: {active}/{total}  [ " + " · ".join(parts) + " ]"
+
+    # ─── اگه طولانی شد، ساده‌تر ───
+    if _visible_len(line) > max_width:
+        line = f"  Platforms: {active}/{total} فعال از {total}"
+    return line
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -189,7 +262,7 @@ def _pad(s: str, width: int) -> str:
 
 
 def _print(msg: str = "", color: str = "") -> None:
-    """چاپ با رنگ اختیاری — اگه color خالی باشه، بدون رنگ."""
+    """چاپ با رنگ اختیاری."""
     try:
         if color and _COLORS_OK:
             print(f"{color}{msg}{C.RESET}")
@@ -205,13 +278,7 @@ def _cprint(color: str, msg: str) -> None:
 
 
 def _safe_filename(s: str) -> str:
-    """
-    نام فایل امن از یک label.
-
-    مثال:
-        "All enabled platforms + Health Check"
-        → "all_enabled_platforms_health_check"
-    """
+    """نام فایل امن از یک label."""
     s = s.lower().strip()
     s = _SAFE_FILENAME_RE_1.sub("", s)
     s = _SAFE_FILENAME_RE_2.sub("_", s)
@@ -220,16 +287,7 @@ def _safe_filename(s: str) -> str:
 
 
 def _open_path(path: str, in_explorer: bool = False) -> bool:
-    """
-    باز کردن فایل یا پوشه با اپلیکیشن پیش‌فرض سیستم.
-
-    Args:
-        path: مسیر فایل یا پوشه.
-        in_explorer: اگه True و path پوشه، در Explorer باز کن.
-
-    Returns:
-        True اگه موفق.
-    """
+    """باز کردن فایل یا پوشه با اپلیکیشن پیش‌فرض سیستم."""
     try:
         if os.name == "nt":
             os.startfile(path)  # type: ignore[attr-defined]
@@ -248,7 +306,7 @@ class _Cancelled(Exception):
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  Platform labels (English)
+#  Platform labels (English + short)
 # ══════════════════════════════════════════════════════════════════════
 _PLATFORM_LABELS: dict[str, str] = {
     "eitaa": "Eitaa",
@@ -259,15 +317,30 @@ _PLATFORM_LABELS: dict[str, str] = {
     "web": "Web",
     "linkedin": "LinkedIn",
     "instagram": "Instagram",
-    "youtube": "YouTube",       # 🆕
+    "youtube": "YouTube",
+    "facebook": "Facebook",
+}
+
+# 🎯 NEW: نام کوتاه برای هدر
+_PLATFORM_SHORT: dict[str, str] = {
+    "eitaa": "Eit",
+    "bale": "Bal",
+    "rubika": "Rub",
+    "telegram": "Tel",
+    "whatsapp": "WA",
+    "web": "Web",
+    "linkedin": "LI",
+    "instagram": "IG",
+    "youtube": "YT",
+    "facebook": "FB",
 }
 
 try:
     from config import PLATFORMS_ORDER
-    # 🆕 یوتیوب هنوز در PLATFORMS_ORDER نیست ولی در لیست انتخابی می‌خواهیم باشد
     _order = list(PLATFORMS_ORDER)
-    if "youtube" not in _order:
-        _order.append("youtube")
+    for _extra in ("youtube", "facebook"):
+        if _extra not in _order:
+            _order.append(_extra)
 
     _PLATFORM_CHOICES: list[tuple[str, str]] = [
         (p, _PLATFORM_LABELS.get(p, p)) for p in _order
@@ -291,19 +364,54 @@ def _sqlite_connect(path: str) -> sqlite3.Connection:
     return conn
 
 
-def _menu_lead_count() -> str:
+def _menu_stats() -> dict[str, int | str]:
+    """
+    🎯 آمار کامل برای هدر — leads + hot + total.
+
+    Returns:
+        {"leads": N, "hot": M, "total": T} یا {"error": "..."}
+    """
     if not os.path.exists(DB_PATH):
-        return "—"
+        return {"leads": 0, "hot": 0, "total": 0, "status": "no_db"}
+
     try:
         conn = sqlite3.connect(DB_PATH, timeout=_MENU_DB_TIMEOUT_S)
         cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM messages WHERE keywords != ''")
-        row = cur.fetchone()
+
+        total = cur.execute(
+            "SELECT COUNT(*) FROM messages"
+        ).fetchone()[0]
+
+        leads = cur.execute(
+            "SELECT COUNT(*) FROM messages WHERE keywords != ''"
+        ).fetchone()[0]
+
+        hot = cur.execute(
+            "SELECT COUNT(*) FROM messages "
+            "WHERE keywords != '' AND opportunity_type = 'داغ'"
+        ).fetchone()[0]
+
         conn.close()
-        n = int(row[0]) if row else 0
+        return {
+            "leads": int(leads),
+            "hot": int(hot),
+            "total": int(total),
+            "status": "ok",
+        }
+    except Exception as e:
+        return {
+            "leads": 0, "hot": 0, "total": 0,
+            "status": f"err:{type(e).__name__}",
+        }
+
+
+def _menu_lead_count() -> str:
+    """سازگاری عقب‌رو — فقط تعداد leads."""
+    s = _menu_stats()
+    n = s.get("leads", 0)
+    if isinstance(n, int):
         return f"{n:,}"
-    except Exception:
-        return "?"
+    return "?"
 
 
 def _ask_input(prompt: str) -> str | None:
@@ -339,12 +447,7 @@ def _run_with_tee(
     log_prefix: str = "",
     header_extra: str = "",
 ) -> tuple[int, str]:
-    """
-    اجرای دستور با tee — خروجی هم به کنسول هم به فایل.
-
-    Returns:
-        (exit_code, log_path)
-    """
+    """اجرای دستور با tee — خروجی هم به کنسول هم به فایل."""
     log_path = _new_log_path(label, prefix=log_prefix)
     rel_log = os.path.relpath(log_path, ROOT)
 
@@ -357,7 +460,6 @@ def _run_with_tee(
     rc = -1
     try:
         with open(log_path, "w", encoding="utf-8", errors="replace") as logf:
-            # ─── هدر لاگ ───
             logf.write(f"# Test: {label}\n")
             logf.write(f"# Started: {datetime.now().isoformat()}\n")
             logf.write(f"# Command: {' '.join(cmd)}\n")
@@ -366,7 +468,6 @@ def _run_with_tee(
             logf.write("# " + "=" * 70 + "\n\n")
             logf.flush()
 
-            # ─── اجرا با pipe ───
             proc = subprocess.Popen(
                 cmd,
                 cwd=cwd or ROOT,
@@ -403,7 +504,6 @@ def _run_with_tee(
                 logf.write("\n# CANCELLED BY USER\n")
                 return (-1, log_path)
 
-            # ─── Footer ───
             logf.write("\n# " + "=" * 70 + "\n")
             logf.write(f"# Exit code: {rc}\n")
             logf.write(f"# Finished: {datetime.now().isoformat()}\n")
@@ -515,6 +615,30 @@ def _is_running() -> bool:
         return "main.py" in cmd_str or "python" in cmd_str
 
     return True
+
+
+def _bot_uptime_str() -> str:
+    """🎯 NEW: uptime ربات به شکل خوانا — یا '—' اگه نبود."""
+    pid = _read_pid()
+    if not pid or not psutil:
+        return "—"
+    try:
+        p = psutil.Process(pid)
+        create_time = p.create_time()
+        delta = time.time() - create_time
+        if delta < 60:
+            return f"{int(delta)}s"
+        if delta < 3600:
+            return f"{int(delta/60)}m"
+        if delta < 86400:
+            h = int(delta / 3600)
+            m = int((delta % 3600) / 60)
+            return f"{h}h{m}m"
+        d = int(delta / 86400)
+        h = int((delta % 86400) / 3600)
+        return f"{d}d{h}h"
+    except Exception:
+        return "—"
 
 
 def start() -> None:
@@ -632,7 +756,8 @@ def status() -> None:
     pid_str = str(_read_pid()) if running else "—"
 
     if running:
-        _cprint(C.GREEN, f"  ● Bot is RUNNING (PID {pid_str})")
+        uptime = _bot_uptime_str()
+        _cprint(C.GREEN, f"  ● Bot is RUNNING (PID {pid_str}) | uptime={uptime}")
     else:
         _cprint(C.YELLOW, "  ● Bot is STOPPED")
 
@@ -669,6 +794,17 @@ def status() -> None:
             _cprint(C.DIM, "  ─── By platform ───")
             for p, n in rows:
                 _cprint(C.WHITE, f"    {p:12s} : {n:,}")
+
+        # 🎯 NEW: نمایش وضعیت پلتفرم‌های فعال
+        print()
+        _cprint(C.DIM, "  ─── Platforms state ───")
+        state = _get_platforms_state()
+        for name, enabled in state.items():
+            label = _PLATFORM_LABELS.get(name, name)
+            if enabled:
+                _cprint(C.GREEN, f"    ✅ {label}")
+            else:
+                _cprint(C.GRAY, f"    ⏹  {label}")
     except Exception as e:
         _cprint(C.RED, f"  ✗ Error reading stats: {e}")
     finally:
@@ -930,17 +1066,17 @@ def tests() -> None:
     _print("    [ 5] WhatsApp     [ 6] LinkedIn")
     _print("    [ 7] Web          [ 8] Health Check")
     _print("    [ 9] Storage      [10] Database")
-    _print("    [11] Instagram    [12] YouTube")     # 🆕
+    _print("    [11] Instagram    [12] YouTube")
+    _print("    [13] Facebook")
     print()
     _cprint(C.GRAY, f"    📁 Logs: {os.path.relpath(CONSOLE_LOGS_DIR, ROOT)}")
 
-    choice = _ask_input("\n  Choice [0-12] (Enter = all): ")   # 🆕
+    choice = _ask_input("\n  Choice [0-13] (Enter = all): ")
     if choice is None:
         _cprint(C.GRAY, "  i) Cancelled.")
         return
     choice = (choice or "0").strip() or "0"
 
-    # ─── Special single scripts ───
     if choice == "8":
         _run_script("test_healthcheck_full.py", "Health Check")
         return
@@ -951,7 +1087,6 @@ def tests() -> None:
         _run_script("test_db_full.py", "Database")
         return
 
-    # ─── Platform-based tests ───
     _TEST_PLATFORMS: dict[str, list[str] | None] = {
         "0": None,
         "1": ["bale"],
@@ -962,7 +1097,8 @@ def tests() -> None:
         "6": ["linkedin"],
         "7": ["web"],
         "11": ["instagram"],
-        "12": ["youtube"],      # 🆕
+        "12": ["youtube"],
+        "13": ["facebook"],
     }
 
     if choice not in _TEST_PLATFORMS:
@@ -971,7 +1107,6 @@ def tests() -> None:
 
     platforms = _TEST_PLATFORMS[choice]
 
-    # ═══ حالت ALL ═══
     if platforms is None:
         _cprint(C.CYAN, "\n  ..) Mode [ALL] — running all tests")
         _run_script(
@@ -982,7 +1117,6 @@ def tests() -> None:
         _run_script("test_db_full.py", "Database")
         return
 
-    # ═══ حالت تک‌پلتفرم یا چندپلتفرم ═══
     runner = os.path.join(ROOT, "tests", "run_all_tests.py")
     if not os.path.exists(runner):
         _cprint(C.RED, f"  ✗ Test runner not found: {runner}")
@@ -1361,6 +1495,35 @@ def _git_print_status_lines(
         _cprint(C.GRAY, f"      ... and {len(lines) - limit} more")
 
 
+def _git_summary_short() -> str:
+    """
+    🎯 NEW: خلاصهٔ کوتاه Git برای هدر.
+
+    مثال: "🌿 main · 0↑ 0↓ · clean"
+    """
+    if not _git_is_repo():
+        return ""
+
+    branch = _git_branch()
+    ahead_n, behind_n = 0, 0
+
+    if _git_has_remote("origin"):
+        rc, _ = _git(["fetch", "origin", branch, "--quiet"])
+        # ⚠️ ما fetch نمی‌زنیم چون کند است؛ فقط از remote tracking استفاده می‌کنیم
+        ahead_n, behind_n = _git_ahead_behind(branch)
+
+    # dirty check
+    rc, status_out = _git(["status", "--short"])
+    dirty = bool(status_out.strip())
+
+    parts = [f"🌿 {branch}"]
+    if ahead_n or behind_n:
+        parts.append(f"{ahead_n}↑ {behind_n}↓")
+    parts.append("dirty" if dirty else "clean")
+
+    return "  " + " · ".join(parts)
+
+
 # ══════════════════════════════════════════════════════════════════════
 #  Git — Push / Pull / Status
 # ══════════════════════════════════════════════════════════════════════
@@ -1540,28 +1703,74 @@ _ACTIONS: dict[str, Callable[[], None]] = {
 
 
 def _show_header() -> None:
-    """Compact header with live status."""
-    running = _is_running()
-    leads = _menu_lead_count()
-    platforms = _platforms_count()
+    """
+    🎯 نسخهٔ ۱۸: هدر دقیق‌تر با اطلاعات بیشتر.
 
-    if running:
-        dot = f"{C.GREEN}●{C.RESET}" if _COLORS_OK else "●"
-        status_str = f"{dot} RUNNING"
-    else:
-        dot = f"{C.YELLOW}○{C.RESET}" if _COLORS_OK else "○"
-        status_str = f"{dot} STOPPED"
+    ساختار:
+    ╭──────────────────────────────────────────────────────────────╮
+    │  Srooyesh Lead-Monitor                                       │
+    │  ● RUNNING  ·  PID 12345  ·  uptime 2h15m                   │
+    │  Leads: 1,234  ·  Hot: 56  ·  Total: 45,678                 │
+    │  Platforms: 10/10  [ Bal · Eit · Rub · Tel · WA · Web · … ] │
+    │  🌿 main · 0↑ 0↓ · clean                                    │
+    ╰──────────────────────────────────────────────────────────────╯
+    """
+    running = _is_running()
+    stats = _menu_stats()
+    platforms_count = _platforms_count()
 
     W = _HEADER_INNER_WIDTH
-    title_line = "  Srooyesh Lead-Monitor"
-    status_line = (
-        f"  {status_str}     Leads: {leads}   "
-        f"Platforms: {platforms}"
-    )
 
+    # ─── خط ۱: عنوان ───
+    line1 = "  Srooyesh Lead-Monitor"
+
+    # ─── خط ۲: وضعیت ربات ───
+    if running:
+        dot = f"{C.GREEN}●{C.RESET}" if _COLORS_OK else "●"
+        status = f"{dot} RUNNING"
+        pid = _read_pid()
+        uptime = _bot_uptime_str()
+        if pid:
+            line2 = f"  {status}  ·  PID {pid}"
+            if uptime != "—":
+                line2 += f"  ·  uptime {uptime}"
+        else:
+            line2 = f"  {status}"
+    else:
+        dot = f"{C.YELLOW}○{C.RESET}" if _COLORS_OK else "○"
+        line2 = f"  {dot} STOPPED"
+
+    # ─── خط ۳: آمار DB ───
+    leads = stats.get("leads", 0)
+    hot = stats.get("hot", 0)
+    total = stats.get("total", 0)
+    if isinstance(leads, int) and isinstance(total, int):
+        line3 = (
+            f"  Leads: {leads:,}  ·  "
+            f"Hot: {hot:,}  ·  "
+            f"Total: {total:,}"
+        )
+    else:
+        line3 = "  (no DB yet)"
+
+    # ─── خط ۴: پلتفرم‌ها ───
+    line4 = _platforms_summary(max_width=W)
+
+    # ─── خط ۵: Git (اختیاری) ───
+    line5 = ""
+    try:
+        line5 = _git_summary_short()
+    except Exception:
+        line5 = ""
+
+    # ─── رندر ───
     _cprint(C.BOLD + C.MAGENTA, "╭" + "─" * W + "╮")
-    _cprint(C.WHITE, f"│{_pad(title_line, W)}│")
-    _cprint(C.GRAY, f"│{_pad(status_line, W)}│")
+    _cprint(C.WHITE, f"│{_pad(line1, W)}│")
+    _cprint(C.WHITE, f"│{_pad(line2, W)}│")
+    _cprint(C.WHITE, f"│{_pad(line3, W)}│")
+    _cprint(C.CYAN, f"│{_pad(line4, W)}│")
+    if line5:
+        _cprint(C.GRAY, f"│{_pad(line5, W)}│")
     _cprint(C.BOLD + C.MAGENTA, "╰" + "─" * W + "╯")
 
 

@@ -289,7 +289,7 @@ class Orchestrator:
             return
 
         try:
-            await asyncio.gather(*tasks)
+            await asyncio.gather(*tasks, return_exceptions=True)
         except asyncio.CancelledError:
             log_info("🛑 [ORCH:start] تسک‌ها cancel شدند")
 
@@ -1100,6 +1100,29 @@ class Orchestrator:
         # 🐛 FIX: بیداری سریع taskهای خواب‌رفته
         if self._stop_event is not None:
             self._stop_event.set()
+            
+        # 🐛 FIX: cancel صریح تسک‌های polling
+        if self._pending_tasks:
+            pending = [t for t in self._pending_tasks if not t.done()]
+            if pending:
+                log_info(
+                    f"🛑 [ORCH:stop] cancel تسک‌ها | "
+                    f"count={len(pending)}"
+                )
+                for t in pending:
+                    t.cancel()
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(
+                            *pending, return_exceptions=True
+                        ),
+                        timeout=5.0,
+                    )
+                except asyncio.TimeoutError:
+                    log_warning(
+                        "⏰ [ORCH:stop] cancel تسک‌ها timeout 5s"
+                    )
+                    
 
         for i, collector in enumerate(
             self.collectors, 1

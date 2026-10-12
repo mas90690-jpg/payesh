@@ -10,11 +10,10 @@ login.py — اسکریپت ورود تعاملی (یک‌بار اجرا برا
 اجرا:
     python login.py
 
-نسخهٔ ۸ (این نسخه):
-  - 🆕 گزینه [8] یوتیوب (YouTube) — کاربر عادی روی youtube.com
+نسخهٔ ۹ (این نسخه):
+  - 🆕 گزینه [9] فیسبوک (Facebook) — کاربر عادی روی facebook.com
   - 🎯 همهٔ تابع‌ها با الگوی یکسان (check ربات → launch → goto → منتظر)
-  - 🎯 stealth در یوتیوب (webdriver + plugins + languages)
-  - ✅ حفظ همهٔ FIXهای نسخهٔ ۷ (چک ربات، منو پشت‌سرهم، ...)
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۸ (یوتیوب، تلگرام، ...)
 """
 from __future__ import annotations
 
@@ -691,6 +690,189 @@ async def login_youtube() -> bool:
         print(f"[X] خطا در اتصال CDP: {type(e).__name__}: {e}")
         return False
 
+
+# ═══════════════════════════════════════════
+# فیسبوک (Playwright / web)
+# ═══════════════════════════════════════════
+async def login_facebook() -> bool:
+    """
+    ورود تعاملی به فیسبوک با اتصال به Chrome واقعی از طریق CDP.
+
+    چرا CDP؟ چون فیسبوک به headless حساس است و با CDP
+    مرورگر یک Chrome واقعی به نظر می‌رسد — خطر checkpoint کمتر.
+    """
+    print("[..] فیسبوک: باز کردن Chrome واقعی...")
+    print("     ⚠️ برای فیسبوک VPN لازم است")
+    print()
+
+    if not _warn_bot_running("فیسبوک"):
+        log_warning(f"⚠️ {_LOGIN_PREFIX}:facebook] لغو شد")
+        return False
+
+    import subprocess
+    from config import CHROME_PATH
+
+    user_data_dir = str(
+        data_paths.SESSIONS_DIR / "facebook"
+    )
+    os.makedirs(user_data_dir, exist_ok=True)
+
+    # ─── پیدا کردن Chrome ───
+    chrome_exe = None
+    if CHROME_PATH and os.path.exists(CHROME_PATH):
+        chrome_exe = CHROME_PATH
+    else:
+        candidates = [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            os.path.expandvars(
+                r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"
+            ),
+        ]
+        for p in candidates:
+            if os.path.exists(p):
+                chrome_exe = p
+                break
+
+    if not chrome_exe:
+        print("[X] Chrome پیدا نشد. لطفاً Google Chrome نصب کن.")
+        return False
+
+    # ─── پاک کردن lockهای قبلی ───
+    for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+        p = os.path.join(user_data_dir, name)
+        try:
+            if os.path.exists(p):
+                os.remove(p)
+        except Exception:
+            pass
+
+    # ═══════════════════════════════════════════════════
+    # گام ۱: اجرای Chrome واقعی با پورت دیباگ
+    # ═══════════════════════════════════════════════════
+    CDP_PORT = 9223
+    cmd = [
+        chrome_exe,
+        f"--remote-debugging-port={CDP_PORT}",
+        f"--user-data-dir={user_data_dir}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-blink-features=AutomationControlled",
+        "https://www.facebook.com/",
+    ]
+
+    print(f"[..] اجرای Chrome واقعی با پورت {CDP_PORT}...")
+    try:
+        proc = subprocess.Popen(cmd)
+    except Exception as e:
+        print(f"[X] خطا در اجرای Chrome: {e}")
+        return False
+
+    print()
+    print("═" * 60)
+    print("📱 در مرورگر Chrome که باز شد:")
+    print("   ۱) ایمیل/شماره و رمز فیسبوک را وارد کن")
+    print("   ۲) اگر 2FA داری، کد را وارد کن")
+    print("   ۳) اگر checkpoint آمد، آن را رد کن")
+    print("   ۴) بعد از دیدن فید، این پنجره را ببند")
+    print("═" * 60)
+    print()
+    print("⏳ منتظر می‌مانم تا Chrome را ببندی...")
+    print()
+
+    # ═══════════════════════════════════════════════════
+    # گام ۲: اتصال Playwright به Chrome از طریق CDP
+    # ═══════════════════════════════════════════════════
+    try:
+        from playwright.async_api import async_playwright
+
+        pw = await async_playwright().start()
+        browser = await pw.chromium.connect_over_cdp(
+            f"http://localhost:{CDP_PORT}"
+        )
+
+        if not browser.contexts:
+            print("[X] هیچ context ای در Chrome پیدا نشد")
+            await pw.stop()
+            return False
+
+        context = browser.contexts[0]
+        page = context.pages[0] if context.pages else await context.new_page()
+
+        # ─── تزریق stealth ───
+        try:
+            await context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+            """)
+        except Exception:
+            pass
+
+        # ─── goto فیسبوک (اگر قبلاً باز نبود) ───
+        try:
+            if "facebook.com" not in (page.url or ""):
+                await page.goto(
+                    "https://www.facebook.com/",
+                    wait_until="domcontentloaded",
+                    timeout=60000,
+                )
+        except Exception as e:
+            log_warning(f"goto: {e}")
+
+        await asyncio.sleep(2)
+
+        # ─── چک لاگین ───
+        is_logged = False
+        try:
+            markers = [
+                'div[role="navigation"][aria-label*="Facebook"]',
+                'div[aria-label="Facebook"][role="banner"]',
+                '[data-pagelet="LeftNav"]',
+                'div[role="feed"]',
+                'a[href*="/friends/"]',
+                'a[href*="/groups/"]',
+            ]
+            for sel in markers:
+                el = await page.query_selector(sel)
+                if el:
+                    is_logged = True
+                    break
+        except Exception as e:
+            log_warning(f"is_logged: {e}")
+
+        # ─── ذخیرهٔ storage_state ───
+        try:
+            state_path = os.path.join(
+                data_paths.SESSIONS_DIR, "facebook_state.json"
+            )
+            await context.storage_state(path=state_path)
+            log_info(f"   ✔ state ذخیره شد | {state_path}")
+        except Exception as e:
+            log_warning(f"   ⚠️ storage_state | {e}")
+
+        await pw.stop()
+
+        if is_logged:
+            print()
+            print("[OK] نشست فیسبوک ذخیره شد ✅")
+            print(f"     مسیر پروفایل: {user_data_dir}")
+            print()
+            print("⚠️  نکته مهم:")
+            print("    برای اجرای بعدی، این پروفایل آماده است.")
+            print("    اگر فیسبوک checkpoint داد، دوباره این را اجرا کن.")
+            return True
+        else:
+            print()
+            print("[X] ورود تشخیص داده نشد.")
+            print("    ممکنه لاگین کامل نشده باشه یا checkpoint خورده.")
+            return False
+
+    except Exception as e:
+        print(f"[X] خطا در اتصال CDP: {type(e).__name__}: {e}")
+        return False
+
+
 # ═══════════════════════════════════════════
 # ورود مرورگری مشترک
 # ═══════════════════════════════════════════
@@ -910,8 +1092,9 @@ _MENU = """
 ║  [6] لینکدین (LinkedIn - مرورگر)                         ║
 ║  [7] اینستاگرام (Instagram - مرورگر)                     ║
 ║  [8] یوتیوب (YouTube - مرورگر)                           ║
-║  [9] ورود همه (به ترتیب)                                 ║
-║  [0] خروج                                                ║
+║  [9] فیسبوک (Facebook - مرورگر)                          ║
+║  [0] ورود همه (به ترتیب)                                 ║
+║  [q] خروج                                                ║
 ╚══════════════════════════════════════════════════════════╝
 """
 
@@ -925,6 +1108,7 @@ _ACTIONS: dict[str, tuple[str, Callable[[], Awaitable[bool]]]] = {
     "6": ("linkedin", login_linkedin),
     "7": ("instagram", login_instagram),
     "8": ("youtube", login_youtube),
+    "9": ("facebook", login_facebook),
 }
 
 _BY_NAME: dict[str, Callable[[], Awaitable[bool]]] = {
@@ -934,6 +1118,7 @@ _BY_NAME: dict[str, Callable[[], Awaitable[bool]]] = {
 _LOGIN_ALL_ORDER = [
     "rubika", "bale", "eitaa", "telegram",
     "whatsapp", "linkedin", "instagram", "youtube",
+    "facebook",
 ]
 
 
@@ -1008,16 +1193,15 @@ async def main() -> None:
             log_warning(f"⚠️ {_LOGIN_PREFIX}:main] لغو در منو")
             return
 
-        choice = choice.strip()
+        choice = choice.strip().lower()
 
-        if choice == "0" or choice == "":
+        if choice in ("0", "", "q", "quit", "exit"):
+            if choice == "0":
+                log_info(f"🎯 {_LOGIN_PREFIX}:main] ورود همه")
+                await _login_all()
+                continue
             log_info(f"ℹ️ {_LOGIN_PREFIX}:main] خروج")
             return
-
-        if choice == "9":
-            log_info(f"🎯 {_LOGIN_PREFIX}:main] ورود همه")
-            await _login_all()
-            continue
 
         action = _ACTIONS.get(choice)
         if not action:
