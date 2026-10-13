@@ -72,7 +72,7 @@ _PROFILE_LOCK_FILES = [
 class YouTubeCollector(BaseCollector):
     def __init__(
         self,
-        headless: bool = True,
+        headless: bool = False,
         poll_seconds: int = 1800,
         max_videos: int = 20,
         scroll_rounds: int = 3,
@@ -215,7 +215,18 @@ class YouTubeCollector(BaseCollector):
                     timeout=60000,
                 )
 
+                await asyncio.sleep(3)
+                print("=" * 60)
+                print("URL:", self._page.url)
+                print("TITLE:", await self._page.title())
+                await self._page.screenshot(
+                    path="youtube_debug.png", full_page=True
+                )
+                print("Screenshot saved: youtube_debug.png")
+                print("=" * 60)
+
                 for i in range(20):
+
                     await asyncio.sleep(2)
                     if await self._is_logged_in():
                         self._connected = True
@@ -241,24 +252,51 @@ class YouTubeCollector(BaseCollector):
                 return False
 
     async def _apply_stealth(self):
-        """حذف نشانه‌های webdriver."""
+        """حذف نشانه‌های webdriver — نسخه قوی."""
         try:
             await self._context.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', {
                     get: () => undefined
                 });
                 Object.defineProperty(navigator, 'plugins', {
-                    get: () => [1, 2, 3, 4, 5]
+                    get: () => [
+                        {name: 'Chrome PDF Plugin'},
+                        {name: 'Chrome PDF Viewer'},
+                        {name: 'Native Client'}
+                    ]
                 });
                 Object.defineProperty(navigator, 'languages', {
-                    get: () => ['en-US', 'en', 'fa']
+                    get: () => ['en-US', 'en']
                 });
-                window.chrome = { runtime: {} };
+                window.chrome = {
+                    runtime: {},
+                    loadTimes: function() {},
+                    csi: function() {},
+                    app: {}
+                };
+                const originalQuery = window.navigator.permissions.query;
+                window.navigator.permissions.query = (params) => (
+                    params.name === 'notifications'
+                        ? Promise.resolve({state: Notification.permission})
+                        : originalQuery(params)
+                );
+                Object.defineProperty(navigator, 'hardwareConcurrency', {
+                    get: () => 8
+                });
+                Object.defineProperty(navigator, 'deviceMemory', {
+                    get: () => 8
+                });
+                const getParameter = WebGLRenderingContext.prototype.getParameter;
+                WebGLRenderingContext.prototype.getParameter = function(p) {
+                    if (p === 37445) return 'Intel Inc.';
+                    if (p === 37446) return 'Intel Iris OpenGL Engine';
+                    return getParameter.call(this, p);
+                };
             """)
-            log_debug("🛡️ [youtube] stealth تزریق شد")
+            log_debug("🛡️ [youtube] stealth قوی تزریق شد")
         except Exception as e:
             log_warning(f"stealth: {e}")
-
+            
     async def _launch_context(self, use_headless: bool):
         from config import CHROME_PATH
 
@@ -274,7 +312,7 @@ class YouTubeCollector(BaseCollector):
         ua = (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/126.0.0.0 Safari/537.36"
+            "Chrome/131.0.0.0 Safari/537.36"
         )
 
         await self._cleanup_profile_locks()

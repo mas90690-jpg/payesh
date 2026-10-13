@@ -676,7 +676,165 @@ class InfoMixin:
                 f"{type(e).__name__}: {e}"
             )
             return f"❌ خطا: {e}"
+    # ═══════════════════════════════════════════
+    # 🆕 خواب مغز
+    # ═══════════════════════════════════════════
+    async def _consolidation_run(self) -> str:
+        """اجرای دستی خواب مغز."""
+        try:
+            from core.brain.consolidation import (
+                run_once,
+                get_stats,
+            )
+            result = await run_once()
+            stats = get_stats()
+            return (
+                f"🌙 خواب مغز اجرا شد:\n"
+                f"  • انتقال‌یافته: {result['moved']} مورد\n"
+                f"  • Working: {result['working_before']} → "
+                f"{result['working_after']}\n"
+                f"  • کل اجراها: {stats['runs']}\n"
+                f"  • کل انتقال: {stats['moved_total']}"
+            )
+        except Exception as e:
+            log_error(
+                f"❌ [BRAIN:consolidation_run] "
+                f"{type(e).__name__}: {e}"
+            )
+            return f"❌ خطا: {e}"
 
+    async def _brain_status(self) -> str:
+        """وضعیت کامل مغز — برای خودآگاهی AI."""
+        try:
+            mem = self.memory
+            stats = mem.get_stats()
+
+            lines = ["🧠 **وضعیت مغز:**", ""]
+
+            # ─── حافظه‌ها ───
+            lines.append("📚 حافظه‌ها:")
+            lines.append(f"  • Working: {stats.get('working', 0)}")
+            lt = stats.get("long_term", {})
+            lines.append(f"  • Knowledge: {lt.get('knowledge', 0)}")
+            lines.append(f"  • Lessons: {lt.get('lessons', 0)}")
+            proc = stats.get("procedural", {})
+            lines.append(f"  • Tasks: {proc.get('tasks', 0)}")
+            sem = stats.get("semantic", {})
+            lines.append(
+                f"  • ChromaDB: {sem.get('count', 0)} "
+                f"(enabled={sem.get('enabled', False)})"
+            )
+            pers = stats.get("persistent", {})
+            lines.append(
+                f"  • Persistent: {pers.get('total', 0)} "
+                f"(enabled={pers.get('enabled', False)})"
+            )
+
+            # ─── ابزارها ───
+            lines.append("")
+            lines.append("🔧 ابزارها:")
+            lines.append(f"  • TOOL_MAP: {len(self.TOOL_MAP)}")
+            lines.append(f"  • ALLOWED: {len(self.ALLOWED_TOOLS)}")
+
+            # ─── Client ───
+            lines.append("")
+            lines.append("🤖 Client:")
+            lines.append(f"  • Model: {self.model}")
+            lines.append(f"  • Ready: {self.client is not None}")
+
+            # ─── Consolidation ───
+            try:
+                from core.brain.consolidation import get_stats
+                cstats = get_stats()
+                lines.append("")
+                lines.append("🌙 خواب مغز:")
+                lines.append(f"  • Runs: {cstats.get('runs', 0)}")
+                lines.append(
+                    f"  • Moved: {cstats.get('moved_total', 0)}"
+                )
+            except Exception:
+                pass
+
+            return "\n".join(lines)
+        except Exception as e:
+            log_error(
+                f"❌ [BRAIN:brain_status] "
+                f"{type(e).__name__}: {e}"
+            )
+            return f"❌ خطا: {e}"
+
+
+    # ═══════════════════════════════════════════
+    # 🆕 Proactive Diagnosis
+    # ═══════════════════════════════════════════
+    async def _proactive_diagnosis(self) -> str:
+        """چک خودکار سلامت سیستم.
+
+        Returns:
+            گزارش خوانا.
+        """
+        issues: list[str] = []
+        oks: list[str] = []
+
+        # ─── چک حافظه ───
+        try:
+            stats = self.memory.get_stats()
+            sem = stats.get("semantic", {})
+            if sem.get("count", 0) < 50:
+                issues.append(
+                    f"⚠️ ChromaDB کم‌حجم: "
+                    f"{sem.get('count', 0)} آیتم"
+                )
+            else:
+                oks.append(
+                    f"✅ ChromaDB: {sem.get('count', 0)}"
+                )
+
+            pers = stats.get("persistent", {})
+            if not pers.get("enabled"):
+                issues.append("⚠️ PersistentMemory غیرفعال")
+            else:
+                oks.append("✅ PersistentMemory فعال")
+        except Exception as e:
+            issues.append(f"❌ حافظه: {e}")
+
+        # ─── چک Client ───
+        if self.client is None:
+            issues.append("❌ AI Client آفلاین")
+        else:
+            oks.append(f"✅ Client: {self.model}")
+
+        # ─── چک پلتفرم‌های فعال ───
+        try:
+            from core.brain.mixin_platforms import (
+                PlatformManager,
+            )
+            pm = await PlatformManager.get()
+            active = await pm.list_active()
+            if active:
+                oks.append(
+                    f"✅ پلتفرم‌های فعال: {', '.join(active)}"
+                )
+            else:
+                oks.append("ℹ️ هیچ پلتفرمی فعال نیست")
+        except Exception:
+            pass
+
+        # ─── جمع‌بندی ───
+        lines = ["🩺 **تشخیص خودکار:**", ""]
+        if oks:
+            lines.append("**سالم:**")
+            lines.extend(f"  {o}" for o in oks)
+        if issues:
+            lines.append("")
+            lines.append("**مشکلات:**")
+            lines.extend(f"  {i}" for i in issues)
+        if not issues:
+            lines.append("")
+            lines.append("🎉 همه چیز سالمه!")
+
+        return "\n".join(lines)
+        
     @staticmethod
     @lru_cache(maxsize=1)
     def _is_windows() -> bool:

@@ -595,65 +595,117 @@ class AgentMixin:
     def _build_system_prompt(self, mode: str) -> str:
         """🎯 ساخت system prompt بر اساس mode — از config.
 
-        این متد از `config.get_ai_system_prompt(mode)` استفاده می‌کند
-        که شخصیت متخصص پایش کد را برمی‌گرداند.
-
-        Args:
-            mode: حالت پردازش (audit, fix, code, chat, analyze, precise, ...).
-
-        Returns:
-            system prompt کامل.
+        نسخهٔ ۲ (دکتر فوق دقیق):
+          - 🆕 CoT (Chain-of-Thought) — AI قبل از عمل فکر کنه
+          - 🆕 ToolRouter hint — ابزارهای پیشنهادی
+          - 🆕 Knowledge Injection — دانش پروژه
         """
+        # ─── CoT پایه ───
+        cot_prefix = """
+# 🧠 روش کار (دکتر فوق دقیق):
+
+قبل از هر ابزار، این ۵ گام رو طی کن:
+
+1. **فهم**: سؤال واقعی چیه؟ چی می‌خواد؟
+2. **تصمیم**: کدوم ابزار لازمه؟ چرا؟
+3. **اجرا**: ابزار رو صدا بزن
+4. **چک**: آیا جواب کافیه؟ دقیق بود؟
+5. **اگه نه**: برگرد به گام ۱
+
+⚠️ هیچ‌وقت بدون فکر کردن، ابزار صدا نزن.
+⚠️ اگه سؤال ساده‌ست، از ابزار استفاده نکن — مستقیم جواب بده.
+⚠️ اگه ابزار درست جواب نداد، دوباره تلاش نکن — راه دیگه برو.
+
+"""
+
+        # ─── base prompt ───
+        base = ""
         try:
             from config import get_ai_system_prompt
             prompt = get_ai_system_prompt(mode)
             if prompt:
-                # 🎯 تزریق درس‌های قبلی (Reflexion)
-                lessons = getattr(self, "_lessons", [])
-                if lessons:
-                    prompt += "\n\n# درس‌های قبلی (از اشتباهات گذشته):\n"
-                    for lesson in lessons[:3]:
-                        prompt += f"- {lesson[:200]}\n"
-                return prompt
-        except ImportError as e:
-            log_warning(
-                f"⚠️ [BRAIN:prompt] config import | "
-                f"{type(e).__name__}: {e} — fallback"
-            )
+                base = prompt
         except Exception as e:
             log_warning(
-                f"⚠️ [BRAIN:prompt] get_ai_system_prompt | "
+                f"⚠️ [BRAIN:prompt] config | "
                 f"{type(e).__name__}: {e} — fallback"
             )
 
-        # ─── fallback امن ───
-        fallback = (
-            "You are a world-class software engineer. "
-            "Always respond in Persian (فارسی). "
-            "Be concise, precise, and helpful."
-        )
+        if not base:
+            base = (
+                "You are a world-class software engineer. "
+                "Always respond in Persian (فارسی). "
+                "Be concise, precise, and helpful."
+            )
+
+        # ─── CoT ───
+        base = cot_prefix + base
+
+        # ─── Reflexion (درس‌های قبلی) ───
         lessons = getattr(self, "_lessons", [])
         if lessons:
-            fallback += "\n\n# درس‌های قبلی:\n"
+            base += "\n\n# 📚 درس‌های قبلی (از اشتباهات گذشته):\n"
             for lesson in lessons[:3]:
-                fallback += f"- {lesson[:200]}\n"
-        return fallback
+                base += f"- {lesson[:200]}\n"
 
+        # ─── ToolRouter hint ───
+        last_task = getattr(self, "_last_task", "")
+        if last_task:
+            try:
+                from core.brain.tool_router import ToolRouter
+                hint = ToolRouter.build_hint(last_task)
+                if hint:
+                    base += hint
+            except Exception:
+                pass
+
+        return base
+        
     # ═══════════════════════════════════════════
     # Agent loop
     # ═══════════════════════════════════════════
     async def agent(
-        self, task: str, mode: str = "precise"
+        self,
+        task: str,
+        mode: str = "precise",
+        bypass_busy: bool = False,
     ) -> str:
         """حلقهٔ اصلی agent — با tool calls و memory."""
         if not task:
             return "⚠️ تسک خالی است."
 
-        if self.busy:
-            log_warning("⚠️ [BRAIN:agent] busy — رد شد")
-            return "⏳ مغز مشغول است..."
+        # ═══ صف انتظار (به جای reject فوری) ═══
+        # ═══ صف انتظار (مگر bypass_busy) ═══
+        if not bypass_busy and self.busy:
+            log_info(
+                f"⏳ [BRAIN:agent] صف انتظار | "
+                f"task={task[:60]!r}"
+            )
+            # حداکثر ۶۰ ثانیه صبر کن
+            for _ in range(60):
+                await asyncio.sleep(1)
+                if not self.busy:
+                    break
+            else:
+                log_warning(
+                    "⏰ [BRAIN:agent] timeout 60s — "
+                    "مغز مشغول است"
+                )
+                return (
+                    "⏰ مغز ۶۰ ثانیه مشغول بود. "
+                    "لطفاً دوباره تلاش کن."
+                )
 
-        self.busy = True
+        # ─── قفل ───
+        if not bypass_busy:
+            self.busy = True
+            self._busy_started_at = time.monotonic()
+        else:
+            log_info(
+                f"🔓 [BRAIN:agent] bypass_busy | "
+                f"task={task[:60]!r}"
+            )
+
         self.stats["agents_run"] += 1
         t_start = time.monotonic()
 
@@ -696,11 +748,29 @@ class AgentMixin:
                 "command", {"task": task, "mode": mode}
             )
 
-            # ─── think ───
-            thinking = await self._think(task, context="")
+            # 🆕 think هوشمند: فقط برای سؤال‌های پیچیده
+            if len(task) > 50:
+                thinking = await self._think(task, context="")
+            else:
+                thinking = ""
             selected_model = self._select_model(task)
             system_prompt = self._build_system_prompt(mode)
+            # 🆕 Knowledge Injection
+            knowledge = self._inject_knowledge(task)
+            if knowledge:
+                system_prompt += f"\n\n{knowledge}"
 
+            # 🆕 Planning hint
+            plan_steps = await self._plan_steps(task)
+            if plan_steps:
+                system_prompt += (
+                    f"\n\n# 📋 برنامه پیشنهادی:\n"
+                    + "\n".join(
+                        f"  {i+1}. {s}"
+                        for i, s in enumerate(plan_steps)
+                    )
+                )
+                
             try:
                 context_history = (
                     await self.memory.get_context(task)
@@ -881,6 +951,18 @@ class AgentMixin:
                 final_answer
                 or f"⚠️ سقف گام ({MAX_AGENT_STEPS})."
             )
+            
+            # 🆕 Reflection — بازبینی خود
+            if (
+                final_answer
+                and len(final_answer) > 50
+                and "❌" not in final_answer[:50]
+                and "⏰" not in final_answer[:50]
+            ):
+                final_answer = await self._reflect(
+                    task, final_answer
+                )
+                
 
             # ─── cache ───
             try:
@@ -894,8 +976,45 @@ class AgentMixin:
                 )
 
             # ─── memory ───
+            # ─── memory ───
             try:
                 self.memory.add("assistant", final_answer)
+            except Exception as e:
+                log_warning(
+                    f"⚠️ [BRAIN:agent] memory.add | "
+                    f"{type(e).__name__}: {e}"
+                )
+
+            # 🆕 Feedback Loop — یادگیری از تجربه
+            try:
+                _head = final_answer[:150]
+                success = (
+                    "❌" not in _head
+                    and "⏰" not in _head
+                )
+
+                # ─── ذخیره در memory ───
+                self.memory.remember(
+                    question=task,
+                    answer=final_answer[:500],
+                    importance=0.8 if success else 0.4,
+                )
+
+                # ─── اگه خطا بود، درس ذخیره کن ───
+                if not success:
+                    self.memory.add_lesson(
+                        wrong=task[:200],
+                        correct=f"پاسخ: {final_answer[:200]}",
+                    )
+                    log_info(
+                        "📚 [BRAIN:feedback] درس جدید ذخیره شد"
+                    )
+            except Exception as e:
+                log_warning(
+                    f"⚠️ [BRAIN:feedback] "
+                    f"{type(e).__name__}: {e}"
+                )
+                
             except Exception as e:
                 log_warning(
                     f"⚠️ [BRAIN:agent] memory.add | "
@@ -952,7 +1071,25 @@ class AgentMixin:
                 pass
             return f"❌ خطای غیرمنتظره: {e}"
         finally:
-            self.busy = False
+            if not bypass_busy:
+                self.busy = False
+            # ─── لاگ زمان اجرا ───
+            if not bypass_busy:
+                try:
+                    started = getattr(
+                        self, "_busy_started_at", 0
+                    )
+                    if started:
+                        elapsed = (
+                            time.monotonic() - started
+                        )
+                        if elapsed > 60:
+                            log_warning(
+                                f"🐌 [BRAIN:agent] طولانی | "
+                                f"{elapsed:.1f}s"
+                            )
+                except Exception:
+                    pass
 
     def _offline_agent(self, task: str) -> str:
         """پاسخ آفلاین — بدون AI.
@@ -1282,6 +1419,224 @@ class AgentMixin:
             )
             return f"❌ خطا: {e}"
 
+    # ═══════════════════════════════════════════
+    # 🆕 Planning (برنامه‌ریزی)
+    # ═══════════════════════════════════════════
+    async def _plan_steps(self, task: str) -> list[str]:
+        """ساخت برنامه برای سؤال‌های پیچیده.
+
+        Args:
+            task: سؤال.
+
+        Returns:
+            لیست گام‌ها. اگه ساده، خالی.
+        """
+        if not self.client or not task:
+            return []
+
+        # ─── سؤال‌های ساده نیازی ندارن ───
+        if len(task) < 30:
+            return []
+
+        prompt = f"""برای این سؤال، یه برنامه ۱-۵ مرحله‌ای بنویس:
+
+**سؤال:** {task}
+
+**فرمت خروجی:**
+1. گام اول
+2. گام دوم
+...
+
+اگه سؤال ساده‌ست، فقط بنویس: **ساده**
+"""
+        try:
+            r = await asyncio.wait_for(
+                self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.1,
+                    max_tokens=500,
+                ),
+                timeout=20.0,
+            )
+            result = (
+                r.choices[0].message.content or ""
+            ).strip()
+
+            if "ساده" in result[:20]:
+                return []
+
+            # ─── استخراج گام‌ها ───
+            steps = []
+            for line in result.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                # فرمت: "1. ..." یا "۱. ..."
+                import re
+                m = re.match(r"^[\d۰-۹]+[\.\-]\s*(.+)", line)
+                if m:
+                    steps.append(m.group(1)[:200])
+
+            if steps:
+                log_info(
+                    f"📋 [BRAIN:plan] {len(steps)} گام"
+                )
+            return steps[:5]
+        except Exception:
+            return []
+
+    # ═══════════════════════════════════════════
+    # 🆕 Knowledge Injection (تزریق دانش)
+    # ═══════════════════════════════════════════
+    def _inject_knowledge(self, task: str) -> str:
+        """تزریق دانش پروژه به prompt.
+
+        Args:
+            task: سؤال.
+
+        Returns:
+            متن دانش یا "".
+        """
+        if not task:
+            return ""
+
+        parts: list[str] = []
+
+        # ─── Semantic (ChromaDB) ───
+        try:
+            if self.memory and self.memory.semantic.enabled:
+                docs = self.memory.semantic.search(task, n=3)
+                if docs:
+                    parts.append("# 📚 دانش پروژه:")
+                    for doc in docs[:3]:
+                        parts.append(f"- {doc[:200]}")
+        except Exception as e:
+            log_warning(f"⚠️ [BRAIN:inject:sem] {e}")
+
+        # ─── Lessons (Reflexion) ───
+        try:
+            if self.memory:
+                lessons = self.memory.long_term.search_lessons(
+                    task
+                )
+                if lessons:
+                    parts.append("\n# 📚 درس‌های قبلی:")
+                    for lesson in lessons[:3]:
+                        parts.append(
+                            f"- قبلاً: {lesson['wrong'][:80]} "
+                            f"→ درست: {lesson['correct'][:80]}"
+                        )
+        except Exception as e:
+            log_warning(f"⚠️ [BRAIN:inject:lessons] {e}")
+
+        # ─── Experience (experience_learner) ───
+        try:
+            from core.brain.experience_learner import (
+                get_experience,
+            )
+            exp = get_experience()
+            exp_text = exp.build_context(limit=3)
+            if exp_text:
+                parts.append(f"\n{exp_text}")
+        except Exception:
+            pass
+
+        return "\n".join(parts) if parts else ""
+        
+    # ═══════════════════════════════════════════
+    # 🆕 Reflection (بازبینی خود)
+    # ═══════════════════════════════════════════
+    async def _reflect(
+        self, task: str, answer: str
+    ) -> str:
+        """بازبینی پاسخ — آیا کامل بود؟
+
+        Args:
+            task: سؤال اصلی.
+            answer: پاسخ AI.
+
+        Returns:
+            پاسخ بهبودیافته یا پاسخ اصلی.
+        """
+        if not self.client or not answer:
+            return answer
+
+        if len(answer) < 50:
+            return answer  # پاسخ کوتاه، نیازی نیست
+
+        prompt = f"""تو یه بازبین دقیق هستی. این پاسخ رو بازبینی کن:
+
+**سؤال:** {task[:300]}
+
+**پاسخ تو:** {answer[:1500]}
+
+**بازبینی:**
+1. آیا به سؤال جواب داده؟
+2. آیا چیزی جا افتاده؟
+3. آیا می‌تونی بهتر جواب بدی؟
+
+اگه پاسخ کامل بود، فقط بنویس: **خوب**
+اگه نه، پاسخ بهتر رو بنویس.
+"""
+        try:
+            r = await asyncio.wait_for(
+                self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.1,
+                    max_tokens=1000,
+                ),
+                timeout=30.0,
+            )
+            reflection = (
+                r.choices[0].message.content or ""
+            ).strip()
+
+            if reflection == "خوب" or "خوب" in reflection[:10]:
+                log_info("✅ [BRAIN:reflect] پاسخ کامل")
+                return answer
+
+            log_info(
+                f"🔍 [BRAIN:reflect] بهبود یافت | "
+                f"+{len(reflection) - len(answer)}ch"
+            )
+            return reflection
+        except Exception as e:
+            log_warning(
+                f"⚠️ [BRAIN:reflect] "
+                f"{type(e).__name__}: {e}"
+            )
+            return answer
+
+    # ═══════════════════════════════════════════
+    # 🆕 Multi-Agent (چند Expert)
+    # ═══════════════════════════════════════════
+    async def ask_multi(self, question: str) -> str:
+        """پرسش از چند Expert و جمع‌بندی.
+
+        Args:
+            question: سؤال کاربر.
+
+        Returns:
+            پاسخ نهایی (جمع‌بندی).
+        """
+        if not question or not question.strip():
+            return "⚠️ سؤال خالی است."
+
+        try:
+            from core.brain.multi_agent import (
+                get_multi_agent,
+            )
+            ma = get_multi_agent()
+            return await ma.ask(question)
+        except Exception as e:
+            log_error(
+                f"❌ [BRAIN:ask_multi] "
+                f"{type(e).__name__}: {e}"
+            )
+            return f"❌ خطا در Multi-Agent: {e}"
+            
     # ═══════════════════════════════════════════
     # 🎯 NEW: get_client_stats برای debug
     # ═══════════════════════════════════════════

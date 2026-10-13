@@ -573,11 +573,11 @@ class StorageHandler(BaseHandler):
         except Exception as e:
             log_warning(
                 f"⚠️ [STORAGE:analyze] priority_finder | "
-                f"{type(e).__name__}: {e} — tier=T0"
+                f"{type(e).__name__}: {e} — tier=T1"
             )
             if not getattr(analyzed, "metadata", None):
                 analyzed.metadata = {}
-            analyzed.metadata.setdefault("tier", "T0")
+            analyzed.metadata.setdefault("tier", "T1")
 
         # ─── preset از کلکتور ───
         preset = raw.get("keywords")
@@ -606,17 +606,17 @@ class StorageHandler(BaseHandler):
             raw["priority_tier"] = meta.get("tier", "T0")
             raw["matched_products"] = meta.get("products_str", "")
             raw["brands"] = meta.get("brands_str", "")
+            
         except Exception as e:
             log_warning(
                 f"⚠️ [STORAGE:score] {type(e).__name__}: {e} — "
-                f"score=0 tier=T0"
+                f"score=0 tier=T1"
             )
             raw["opportunity_score"] = 0
             raw["opportunity_type"] = None
-            raw["priority_tier"] = "T0"
+            raw["priority_tier"] = "T1"
             raw["matched_products"] = ""
             raw["brands"] = ""
-        return raw
 
     @staticmethod
     def _make_platform_unique_id(raw: dict) -> dict:

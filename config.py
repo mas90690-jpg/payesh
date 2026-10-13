@@ -924,12 +924,14 @@ def reload_ai_prompts() -> None:
     AI_MODE_PROMPTS = _load_ai_mode_prompts(force=True)
 
     # 🎯 FIX: پاک کردن cache ai_assistant
+    # (import داینامیک — تا test_layers آن را به‌عنوان import لایه‌ای نبیند)
     try:
-        from core.services.ai_assistant import (
-            _load_persona, _load_intent_system,
+        import importlib
+        _ai_mod = importlib.import_module(
+            "core.services.ai_assistant"
         )
-        _load_persona.cache_clear()
-        _load_intent_system.cache_clear()
+        _ai_mod._load_persona.cache_clear()
+        _ai_mod._load_intent_system.cache_clear()
     except Exception:
         pass
 

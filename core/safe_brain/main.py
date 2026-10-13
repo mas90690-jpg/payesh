@@ -347,6 +347,10 @@ class SafeBrain:
         Returns:
             پاسخ اگر در حافظه بود، وگرنه None.
         """
+        # 🎯 غیرفعال — همیشه از AI زنده
+        if os.getenv("SAFE_BRAIN_RECALL_FROM_MEMORY", "true").lower() != "true":
+            return None
+        
         if not self.persistent_memory:
             return None
         if not query or len(query) < 3:

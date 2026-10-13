@@ -398,17 +398,82 @@ class AIAssistant:
     # chat
     # ═══════════════════════════════════════════
     async def chat(self, text: str, system: str = "") -> str:
-        """چت آزاد — با system prompt پیش‌فرض WinDoctor."""
+        """چت آزاد — اول Brain.agent()، بعد fallback به DeepSeek.
+
+        نسخهٔ ۶ (دکتر فوق دقیق):
+          - 🆕 اول Brain.agent() رو صدا می‌زنه (۶۷ ابزار + CoT)
+          - ✅ fallback به DeepSeek اگه Brain آماده نبود
+        """
+        if not text:
+            return ""
+
+        # ═══ ۱) Brain.agent() ═══
+        try:
+            from core.brain import get_brain
+            brain = get_brain()
+
+            if brain.client is not None:
+                log_info(
+                    f"🧠 [AI:brain] Brain.agent | "
+                    f"tools={len(brain.TOOL_MAP)}"
+                )
+
+                result = await brain.agent(text, mode="precise")
+
+                if result and not result.startswith("⚠️"):
+                    return result
+
+                log_warning(
+                    f"⚠️ [AI:brain] پاسخ نامعتبر | "
+                    f"preview={result[:100] if result else 'خالی'}"
+                )
+            else:
+                log_info(
+                    "ℹ️ [AI:brain] client آماده نیست — fallback"
+                )
+        except ImportError as e:
+            log_warning(f"⚠️ [AI:brain] import | {e}")
+        except Exception as e:
+            log_warning(
+                f"⚠️ [AI:brain] {type(e).__name__}: {e}"
+            )
+
+        # ═══ ۲) Fallback: DeepSeek ═══
+        log_info("🔁 [AI:fallback] DeepSeek مستقیم")
+
         if not system:
             try:
                 from config import get_ai_system_prompt
                 system = get_ai_system_prompt("chat")
             except Exception:
                 system = ""
-        response, _ok = await self.chat_with_status(
-            text, system
-        )
+
+        try:
+            from core.brain.brain_memory import get_brain_memory
+            bm = get_brain_memory()
+
+            if bm.is_task_done(text, within_hours=1):
+                return "ℹ️ این کار در ساعت اخیر انجام شد."
+
+            context = bm.build_context(text)
+            if context:
+                system = f"{system}\n\n# دانش پروژه:\n{context}"
+        except Exception as e:
+            log_warning(f"⚠️ [AI:bm] {e}")
+
+        response, _ok = await self.chat_with_status(text, system)
+
+        if response and not response.startswith("⚠️"):
+            try:
+                from core.brain.brain_memory import get_brain_memory
+                get_brain_memory().remember(
+                    text, response, importance=0.6
+                )
+            except Exception as e:
+                log_warning(f"⚠️ [AI:bm:save] {e}")
+
         return response
+
 
     async def chat_with_status(
         self, text: str, system: str = ""

@@ -629,6 +629,14 @@ async def main() -> None:
             f"{time.monotonic() - t:.2f}s"
         )
 
+        # 🌙 Consolidation (خواب مغز)
+        try:
+            from core.brain.consolidation import start_consolidation
+            start_consolidation()
+            log_info("✅ [MAIN:consolidation] خواب مغز راه افتاد")
+        except Exception as e:
+            log_warning(f"⚠️ [MAIN:consolidation] {type(e).__name__}: {e}")
+
         # ═══════════════════════════════════════
         # گزارش ری‌استارت — حذف شد (پایشگر فقط‌خواندنی)
         # ═══════════════════════════════════════

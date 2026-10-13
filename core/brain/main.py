@@ -39,12 +39,19 @@ from core.brain.learning import (
     TestGenerator,
     WebSearch,
 )
+
+# 🆕 از brain_memory (سیستم اصلی با ۵ حافظه)
+from core.brain.brain_memory import (
+    BrainMemory,
+    get_brain_memory,
+)
+# APIMemory / SmartCache / ProjectSemanticSearch هنوز از memory.py
 from core.brain.memory import (
     APIMemory,
-    BrainMemory,
     ProjectSemanticSearch,
     SmartCache,
 )
+
 from core.brain.mixin_agent import AgentMixin
 from core.brain.mixin_files import FilesMixin
 from core.brain.mixin_info import InfoMixin
@@ -152,7 +159,12 @@ _TOOL_METHODS: dict[str, str] = {
     "diagnose_platform": "_diagnose_platform",
     "run_platform_as_user": "_run_platform_as_user",
     "list_all_platforms": "_list_all_platforms",
-    
+
+    # 🆕 خواب مغز
+    "consolidation_run": "_consolidation_run",
+    "brain_status": "_brain_status",
+    "proactive_diagnosis": "_proactive_diagnosis",
+     
     # 🆕 کنترل پلتفرم
     "control_platform": "_control_platform",
     "control_stats": "_control_stats",    
@@ -235,13 +247,40 @@ class Brain(
         self.cache = SmartCache("brain_cache")
         self.agent_cache = SmartCache("agent_cache")
 
-        # ─── memory ───
-        self.memory = BrainMemory(
-            max_tokens=MAX_CONTEXT_TOKENS,
-            use_api=use_api_memory,
-            api_url=memory_api_url,
-            api_key=memory_api_key,
-        )
+        # ─── memory (سیستم جدید با ۵ حافظه) ───
+        if use_api_memory and memory_api_url:
+            # حالت API memory
+            self.memory = BrainMemory(
+                use_api=True,
+                api_url=memory_api_url,
+                api_key=memory_api_key,
+            )
+        else:
+            # حالت پیش‌فرض — Singleton
+            self.memory = get_brain_memory()
+
+        # 🆕 وصل کردن consolidation (خواب مغز)
+        self._consolidation_started = False
+        try:
+            import asyncio
+            from core.brain.consolidation import start_consolidation
+
+            try:
+                # چک: آیا event loop فعاله؟
+                loop = asyncio.get_running_loop()
+                # بله → task بساز
+                self._consolidation_started = True
+                # 🐛 FIX: start_consolidation خودش Task می‌سازه — create_task لازم نیست
+                start_consolidation()
+                log_info("🌙 [BRAIN:consolidation] به main وصل شد")
+            except RuntimeError:
+                # نه → وقتی event loop بالا اومد، وصل می‌شه
+                log_info(
+                    "ℹ️ [BRAIN:consolidation] event loop فعال نیست — "
+                    "منتظر اجرا"
+                )
+        except Exception as e:
+            log_warning(f"⚠️ [BRAIN:consolidation] {e}")
 
         # ─── semantic + learning ───
         self.semantic_search = ProjectSemanticSearch()
@@ -406,10 +445,14 @@ def get_brain(
             if (
                 use_api_memory
                 and memory_api_url
-                and _brain_instance.memory.api_memory is None
+                and getattr(
+                    _brain_instance.memory,
+                    "_api_memory",
+                    None,
+                ) is None
             ):
                 try:
-                    _brain_instance.memory.api_memory = APIMemory(
+                    _brain_instance.memory._api_memory = APIMemory(
                         memory_api_url, memory_api_key
                     )
                     _brain_instance.memory.use_api = True

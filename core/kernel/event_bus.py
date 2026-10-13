@@ -113,7 +113,7 @@ _MAX_HISTORY = _env_int(
     min_val=10, max_val=100_000,
 )
 _HANDLER_TIMEOUT_S = _env_float(
-    "EVENTBUS_HANDLER_TIMEOUT_S", 60.0,
+    "EVENTBUS_HANDLER_TIMEOUT_S", 600.0,
     min_val=1.0, max_val=1800.0,
 )
 

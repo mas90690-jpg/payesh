@@ -519,6 +519,15 @@ class AdminHandler(BaseHandler):
     # recall
     # ═══════════════════════════════════════
     def _recall_persistent(self, text: str) -> str | None:
+        """جستجوی پاسخ در حافظه — قبل از AI.
+
+        اگر SAFE_BRAIN_RECALL_FROM_MEMORY=false باشد، همیشه None
+        برمی‌گرداند (یعنی از حافظه جواب نده، از AI زنده بگیر).
+        """
+        # 🎯 غیرفعال — همیشه از AI زنده
+        if os.getenv("SAFE_BRAIN_RECALL_FROM_MEMORY", "true").lower() != "true":
+            return None
+
         if not self.persistent_memory:
             return None
         if not text or len(text) < 3:
@@ -741,17 +750,34 @@ class AdminHandler(BaseHandler):
             return
 
         # ═══════════════════════════════════════════
-        # ۲) گارد حوزه
+        # ۲) 🆕 Brain.agent() — قبل از گارد حوزه
         # ═══════════════════════════════════════════
-        if not self._is_in_domain(text):
-            log_info(
-                f"🚫 [ADMIN:handle] خارج از حوزه | "
-                f"text={text[:_LOG_PREVIEW_LEN]!r}"
-            )
-            if is_admin:
-                reply = self._out_of_domain_reply(text)
-                await self._reply(raw, reply)
-            return
+        # برای مدیر: اول Brain رو امتحان کن
+        if is_admin and _brain_available:
+            try:
+                from core.brain import get_brain
+                brain = get_brain()
+                if brain.client is not None:
+                    log_info(
+                        f"🧠 [ADMIN:handle:brain] Brain.agent | "
+                        f"text={text[:_LOG_PREVIEW_LEN]!r}"
+                    )
+                    result = await brain.agent(
+                        text, mode="precise"
+                    )
+                    if result and not result.startswith("⚠️"):
+                        await self._reply(raw, result)
+                        return
+                    log_warning(
+                        f"⚠️ [ADMIN:handle:brain] "
+                        f"پاسخ نامعتبر | "
+                        f"preview={result[:80] if result else 'خالی'}"
+                    )
+            except Exception as e:
+                log_warning(
+                    f"⚠️ [ADMIN:handle:brain] "
+                    f"{type(e).__name__}: {e}"
+                )
 
         # ═══════════════════════════════════════════
         # ★ ۲.۵) parse_command — اکشن قطعی، اول از همه ★
@@ -925,14 +951,43 @@ class AdminHandler(BaseHandler):
     async def process_text(self, text: str) -> str:
         """مسیر وب — برای /chat در OBS server.
 
-        نسخهٔ ۱۷: parse_command قبل از حافظه و ManualBrain.
+        نسخهٔ ۱۸: Brain.agent قبل از گارد حوزه.
         """
         text = (text or "").strip()
         if not text:
             return ""
 
         # ═══════════════════════════════════════
-        # گارد حوزه
+        # 🆕 Brain.agent() — قبل از گارد حوزه
+        # ═══════════════════════════════════════
+        if _brain_available:
+            try:
+                from core.brain import get_brain
+                brain = get_brain()
+                if brain.client is not None:
+                    log_info(
+                        f"🧠 [ADMIN:web:brain] Brain.agent | "
+                        f"text={text[:_LOG_PREVIEW_LEN]!r}"
+                    )
+                    result = await brain.agent(
+                        text, mode="precise"
+                    )
+                    if result and not result.startswith("⚠️"):
+                        self._remember(text, result)
+                        return result
+                    log_warning(
+                        f"⚠️ [ADMIN:web:brain] "
+                        f"پاسخ نامعتبر | "
+                        f"preview={result[:80] if result else 'خالی'}"
+                    )
+            except Exception as e:
+                log_warning(
+                    f"⚠️ [ADMIN:web:brain] "
+                    f"{type(e).__name__}: {e}"
+                )
+
+        # ═══════════════════════════════════════
+        # گارد حوزه (اگه Brain جواب نداد)
         # ═══════════════════════════════════════
         if not self._is_in_domain(text):
             log_info(

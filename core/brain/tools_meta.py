@@ -144,7 +144,12 @@ _ALLOWED_TOOLS_RAW: dict[str, dict] = {
     # 🆕 اضافه کن:
     "diagnose_platform": _tool("low"),
     "run_platform_as_user": _tool("medium", True),
-    "list_all_platforms": _tool("low"),   
+    "list_all_platforms": _tool("low"),  
+
+    # 🆕 خواب مغز
+    "consolidation_run": _tool("low"),
+    "brain_status": _tool("low"),    
+    "proactive_diagnosis": _tool("low"),    
 
     # ═══ 🆕 کنترل پلتفرم ═══
     "control_platform": _tool("medium", True),
@@ -1043,6 +1048,30 @@ TOOL_DEFINITIONS: list[dict] = [
         },
         ["platform"],
     ),
+    
+    # ═══ 🆕 خواب مغز ═══
+    _td(
+        "consolidation_run",
+        "اجرای دستی خواب مغز — Working به LongTerm منتقل می‌شه.",
+        {},
+        [],
+        returns="گزارش اجرا",
+    ),
+    _td(
+        "brain_status",
+        "وضعیت کامل مغز — حافظه‌ها، ابزارها، client.",
+        {},
+        [],
+        returns="گزارش کامل",
+    ), 
+
+    _td(
+        "proactive_diagnosis",
+        "تشخیص خودکار سلامت سیستم — حافظه، client، پلتفرم‌ها.",
+        {},
+        [],
+        returns="گزارش تشخیص",
+    ),    
     
 ]
 

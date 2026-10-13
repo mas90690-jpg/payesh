@@ -1041,10 +1041,13 @@ class AdminActions:
         """ری‌استارت با graceful shutdown + flush کامل."""
         await asyncio.sleep(1)
 
+        # 🎯 signal مستقل — بدون import از main
         try:
-            from main import _signal_handler
+            import signal as _sig
+            import os as _os
+
             log_info("🔁 [ADMIN:restart] shutdown تمیز...")
-            _signal_handler()
+            _os.kill(_os.getpid(), _sig.SIGINT)
             await asyncio.sleep(3)
         except Exception as e:
             log_warning(
