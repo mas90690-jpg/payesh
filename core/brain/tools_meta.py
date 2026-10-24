@@ -132,29 +132,29 @@ _ALLOWED_TOOLS_RAW: dict[str, dict] = {
     # ═══ اجرا (high) ═══
     "execute_command": _tool("high", True),
     "execute_python": _tool("high", True),
-    
+
     # ═══ پلتفرم‌ها ═══
     "start_platform": _tool("medium", True),
     "stop_platform": _tool("medium", False),
     "platform_health": _tool("low"),
     "platform_diagnose": _tool("low"),
     "platform_run_once": _tool("medium", True),
-    "list_platforms": _tool("low"),   
+    "list_platforms": _tool("low"),
 
     # 🆕 اضافه کن:
     "diagnose_platform": _tool("low"),
     "run_platform_as_user": _tool("medium", True),
-    "list_all_platforms": _tool("low"),  
+    "list_all_platforms": _tool("low"),
 
     # 🆕 خواب مغز
     "consolidation_run": _tool("low"),
-    "brain_status": _tool("low"),    
-    "proactive_diagnosis": _tool("low"),    
+    "brain_status": _tool("low"),
+    "proactive_diagnosis": _tool("low"),
 
     # ═══ 🆕 کنترل پلتفرم ═══
     "control_platform": _tool("medium", True),
     "control_stats": _tool("low"),
-    
+
 }
 
 
@@ -871,7 +871,7 @@ TOOL_DEFINITIONS: list[dict] = [
         ["platform", "seconds"],
     ),
     _td("get_access_summary", "خلاصهٔ دسترسی‌ها", {}, []),
-    
+
     # ═══ پلتفرم‌ها ═══
     _td(
         "start_platform",
@@ -943,7 +943,7 @@ TOOL_DEFINITIONS: list[dict] = [
         [],
         returns="لیست پلتفرم‌ها",
     ),
-    
+
     # ═══ 🆕 ریشه‌یابی ═══
     _td(
         "diagnose_platform",
@@ -987,7 +987,7 @@ TOOL_DEFINITIONS: list[dict] = [
         "لیست همه پلتفرم‌ها با وضعیت",
         {},
         [],
-    ), 
+    ),
 
     # ═══ 🆕 کنترل پلتفرم — فقط با دستور ═══
     _td(
@@ -1048,7 +1048,7 @@ TOOL_DEFINITIONS: list[dict] = [
         },
         ["platform"],
     ),
-    
+
     # ═══ 🆕 خواب مغز ═══
     _td(
         "consolidation_run",
@@ -1063,7 +1063,7 @@ TOOL_DEFINITIONS: list[dict] = [
         {},
         [],
         returns="گزارش کامل",
-    ), 
+    ),
 
     _td(
         "proactive_diagnosis",
@@ -1071,8 +1071,8 @@ TOOL_DEFINITIONS: list[dict] = [
         {},
         [],
         returns="گزارش تشخیص",
-    ),    
-    
+    ),
+
 ]
 
 

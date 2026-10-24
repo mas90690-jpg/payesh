@@ -56,7 +56,7 @@ class SystemMixin:
         try:
             r = subprocess.run(
                 ["git", "status", "--porcelain"],
-                capture_output=True, text=True, cwd=PROJECT_BASE,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=PROJECT_BASE,
             )
             return r.stdout or "✅ Working tree clean"
         except Exception as e:
@@ -67,7 +67,9 @@ class SystemMixin:
         try:
             cmd = ["git", "diff"] + (["--", path] if path else [])
             r = subprocess.run(
-                cmd, capture_output=True, text=True, cwd=PROJECT_BASE
+                cmd, capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
+                cwd=PROJECT_BASE
             )
             return r.stdout[:MAX_CONTENT_LENGTH] or "✅ بدون تغییر"
         except Exception as e:
@@ -86,7 +88,7 @@ class SystemMixin:
             )
             r = subprocess.run(
                 ["git", "commit", "-m", message],
-                capture_output=True, text=True, cwd=PROJECT_BASE,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=PROJECT_BASE,
             )
             log_success(
                 f"✅ [BRAIN:git:commit] "
@@ -101,7 +103,7 @@ class SystemMixin:
         try:
             r = subprocess.run(
                 ["git", "log", f"-{n}", "--oneline", "--decorate"],
-                capture_output=True, text=True, cwd=PROJECT_BASE,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=PROJECT_BASE,
             )
             return r.stdout or "📭 هیچ کامیتی یافت نشد."
         except Exception as e:
@@ -120,7 +122,7 @@ class SystemMixin:
                 else ["git", "checkout", name]
             )
             r = subprocess.run(
-                cmd, capture_output=True, text=True, cwd=PROJECT_BASE
+                cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=PROJECT_BASE
             )
             return r.stdout[:2000] or f"✅ برنچ {name}"
         except Exception as e:
@@ -329,7 +331,7 @@ class SystemMixin:
             )
             lines = [
                 f"{p['pid']:>6}  {p['name'][:25]:<25} "
-                f"CPU:{p.get('cpu_percent',0):>5.1f}%"
+                f"CPU:{p.get('cpu_percent', 0):>5.1f}%"
                 for p in procs[:limit]
             ]
             return "\n".join(lines) or "📭 پردازه‌ای نیست."
@@ -393,7 +395,7 @@ class SystemMixin:
             return "⏰ زمان تست به پایان رسید."
         except Exception as e:
             return f"❌ خطا: {e}"
-            
+
     async def _run_tests_with_coverage(self, path: str) -> str:
         try:
             cmd = [sys.executable, "-m", "pytest", path,
@@ -408,7 +410,7 @@ class SystemMixin:
             )
         except Exception as e:
             return f"❌ خطا: {e}"
-            
+
     async def _analyze_security(self, path: str) -> str:
         try:
             r = subprocess.run(

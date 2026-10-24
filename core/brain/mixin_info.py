@@ -146,7 +146,6 @@ class InfoMixin:
             except Exception as e:
                 log_warning(f"⚠️ [BRAIN:sem:fallback] {e}")
             return "❌ حافظهٔ معنایی غیرفعال است."
-            
 
         try:
             t0 = time.monotonic()
@@ -679,6 +678,7 @@ class InfoMixin:
     # ═══════════════════════════════════════════
     # 🆕 خواب مغز
     # ═══════════════════════════════════════════
+
     async def _consolidation_run(self) -> str:
         """اجرای دستی خواب مغز."""
         try:
@@ -763,10 +763,10 @@ class InfoMixin:
             )
             return f"❌ خطا: {e}"
 
-
     # ═══════════════════════════════════════════
     # 🆕 Proactive Diagnosis
     # ═══════════════════════════════════════════
+
     async def _proactive_diagnosis(self) -> str:
         """چک خودکار سلامت سیستم.
 
@@ -834,7 +834,7 @@ class InfoMixin:
             lines.append("🎉 همه چیز سالمه!")
 
         return "\n".join(lines)
-        
+
     @staticmethod
     @lru_cache(maxsize=1)
     def _is_windows() -> bool:

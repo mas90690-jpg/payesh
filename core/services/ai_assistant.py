@@ -268,7 +268,7 @@ class AIAssistant:
         self._deepseek_model = (
             _env_str("DEEPSEEK_MODEL")
             or str(self._config.get("deepseek_model", ""))
-            or "deepseek-v4-pro"
+            or "deepseek-chat"
         )
 
         # ─── Ollama ───

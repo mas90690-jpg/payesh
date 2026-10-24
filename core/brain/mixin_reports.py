@@ -408,9 +408,9 @@ class ReportsMixin:
             elif ago < 3600:
                 return (
                     f"📡 **{platform}**: "
-                    f"{ago/60:.0f} دقیقه"
+                    f"{ago / 60:.0f} دقیقه"
                 )
-            return f"📡 **{platform}**: {ago/3600:.1f} ساعت"
+            return f"📡 **{platform}**: {ago / 3600:.1f} ساعت"
         except Exception as e:
             log_error(
                 f"❌ [BRAIN:platform_status:{platform}] "

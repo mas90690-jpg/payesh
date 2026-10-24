@@ -23,7 +23,6 @@ import glob
 import hashlib
 import json
 import os
-import sqlite3
 import threading
 import time
 from datetime import datetime, timedelta
@@ -39,7 +38,6 @@ from core.brain.constants import (
     CONTEXT_CHROMA_N,
     CONTEXT_RECENT,
     LOG_PREVIEW_LEN,
-    MAX_CONTEXT_TOKENS,
     MAX_FILE_SIZE_BYTES,
     MAX_PENDING_TASKS,
     MAX_SHORT_TERM,
@@ -75,12 +73,6 @@ reset_persistent_memory = _reset_persistent_new
 # ═══════════════════════════════════════════════════════════
 # 🆕 Alias — brain_memory به‌عنوان منبع اصلی
 # ═══════════════════════════════════════════════════════════
-from core.brain.brain_memory import (
-    BrainMemory as _BrainMemoryNew,
-    PersistentMemory as _PersistentMemoryNew,
-    get_persistent_memory as _get_persistent_new,
-    reset_persistent_memory as _reset_persistent_new,
-)
 
 # Alias عمومی — هر کسی `from core.brain.memory import BrainMemory` بزنه،
 # همون brain_memory.BrainMemory رو می‌گیره
@@ -92,6 +84,8 @@ reset_persistent_memory = _reset_persistent_new
 # ═══════════════════════════════════════════
 # helpers
 # ═══════════════════════════════════════════
+
+
 def _env_int(
     name: str, default: int,
     min_val: int | None = None,
@@ -500,136 +494,66 @@ class APIMemory:
 # 🆕 PersistentMemory — حافظهٔ پایدار SQLite + FTS5
 # ═══════════════════════════════════════════
 class ProjectSemanticSearch:
-    """جستجوی معنایی در کدبیس با ChromaDB."""
+    # ─── Singleton در سطح کلاس ───
+    _model = None
+    _client = None
+    _collection = None
+    _lock = threading.Lock()
 
     def __init__(self):
-        self.client = None
-        self.collection = None
-        self.embedding_fn = None
         self._init()
 
     def _init(self) -> None:
-        """ساخت ChromaDB client با embedding — یا غیرفعال اگه ممکن نبود."""
-        import os
-        if os.getenv(
-            "BRAIN_DISABLE_SEMANTIC", "true"
-        ).lower() == "true":
-            log_info(
-                "ℹ️ [BRAIN:sem:init] semantic search غیرفعال "
-                "(BRAIN_DISABLE_SEMANTIC=true)"
-            )
-            self.client = None
-            self.collection = None
-            self.embedding_fn = None
-            return
+        """لود یک‌باره مدل و کلاینت — نه هر بار."""
+        if ProjectSemanticSearch._model is not None:
+            return  # قبلاً لود شده
 
-        try:
-            import chromadb
-            from chromadb.utils import embedding_functions
+        with ProjectSemanticSearch._lock:
+            if ProjectSemanticSearch._model is not None:
+                return
 
-            self.client = chromadb.PersistentClient(
-                path=str(MEMORY_DIR / "codebase")
-            )
-            self.embedding_fn = (
-                embedding_functions
-                .SentenceTransformerEmbeddingFunction(
-                    model_name="all-MiniLM-L6-v2"
-                )
-            )
-            self.collection = (
-                self.client.get_or_create_collection(
-                    name="code_embeddings",
-                    embedding_function=self.embedding_fn,
-                )
-            )
-            log_success(
-                "✅ [BRAIN:sem:init] Semantic Search فعال شد"
-            )
-        except ImportError as e:
-            log_warning(
-                f"⚠️ [BRAIN:sem:init] chromadb نصب نیست | {e}"
-            )
-            self.client = None
-            self.collection = None
-            self.embedding_fn = None
-        except Exception as e:
-            log_warning(
-                f"⚠️ [BRAIN:sem:init] غیرفعال | "
-                f"{type(e).__name__}: {e}"
-            )
-            self.client = None
-            self.collection = None
-            self.embedding_fn = None
-
-    def index_files(
-        self, patterns: list[str] | None = None
-    ) -> int:
-        """ایندکس فایل‌های پروژه."""
-        if not self.collection:
-            return 0
-        if patterns is None:
-            patterns = [
-                "**/*.py", "**/*.txt", "**/*.md",
-                "**/*.json", "**/*.yaml", "**/*.yml",
-            ]
-        total = 0
-        failed = 0
-        t0 = time.monotonic()
-        project = Path(PROJECT_BASE)
-        for pattern in patterns:
+            log_info("⏳ [SEM:init] لود مدل و ChromaDB (یک‌بار)...")
             try:
-                files = glob.glob(
-                    pattern,
-                    root_dir=str(project),
-                    recursive=True,
+                import chromadb
+                from chromadb.utils import embedding_functions
+
+                # ۱. کلاینت را کش کن
+                ProjectSemanticSearch._client = chromadb.PersistentClient(
+                    path=str(MEMORY_DIR / "codebase")
                 )
+
+                # ۲. مدل را کش کن (یک بار لود، همیشه در حافظه)
+                ProjectSemanticSearch._model = (
+                    embedding_functions.SentenceTransformerEmbeddingFunction(
+                        model_name=r"F:\payesh plat\storage\models\all-MiniLM-L6-v2",
+                        device="cpu",
+                        model_kwargs={"local_files_only": True},
+                    )
+                )
+
+                # ۳. collection را بساز
+                ProjectSemanticSearch._collection = (
+                    ProjectSemanticSearch._client.get_or_create_collection(
+                        name="code_embeddings",
+                        embedding_function=ProjectSemanticSearch._model,
+                    )
+                )
+                log_success("✅ [SEM:init] حافظه معنایی فعال (کش‌شده)")
             except Exception as e:
-                log_warning(
-                    f"⚠️ [BRAIN:sem] glob {pattern} | "
-                    f"{type(e).__name__}: {e}"
-                )
-                continue
+                log_warning(f"⚠️ [SEM:init] غیرفعال | {e}")
+                ProjectSemanticSearch._model = None
 
-            for fpath in files:
-                try:
-                    full = project / fpath
-                    if not full.is_file():
-                        continue
-                    if full.stat().st_size >= MAX_FILE_SIZE_BYTES:
-                        continue
-                    content = full.read_text(
-                        encoding="utf-8", errors="ignore"
-                    )
-                    self.collection.add(
-                        documents=[content],
-                        metadatas=[{"path": str(fpath)}],
-                        ids=[
-                            f"file_{hashlib.sha256(fpath.encode()).hexdigest()}"
-                        ],
-                    )
-                    total += 1
-                except Exception as e:
-                    failed += 1
-                    if failed <= 3:
-                        log_warning(
-                            f"⚠️ [BRAIN:sem] index | "
-                            f"{fpath} | {type(e).__name__}: {e}"
-                        )
-        elapsed_ms = (time.monotonic() - t0) * 1000
-        log_success(
-            f"✅ [BRAIN:sem:index] {total} فایل ایندکس شد | "
-            f"failed={failed} | {elapsed_ms:.0f}ms"
-        )
-        return total
+    @property
+    def collection(self):
+        """سازگاری با کد قدیمی."""
+        return ProjectSemanticSearch._collection
 
-    def search(
-        self, query: str, n: int = 5
-    ) -> list[dict]:
-        """جستجو در کدبیس."""
-        if not self.collection:
+    def _sync_search(self, query: str, n: int) -> list[dict]:
+        """جستجوی همگام — در ترد جداگانه اجرا می‌شود."""
+        if not ProjectSemanticSearch._collection:
             return []
         try:
-            results = self.collection.query(
+            results = ProjectSemanticSearch._collection.query(
                 query_texts=[query], n_results=n
             )
             docs = results.get("documents") or [[]]
@@ -638,23 +562,80 @@ class ProjectSemanticSearch:
                 return []
             return [
                 {
-                    "path": (
-                        m.get("path", "?")
-                        if isinstance(m, dict) else "?"
-                    ),
-                    "content": str(d)[:500]
-                    + ("..." if len(str(d)) > 500 else ""),
+                    "path": (m.get("path", "?") if isinstance(m, dict) else "?"),
+                    "content": str(d)[:500],
                 }
-                for d, m in zip(
-                    docs[0], metas[0], strict=False
-                )
+                for d, m in zip(docs[0], metas[0], strict=False)
             ]
         except Exception as e:
-            log_warning(
-                f"⚠️ [BRAIN:sem:search] "
-                f"{type(e).__name__}: {e}"
-            )
+            log_warning(f"⚠️ [SEM:search] {e}")
             return []
+
+    async def search_async(self, query: str, n: int = 5) -> list[dict]:
+        """نسخه async — Event Loop را قفل نمی‌کند."""
+        return await asyncio.to_thread(self._sync_search, query, n)
+
+    def index_files(self, patterns: list[str] | None = None) -> int:
+        """ایندکس فایل‌های پروژه در ChromaDB."""
+        if not ProjectSemanticSearch._collection:
+            return 0
+        if patterns is None:
+            patterns = [
+                "**/*.py", "**/*.txt", "**/*.md",
+                "**/*.json", "**/*.yaml", "**/*.yml",
+            ]
+        total = 0
+        failed = 0
+        skipped = 0
+        existing_ids = set()
+        try:
+            existing = ProjectSemanticSearch._collection.get()
+            existing_ids = set(existing.get("ids", []))
+        except Exception:
+            pass
+        project = Path(PROJECT_BASE)
+        for pattern in patterns:
+            try:
+                files = glob.glob(pattern, root_dir=str(project), recursive=True)
+            except Exception as e:
+                log_warning(f"⚠️ [SEM:index] glob {pattern} | {e}")
+                continue
+            for fpath in files:
+                try:
+                    full = project / fpath
+                    if not full.is_file():
+                        continue
+                    if full.stat().st_size >= MAX_FILE_SIZE_BYTES:
+                        continue
+                    content = full.read_text(encoding="utf-8", errors="ignore")
+                    content_hash = hashlib.sha256(content.encode()).hexdigest()
+                    doc_id = f"file_{hashlib.sha256(fpath.encode()).hexdigest()}"
+
+                    # چک تغییر
+                    if doc_id in existing_ids:
+                        try:
+                            old = ProjectSemanticSearch._collection.get(ids=[doc_id])
+                            old_meta = old.get("metadatas", [{}])[0] if old.get("metadatas") else {}
+                            old_hash = old_meta.get("content_hash", "")
+                            if old_hash == content_hash:
+                                skipped += 1
+                                continue
+                            ProjectSemanticSearch._collection.delete(ids=[doc_id])
+                            log_info(f"🔄 [SEM:index] به‌روزرسانی | {fpath}")
+                        except Exception:
+                            pass
+                    ProjectSemanticSearch._collection.add(
+                        documents=[content],
+                        metadatas=[{"path": str(fpath), "content_hash": content_hash}],
+                        ids=[doc_id],
+                    )
+                    total += 1
+                except Exception as e:
+                    failed += 1
+                    if failed <= 3:
+                        log_warning(f"⚠️ [SEM:index] {fpath} | {e}")
+        log_success(f"✅ [SEM:index] {total} ایندکس شد | skipped={skipped} | failed={failed}")
+        return total
 
 
 # ═══════════════════════════════════════════

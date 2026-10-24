@@ -1,169 +1,71 @@
-"""
-🧭 ToolRouter — انتخاب هوشمند ابزار بر اساس نوع سؤال.
-
-جای اینکه AI همه ابزارها رو امتحان کنه، ToolRouter
-می‌گه کدوم ابزارها برای این سؤال بهترن.
-
-فایده:
-  - سرعت بالا (۵۰٪ سریع‌تر)
-  - دقیق‌تر (ابزار درست)
-  - کمتر اشتباه
-"""
+"""ToolRouter — انتخاب هوشمند ابزار."""
 from __future__ import annotations
-
-import re
-from typing import Any
-
-from core.kernel.logger import log_info, log_warning
+from core.kernel.logger import log_info
 
 
 class ToolRouter:
-    """جدول تصمیم برای انتخاب ابزار.
-
-    بر اساس کلیدواژه‌های سؤال، ابزارهای مناسب رو برمی‌گردونه.
-    """
-
-    # ═══════════════════════════════════════════
-    # جدول تصمیم
-    # ═══════════════════════════════════════════
-    ROUTES: dict[str, list[str]] = {
-        # ─── وضعیت و آمار ───
-        "وضعیت": ["brain_status"],
-        "آمار": ["brain_status"],
-        "چقدر": ["brain_status"],
-        "چند": ["brain_status"],
-        "چیه": ["brain_status"],
-
-        # ─── خواب مغز ───
+    ROUTES = {
+        "وضعیت": ["brain_status", "system_dashboard"],
+        "آمار": ["brain_status", "system_dashboard"],
         "خواب": ["consolidation_run"],
         "consolidation": ["consolidation_run"],
-        "فشرده": ["consolidation_run"],
-
-        # ─── دانش ───
-        "چی می‌دونی": ["semantic_search"],
         "دانش": ["semantic_search"],
-        "یاد گرفتی": ["semantic_search"],
-        "می‌شناسی": ["semantic_search"],
-
-        # ─── پلتفرم‌ها ───
+        "چی می‌دونی": ["semantic_search"],
         "پلتفرم": ["list_platforms", "diagnose_platform"],
-        "بله": ["diagnose_platform"],
-        "ایتا": ["diagnose_platform"],
-        "روبیکا": ["diagnose_platform"],
-        "وصل نمی": ["diagnose_platform"],
-        "کار نمی": ["diagnose_platform"],
-        "خطا": ["diagnose_platform"],
-
-        # ─── کد ───
+        "بله": ["platform_health", "diagnose_platform"],
+        "ایتا": ["platform_health", "diagnose_platform"],
+        "روبیکا": ["platform_health", "diagnose_platform"],
+        "تلگرام": ["platform_health", "diagnose_platform"],
+        "وصل نمی": ["diagnose_platform", "platform_health"],
+        "کار نمی": ["diagnose_platform", "platform_health"],
+        "خطا": ["diagnose_platform", "logs"],
         "باگ": ["audit_code", "audit_file"],
-        "خطای کد": ["audit_code"],
-        "بازبینی کد": ["code_review"],
-        "audit": ["audit_code"],
-        "کد": ["read_file", "grep_search"],
-
-        # ─── فایل ───
+        "کد": ["read_file", "grep_search", "analyze_code"],
         "فایل": ["read_file", "file_info"],
         "بخوان": ["read_file"],
-        "لیست": ["list_directory"],
         "بگرد": ["find_files", "grep_search"],
-
-        # ─── سیستم ───
         "cpu": ["system_dashboard"],
         "ram": ["system_dashboard"],
         "دیسک": ["system_dashboard"],
         "پردازه": ["list_processes"],
-        "process": ["list_processes"],
-
-        # ─── وب ───
         "جستجو": ["web_search"],
-        "بگرد تو اینترنت": ["web_search"],
         "سایت": ["browse_web"],
-
-        # ─── تست ───
         "تست": ["run_tests"],
-        "test": ["run_tests"],
-        "امتحان": ["run_tests"],
-
-        # ─── دیتابیس ───
         "دیتابیس": ["query_database"],
-        "کوئری": ["query_database"],
         "sql": ["query_database"],
-
-        # ─── پروژه ───
         "پروژه": ["get_project_context"],
-        "ساختار": ["get_project_context", "list_directory"],
+        "ساختار": ["list_directory"],
     }
 
-    # ═══════════════════════════════════════════
-    # متد اصلی
-    # ═══════════════════════════════════════════
     @classmethod
-    def route(cls, question: str) -> list[str]:
-        """ابزارهای پیشنهادی برای این سؤال.
-
-        Args:
-            question: متن سؤال کاربر.
-
-        Returns:
-            لیست ابزارها به ترتیب اولویت. اگه خالی،
-            یعنی AI خودش تصمیم بگیره.
-        """
+    def route(cls, question):
         if not question:
             return []
-
-        q_low = question.lower().strip()
-        matched: list[str] = []
-
-        for keyword, tools in cls.ROUTES.items():
-            if keyword.lower() in q_low:
-                for tool in tools:
-                    if tool not in matched:
-                        matched.append(tool)
-
-        # ─── حداکثر ۵ ابزار ───
+        q = question.lower().strip()
+        matched = []
+        for kw, tools in cls.ROUTES.items():
+            if kw.lower() in q:
+                for t in tools:
+                    if t not in matched:
+                        matched.append(t)
         matched = matched[:5]
-
         if matched:
-            log_info(
-                f"🧭 [ToolRouter] '{question[:40]}' → "
-                f"{matched}"
-            )
-
+            log_info(f"ToolRouter: {question[:40]} -> {matched}")
         return matched
 
     @classmethod
-    def build_hint(cls, question: str) -> str:
-        """ساخت متن راهنما برای AI.
-
-        Args:
-            question: سؤال کاربر.
-
-        Returns:
-            متن راهنما یا "".
-        """
+    def build_hint(cls, question):
         tools = cls.route(question)
         if not tools:
             return ""
-
         return (
-            f"\n\n# 🧭 راهنمای ابزار:\n"
-            f"برای این سؤال، ابزارهای زیر مفیدن:\n"
-            + "\n".join(f"  • `{t}`" for t in tools)
-            + "\n\nاگه سؤالت ساده‌ست، شاید نیازی به همه نباشه. "
-            f"ولی این ابزارها می‌تونن کمک کنن."
+            "\n\n# راهنمای ابزار:\n"
+            + "\n".join(f"  - {t}" for t in tools)
         )
 
 
-# ─── Singleton ───
-_router_instance: ToolRouter | None = None
-
-
-def get_tool_router() -> type[ToolRouter]:
-    """دریافت ToolRouter."""
+def get_tool_router():
     return ToolRouter
 
 
-__all__ = [
-    "ToolRouter",
-    "get_tool_router",
-]
+__all__ = ["ToolRouter", "get_tool_router"]

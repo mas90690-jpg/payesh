@@ -124,7 +124,7 @@ new_lines = (
 new_content = "".join(new_lines)
 FILE.write_text(new_content, encoding="utf-8")
 
-print(f"✅ متد chat جایگزین شد!")
+print("✅ متد chat جایگزین شد!")
 print(f"   فایل: {FILE}")
 print(f"   خطوط قبل: {len(lines)}")
 print(f"   خطوط بعد: {len(new_lines)}")

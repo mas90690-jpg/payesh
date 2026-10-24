@@ -63,7 +63,6 @@ def _save_stats(stats: dict) -> None:
 # اجرای اصلی
 # ══════════════════════════════════════════════════════════
 async def run_once() -> dict:
-
     """یک بار اجرای Consolidation."""
     from core.brain.brain_memory import get_brain_memory
 
@@ -124,7 +123,6 @@ async def run_once() -> dict:
     except Exception as e:
         log_warning(f"⚠️ [CONS:decay] {e}")
 
-
     return {
         "moved": moved,
         "working_before": working_before,
@@ -167,8 +165,8 @@ async def _loop():
                         remaining = INTERVAL_HOURS * 3600 - elapsed
                         log_info(
                             f"⏳ [CONS:loop] آخرین اجرا "
-                            f"{int(elapsed/60)} دقیقه پیش — "
-                            f"صبر {int(remaining/60)} دقیقه"
+                            f"{int(elapsed / 60)} دقیقه پیش — "
+                            f"صبر {int(remaining / 60)} دقیقه"
                         )
                         await asyncio.sleep(min(remaining, 3600))
                         continue

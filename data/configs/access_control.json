@@ -40,7 +40,8 @@
       "requirements.txt",
       "pytest.ini",
       "pyproject.toml",
-      "README.md"
+      "README.md",
+      "tests/**"
     ],
     "deny": [
       ".env",
@@ -60,7 +61,8 @@
       "storage/brain/**",
       "storage/safe_brain/**",
       "storage/requests.jsonl",
-      "storage/test_reports/**"
+      "storage/test_reports/**",
+      "tests/**"
     ],
     "deny": [
       ".env",
@@ -70,7 +72,6 @@
       "collectors/**",
       "handlers/**",
       "analyzers/**",
-      "tests/**",
       "scripts/**",
       "data/products.py",
       "data/products_en.py",

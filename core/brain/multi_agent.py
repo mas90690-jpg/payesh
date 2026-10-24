@@ -21,7 +21,6 @@ import time
 from typing import Any
 
 from core.kernel.logger import (
-    log_error,
     log_info,
     log_success,
     log_warning,
@@ -88,7 +87,7 @@ class MultiAgent:
                 "expert": "network",
                 "answer": result or "",
             }
-            
+
         except TimeoutError:
             log_warning("⏰ [MULTI:network] timeout")
             return {"expert": "network", "error": "timeout"}

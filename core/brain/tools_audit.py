@@ -91,14 +91,15 @@ _FLAKE8_MAX_LINE = _env_int(
     min_val=60, max_val=500,
 )
 _MAX_OUTPUT_PREVIEW = _env_int(
-    "BRAIN_AUDIT_MAX_PREVIEW", 3000,
-    min_val=200, max_val=100_000,
+    "BRAIN_AUDIT_MAX_PREVIEW", 50_000,
+    min_val=200, max_val=500_000,
 )
-
 
 # ═══════════════════════════════════════════════════════════
 # helper: اجرای ابزار
 # ═══════════════════════════════════════════════════════════
+
+
 def _run_tool(
     tool_name: str,
     args: list[str],
@@ -130,7 +131,6 @@ def _run_tool(
             errors="replace",
         )
 
-        # pyflakes از stderr استفاده می‌کنه
         output = (r.stdout or "") + (r.stderr or "")
 
         # ─── شمارش خطوط غیرخالی ───
@@ -142,7 +142,8 @@ def _run_tool(
         return {
             "ok": True,
             "count": len(lines),
-            "output": output[:_MAX_OUTPUT_PREVIEW],
+            "output": output,  # ← کامل؛ برش در لایهٔ نمایش انجام می‌شود
+            "output_preview": output[:_MAX_OUTPUT_PREVIEW],
             "exit_code": r.returncode,
         }
     except subprocess.TimeoutExpired:
@@ -214,7 +215,7 @@ def _categorize_flake8(output: str) -> dict[str, list[str]]:
     categories: dict[str, list[str]] = {
         "style": [],      # E، W
         "logic": [],      # F (pyflakes)
-        "complexity": [], # C
+        "complexity": [],  # C
         "other": [],
     }
 
@@ -224,7 +225,7 @@ def _categorize_flake8(output: str) -> dict[str, list[str]]:
             continue
 
         # فرمت: file:line:col: CODE message
-        match = re.search(r":\s*([EWFC]\d+)", line)
+        match = re.search(r":\s*([EWFC]\d{1,4})\b", line)
         if match:
             code = match.group(1)
             if code.startswith("F"):
@@ -343,7 +344,7 @@ def audit_code(
     if include_flake8:
         flake8_args = path_args + [
             f"--max-line-length={_FLAKE8_MAX_LINE}",
-            "--select=E,F,W",
+            # --select حذف شد → setup.cfg اعمال می‌شود
             "--format=%(path)s:%(row)d:%(col)d: %(code)s %(text)s",
         ]
         flake8_result = _run_tool("flake8", flake8_args, cwd)
@@ -411,7 +412,7 @@ def audit_code(
         raw_lines.append(f"📌 {tool_name}: {count} خطا")
         output = tool_result.get("output", "")
         if output:
-            for line in output.split("\n")[:50]:
+            for line in output.splitlines():
                 if line.strip():
                     raw_lines.append(f"   {line}")
 

@@ -19,17 +19,16 @@
       * tools audit (code, file, fix_fstrings).
 """
 from __future__ import annotations
+from typing import Any
 from core.brain.mixin_platforms import PlatformMixin
 import threading
 import time
 from datetime import datetime
-from typing import Any
 
 # 🎯 از config (منبع یکتا)
 from config import AI, AI_PRIORITY
 from core.brain.constants import (
     DEFAULT_MODEL,
-    MAX_CONTEXT_TOKENS,
 )
 from core.brain.learning import (
     CodeReviewer,
@@ -146,7 +145,7 @@ _TOOL_METHODS: dict[str, str] = {
     "audit_code": "_audit_code",
     "audit_file": "_audit_file",
     "fix_fstrings": "_fix_fstrings",
-    
+
     # ═══ پلتفرم‌ها ═══
     "start_platform": "_start_platform",
     "stop_platform": "_stop_platform",
@@ -164,10 +163,10 @@ _TOOL_METHODS: dict[str, str] = {
     "consolidation_run": "_consolidation_run",
     "brain_status": "_brain_status",
     "proactive_diagnosis": "_proactive_diagnosis",
-     
+
     # 🆕 کنترل پلتفرم
     "control_platform": "_control_platform",
-    "control_stats": "_control_stats",    
+    "control_stats": "_control_stats",
 }
 
 
@@ -267,7 +266,7 @@ class Brain(
 
             try:
                 # چک: آیا event loop فعاله؟
-                loop = asyncio.get_running_loop()
+                asyncio.get_running_loop()
                 # بله → task بساز
                 self._consolidation_started = True
                 # 🐛 FIX: start_consolidation خودش Task می‌سازه — create_task لازم نیست

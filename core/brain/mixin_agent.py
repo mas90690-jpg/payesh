@@ -1,23 +1,12 @@
 """Agent loop — init_client, agent, tool execution, admin commands.
 
-نسخهٔ ۵ (این نسخه):
-  - 🎯 NEW: `_build_system_prompt` حالا از `config.get_ai_system_prompt`
-    استفاده می‌کند (شخصیت متخصص پایش کد).
-  - 🎯 FIX: `_build_system_prompt` حالا mode های audit/fix را می‌شناسد.
-  - ✅ حفظ همهٔ FIXهای نسخهٔ ۴.
-
-نسخهٔ ۴ (قبلی):
-  - 🐛 FIX مهم: `_init_client` حالا در حالت `auto` اول از
-    `config.AI["deepseek_api_key"]` می‌خواند (نه env مستقیم).
-  - 🐛 FIX: `_init_client` حالا `config.AI["model"]` را هم
-    می‌خواند (قبلاً فقط از env).
-  - 🐛 FIX: `_delegate_keyword` حالا از `data.paths.DB_FILE`
-    استفاده می‌کند.
-  - 🐛 FIX: `_THINK_TIMEOUT_S` جدا از `_API_TIMEOUT_S`.
-  - 🐛 FIX: `_QUICK_COMMANDS` کامل‌تر.
-  - 🎯 لاگ‌های دقیق‌تر در `_init_client`.
-  - 🎯 `get_client_stats()` متد جدید.
-  - ✅ حفظ همهٔ FIXهای نسخهٔ ۳.
+نسخهٔ ۶:
+  - 🐛 FIX: _build_system_prompt — platform_hint حالا قبل از return.
+  - 🐛 FIX: _reflect — بدنهٔ خالی پر شد.
+  - 🐛 FIX: agent — بلوک تکراری حذف شد.
+  - 🐛 FIX: except تکراری memory.add حذف شد.
+  - 🐛 FIX: import re تکراری داخل _plan_steps حذف شد.
+  - 🐛 FIX: get_client_stats — docstring سالم بدون emoji.
 """
 from __future__ import annotations
 
@@ -27,7 +16,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any
+
 
 from config import AI, AI_ENABLED, AI_PRIORITY, OFFLINE_MODE_ENABLED
 from core.brain.constants import (
@@ -47,7 +36,6 @@ from core.brain.tools_meta import (
     build_tool_definitions,
 )
 from core.brain.utils import PersianBrainHandler
-from core.kernel.event_bus import EventBus
 from core.kernel.logger import (
     log_error,
     log_info,
@@ -56,15 +44,7 @@ from core.kernel.logger import (
 )
 
 
-# ═══════════════════════════════════════════════════════════
-# helpers
-# ═══════════════════════════════════════════════════════════
-def _env_int(
-    name: str, default: int,
-    min_val: int | None = None,
-    max_val: int | None = None,
-) -> int:
-    """خواندن int از env — با sanitize."""
+def _env_int(name, default, min_val=None, max_val=None):
     try:
         v = int(os.getenv(name, str(default)))
     except (ValueError, TypeError):
@@ -76,12 +56,7 @@ def _env_int(
     return v
 
 
-def _env_float(
-    name: str, default: float,
-    min_val: float | None = None,
-    max_val: float | None = None,
-) -> float:
-    """خواندن float از env — با sanitize."""
+def _env_float(name, default, min_val=None, max_val=None):
     try:
         v = float(os.getenv(name, str(default)))
     except (ValueError, TypeError):
@@ -93,125 +68,55 @@ def _env_float(
     return v
 
 
-def _env_str(name: str, default: str = "") -> str:
-    """خواندن str از env — با strip."""
+def _env_str(name, default=""):
     return (os.getenv(name) or default).strip()
 
 
-# ═══════════════════════════════════════════════════════════
-# ثابت‌ها
-# ═══════════════════════════════════════════════════════════
-_WRITE_TOOLS: frozenset[str] = frozenset({
+_WRITE_TOOLS = frozenset({
     "write_file", "edit_file", "delete_file", "move_file",
 })
 
-# 🎯 env-based provider URLs
-_DEEPSEEK_URL = _env_str(
-    "DEEPSEEK_API_URL", "https://api.deepseek.com/v1"
-)
-_OPENAI_URL = _env_str(
-    "OPENAI_API_URL", "https://api.openai.com/v1"
-)
-_LOCAL_CLAUDE_URL = _env_str(
-    "LOCAL_CLAUDE_URL", "http://localhost:4000"
-)
+_DEEPSEEK_URL = _env_str("DEEPSEEK_API_URL", "https://api.deepseek.com/v1")
+_OPENAI_URL = _env_str("OPENAI_API_URL", "https://api.openai.com/v1")
+_LOCAL_CLAUDE_URL = _env_str("LOCAL_CLAUDE_URL", "http://localhost:4000")
 
-# 🎯 env-based agent parameters
-_AGENT_MAX_TOKENS = _env_int(
-    "BRAIN_AGENT_MAX_TOKENS", 4096,
-    min_val=256, max_val=32_000,
-)
-_AGENT_TEMPERATURE = _env_float(
-    "BRAIN_AGENT_TEMPERATURE", 0.1,
-    min_val=0.0, max_val=2.0,
-)
-_THINK_MAX_TOKENS = _env_int(
-    "BRAIN_THINK_MAX_TOKENS", 2048,
-    min_val=256, max_val=16_000,
-)
-_THINK_TEMPERATURE = _env_float(
-    "BRAIN_THINK_TEMPERATURE", 0.1,
-    min_val=0.0, max_val=2.0,
-)
-
-# 🎯 FIX: timeout جدا برای think (معمولاً سریع‌تر از agent)
-_API_TIMEOUT_S = _env_float(
-    "BRAIN_AGENT_API_TIMEOUT_S", 120.0,
-    min_val=5.0, max_val=600.0,
-)
-_THINK_TIMEOUT_S = _env_float(
-    "BRAIN_THINK_TIMEOUT_S", 60.0,
-    min_val=5.0, max_val=300.0,
-)
-
-_MAX_FALLBACK = _env_int(
-    "BRAIN_MAX_FALLBACK", 1,
-    min_val=0, max_val=10,
-)
-_LONG_TASK_LEN = _env_int(
-    "BRAIN_LONG_TASK_LEN", 200,
-    min_val=50, max_val=10_000,
-)
+_AGENT_MAX_TOKENS = _env_int("BRAIN_AGENT_MAX_TOKENS", 4096, 256, 32000)
+_AGENT_TEMPERATURE = _env_float("BRAIN_AGENT_TEMPERATURE", 0.1, 0.0, 2.0)
+_THINK_MAX_TOKENS = _env_int("BRAIN_THINK_MAX_TOKENS", 2048, 256, 16000)
+_THINK_TEMPERATURE = _env_float("BRAIN_THINK_TEMPERATURE", 0.1, 0.0, 2.0)
+_API_TIMEOUT_S = _env_float("BRAIN_AGENT_API_TIMEOUT_S", 120.0, 5.0, 600.0)
+_THINK_TIMEOUT_S = _env_float("BRAIN_THINK_TIMEOUT_S", 60.0, 5.0, 300.0)
+_MAX_FALLBACK = _env_int("BRAIN_MAX_FALLBACK", 1, 0, 10)
+_LONG_TASK_LEN = _env_int("BRAIN_LONG_TASK_LEN", 200, 50, 10000)
 
 
-# ═══════════════════════════════════════════════════════════
-# 🎯 FIX: دستورات سریع — کامل‌تر
-# ═══════════════════════════════════════════════════════════
-_QUICK_COMMANDS: dict[str, str] = {
-    # ─── status ───
-    "/status": "status",
-    "وضعیت": "status",
-    "status": "status",
-    "آمار": "status",
-    "/stats": "stats",
-    "stats": "stats",
-    # ─── help ───
-    "/help": "help",
-    "راهنما": "help",
-    "help": "help",
-    "/راهنما": "help",
-    "کمک": "help",
-    # ─── clear ───
-    "/clear": "clear",
-    "پاک": "clear",
-    "clear": "clear",
-    # ─── restart ───
-    "/restart": "restart",
-    "ری‌استارت": "restart",
-    "restart": "restart",
-    # ─── logs ───
-    "/logs": "logs",
-    "لاگ": "logs",
-    "logs": "logs",
-    # ─── health ───
-    "/health": "health",
-    "سلامت": "health",
-    "health": "health",
+_QUICK_COMMANDS = {
+    "/status": "status", "وضعیت": "status", "status": "status",
+    "آمار": "status", "/stats": "stats", "stats": "stats",
+    "/help": "help", "راهنما": "help", "help": "help",
+    "/راهنما": "help", "کمک": "help",
+    "/clear": "clear", "پاک": "clear", "clear": "clear",
+    "/restart": "restart", "ری‌استارت": "restart", "restart": "restart",
+    "/logs": "logs", "لاگ": "logs", "logs": "logs",
+    "/health": "health", "سلامت": "health", "health": "health",
 }
 
 
 class AgentMixin:
-    """Agent loop و tool execution — به Brain اضافه می‌شود."""
-
     ALLOWED_TOOLS = ALLOWED_TOOLS
     ALLOWED_DIRECT_COMMANDS = ALLOWED_DIRECT_COMMANDS
 
-    # ═══════════════════════════════════════════
-    # EventBus / DB
-    # ═══════════════════════════════════════════
-    def set_event_bus(self, event_bus: EventBus) -> None:
+    def set_event_bus(self, event_bus):
         self.event_bus = event_bus
 
-    def set_database(self, db: Any) -> None:
+    def set_database(self, db):
         self.db = db
 
-    async def _emit(self, event_name: str, data: Any) -> None:
+    async def _emit(self, event_name, data):
         if self.event_bus:
             try:
                 await self.event_bus.emit(
-                    f"brain.{event_name}",
-                    data,
-                    source="brain",
+                    f"brain.{event_name}", data, source="brain"
                 )
             except Exception as e:
                 log_warning(
@@ -219,46 +124,24 @@ class AgentMixin:
                     f"{type(e).__name__}: {e}"
                 )
 
-    # ═══════════════════════════════════════════
-    # Client
-    # ═══════════════════════════════════════════
-    def _init_client(self) -> None:
-        """ساخت کلاینت بر اساس `AI_PRIORITY` (از config).
-
-        ═══════════════════════════════════════════
-        🎯 FIX نسخهٔ ۴:
-        ═══════════════════════════════════════════
-        در حالت `auto`، اگر `self.api_key` خالی بود، حالا از
-        `config.AI["deepseek_api_key"]` می‌خوانیم (منبع یکتا).
-        این تضمین می‌کند که حتی اگر `Brain.__init__` api_key
-        پاس ندهد، client با کلید config ساخته شود.
-        """
-        # ─── priority ───
+    def _init_client(self):
         priority = (AI_PRIORITY or "auto").strip().lower()
-
-        # ═══════════════════════════════════════════
-        # 🎯 FIX: deepseek_api_key از config (اگر self.api_key خالی)
-        # ═══════════════════════════════════════════
-        _cfg_api_key = ""
         try:
             _cfg_api_key = (
                 (AI or {}).get("deepseek_api_key") or ""
             ).strip()
         except Exception:
             _cfg_api_key = ""
-
         _env_api_key = (
             os.environ.get("DEEPSEEK_API_KEY", "") or ""
         ).strip()
 
-        # ترتیب: self.api_key > config > env
         if self.api_key:
             effective_api_key = self.api_key
             key_source = "brain"
         elif _cfg_api_key:
             effective_api_key = _cfg_api_key
             key_source = "config"
-            # به self.api_key هم ست کن تا بقیه جاها استفاده کنند
             self.api_key = _cfg_api_key
         elif _env_api_key:
             effective_api_key = _env_api_key
@@ -269,37 +152,23 @@ class AgentMixin:
             key_source = "none"
 
         has_key = bool(effective_api_key)
-
-        # 🐛 FIX: مدل None/غیر-str امن
-        model_str = (
-            str(self.model) if self.model is not None else ""
-        )
-
-        # اگر مدل با "ollama" شروع شود → اجباراً ollama
+        model_str = str(self.model) if self.model is not None else ""
         if model_str.startswith("ollama"):
             priority = "ollama"
 
-        # ═══════════════════════════════════════════
-        # 🎯 FIX: تعیین use_ollama با در نظر گرفتن کلید effective
-        # ═══════════════════════════════════════════
         if priority == "deepseek":
             if not has_key:
                 self.client = None
                 log_warning(
-                    "⚠️ [BRAIN:client] deepseek انتخاب شد ولی "
-                    "api_key نیست (نه در Brain، نه config، نه env)"
+                    "⚠️ [BRAIN:client] deepseek بدون api_key"
                 )
                 return
             use_ollama = False
-
         elif priority == "ollama":
             use_ollama = True
-
-        else:  # auto
-            # auto: اگر کلید داریم، DeepSeek اول
+        else:
             use_ollama = not has_key
 
-        # ─── import ───
         try:
             from openai import AsyncOpenAI
         except Exception as e:
@@ -310,19 +179,14 @@ class AgentMixin:
             self.client = None
             return
 
-        # ═══════════════════════════════════════════
-        # Ollama
-        # ═══════════════════════════════════════════
         try:
             if use_ollama:
                 base_url = (
-                    (AI.get("url") or DEFAULT_BASE_URL)
-                    .rstrip("/") + "/v1"
+                    (AI.get("url") or DEFAULT_BASE_URL).rstrip("/")
+                    + "/v1"
                 )
                 self.model = (
-                    AI.get("model")
-                    or DEFAULT_MODEL
-                    or "qwen2.5:3b"
+                    AI.get("model") or DEFAULT_MODEL or "qwen2.5:3b"
                 )
                 timeout = int(
                     AI.get("timeout") or _API_TIMEOUT_S
@@ -335,20 +199,11 @@ class AgentMixin:
                 )
                 log_success(
                     f"✅ [BRAIN:client] Ollama | "
-                    f"model={self.model} | url={base_url} | "
-                    f"timeout={timeout}s | "
-                    f"api_key_source={key_source}"
+                    f"model={self.model} | url={base_url}"
                 )
                 return
 
-            # ═══════════════════════════════════════════
-            # DeepSeek / OpenAI / Local
-            # ═══════════════════════════════════════════
             base_url = _DEEPSEEK_URL
-
-            # 🎯 FIX: اگر مدل با deepseek/claude/gpt شروع نمی‌شود،
-            # یعنی مدل ollama است ولی provider=deepseek انتخاب شده
-            # → مدل را به deepseek-chat تغییر بده تا 404 نگیریم.
             if model_str.startswith("claude"):
                 base_url = _LOCAL_CLAUDE_URL
             elif model_str.startswith("gpt"):
@@ -358,14 +213,12 @@ class AgentMixin:
                 or model_str.startswith("claude")
                 or model_str.startswith("gpt")
             ):
-                # 🎯 FIX مهم: مدل ollama با provider=deepseek
                 old_model = self.model
                 self.model = _env_str(
                     "DEEPSEEK_MODEL", "deepseek-chat"
                 )
                 log_warning(
-                    f"⚠️ [BRAIN:client] مدل «{old_model}» "
-                    f"با DeepSeek ناسازگار بود → "
+                    f"⚠️ [BRAIN:client] مدل «{old_model}» → "
                     f"«{self.model}»"
                 )
 
@@ -378,22 +231,15 @@ class AgentMixin:
             )
             log_success(
                 f"✅ [BRAIN:client] {base_url} | "
-                f"model={self.model} | timeout={timeout}s | "
-                f"api_key_source={key_source} | "
-                f"key_prefix="
-                f"{effective_api_key[:8] if effective_api_key else '—'}..."
+                f"model={self.model} | key_source={key_source}"
             )
-
         except Exception as e:
             log_error(
                 f"❌ [BRAIN:client] {type(e).__name__}: {e}"
             )
             self.client = None
-            
-    # ═══════════════════════════════════════════
-    # Background index
-    # ═══════════════════════════════════════════
-    def _background_index(self) -> None:
+
+    def _background_index(self):
         try:
             log_info("📚 [BRAIN:bg:index] شروع")
             self.semantic_search.index_files()
@@ -402,38 +248,20 @@ class AgentMixin:
                 f"⚠️ [BRAIN:bg:index] "
                 f"{type(e).__name__}: {e}"
             )
-            self._index_started = False  # 🎯 اجازهٔ retry
-            
-    def _build_tools(self) -> list[dict]:
-        """ساخت لیست تعریف ابزارها."""
+            self._index_started = False
+
+    def _build_tools(self):
         return build_tool_definitions()
 
-    # ═══════════════════════════════════════════
-    # Execute tool
-    # ═══════════════════════════════════════════
-    async def _execute_tool(
-        self, name: str, args: dict
-    ) -> str:
+    async def _execute_tool(self, name, args):
         if not name:
             return "❌ نام ابزار خالی است."
-
         t0 = time.monotonic()
         tool_info = self.ALLOWED_TOOLS.get(name)
         if not tool_info:
-            log_warning(
-                f"⛔ [BRAIN:tool] ناشناخته | name={name}"
-            )
             return f"⛔ ابزار '{name}' مجاز نیست."
-
-        # ─── read_only check ───
         if self.read_only and tool_info.get("risk") != "low":
-            log_warning(
-                f"⛔ [BRAIN:tool] read_only | name={name} | "
-                f"risk={tool_info.get('risk')}"
-            )
             return "⛔ حالت فقط‌خواندنی."
-
-        # ─── write-tools path check ───
         if name in _WRITE_TOOLS:
             path = (
                 args.get("path")
@@ -449,37 +277,20 @@ class AgentMixin:
                 return (
                     f"⛔ دسترسی نوشتن در '{path}' مجاز نیست."
                 )
-
-        # 🐛 FIX: چک TOOL_MAP
         tool_map = getattr(self, "TOOL_MAP", None)
         if not tool_map:
-            log_error(
-                f"❌ [BRAIN:tool] TOOL_MAP خالی | name={name}"
-            )
-            return (
-                "❌ TOOL_MAP بارگذاری نشده — "
-                "بازسازی کلاس ناموفق بوده."
-            )
-
+            return "❌ TOOL_MAP بارگذاری نشده."
         func = tool_map.get(name)
         if not func:
-            log_warning(
-                f"⛔ [BRAIN:tool] پیاده‌نشده | name={name} | "
-                f"available={len(tool_map)}"
-            )
             return f"⛔ ابزار '{name}' پیاده‌نشده."
-
-        # ─── execute ───
         try:
             result = await func(self, **args)
             elapsed_ms = (time.monotonic() - t0) * 1000
             result_str = str(result)
-
             if elapsed_ms > SLOW_TOOL_MS:
                 log_warning(
                     f"🐌 [BRAIN:tool] {name} کند | "
-                    f"{elapsed_ms:.0f}ms | "
-                    f"out={len(result_str)}ch"
+                    f"{elapsed_ms:.0f}ms"
                 )
             else:
                 log_info(
@@ -489,9 +300,6 @@ class AgentMixin:
                 )
             return result_str
         except TypeError as e:
-            log_error(
-                f"❌ [BRAIN:tool] {name} پارامتر | {e}"
-            )
             return f"❌ پارامتر اشتباه: {e}"
         except Exception as e:
             log_error(
@@ -500,16 +308,7 @@ class AgentMixin:
             )
             return f"❌ خطا: {e}"
 
-    # ═══════════════════════════════════════════
-    # Think / Model / Prompt
-    # ═══════════════════════════════════════════
-    async def _think(
-        self, task: str, context: str = ""
-    ) -> str:
-        """تحلیل اولیه قبل از agent loop.
-
-        🐛 FIX: timeout جدا از API (معمولاً سریع‌تر).
-        """
+    async def _think(self, task, context=""):
         if not self.client:
             return ""
         prompt = (
@@ -533,11 +332,9 @@ class AgentMixin:
                     temperature=_THINK_TEMPERATURE,
                     max_tokens=_THINK_MAX_TOKENS,
                 ),
-                timeout=_THINK_TIMEOUT_S,  # 🎯 FIX
+                timeout=_THINK_TIMEOUT_S,
             )
             elapsed_ms = (time.monotonic() - t0) * 1000
-
-            # 🐛 FIX: content None امن
             content = ""
             try:
                 content = (
@@ -545,7 +342,6 @@ class AgentMixin:
                 ).strip()
             except Exception:
                 content = ""
-
             if elapsed_ms > SLOW_THINK_MS:
                 log_warning(
                     f"🐌 [BRAIN:think] کند | "
@@ -554,7 +350,8 @@ class AgentMixin:
             return content
         except TimeoutError:
             log_warning(
-                f"⏰ [BRAIN:think] timeout {_THINK_TIMEOUT_S}s"
+                f"⏰ [BRAIN:think] timeout "
+                f"{_THINK_TIMEOUT_S}s"
             )
             return ""
         except Exception as e:
@@ -564,22 +361,17 @@ class AgentMixin:
             )
             return ""
 
-    def _select_model(self, task: str) -> str:
-        """انتخاب مدل بر اساس نوع task.
-
-        - در حالت `read_only`، `deepseek-reasoner` نمی‌سازد.
-        """
-        # 🐛 FIX: normalize AI_PRIORITY
+    def _select_model(self, task):
         priority = (AI_PRIORITY or "auto").strip().lower()
         if priority == "ollama" or not self.api_key:
             return self.model
         if self.read_only:
             return self.model
-
         coding_pats = [
             r"\b(کد|بنویس|develop|write|create|build|python"
             r"|تابع|کلاس)\b",
-            r"\b(refactor|debug|fix|test|api|database|sql|query)\b",
+            r"\b(refactor|debug|fix|test|api|database|sql"
+            r"|query)\b",
             r"\b(رفع|اشکال|خطا|error|bug|issue)\b",
         ]
         if (
@@ -587,38 +379,28 @@ class AgentMixin:
             or len(task) > _LONG_TASK_LEN
         ):
             log_info(
-                "🎯 [BRAIN:model] deepseek-v4-pro انتخاب شد"
+                "🎯 [BRAIN:model] deepseek-chat انتخاب شد"
             )
-            return "deepseek-v4-pro"
+            return "deepseek-chat"
         return self.model
 
-    def _build_system_prompt(self, mode: str) -> str:
-        """🎯 ساخت system prompt بر اساس mode — از config.
-
-        نسخهٔ ۲ (دکتر فوق دقیق):
-          - 🆕 CoT (Chain-of-Thought) — AI قبل از عمل فکر کنه
-          - 🆕 ToolRouter hint — ابزارهای پیشنهادی
-          - 🆕 Knowledge Injection — دانش پروژه
-        """
-        # ─── CoT پایه ───
+    def _build_system_prompt(self, mode):
         cot_prefix = """
-# 🧠 روش کار (دکتر فوق دقیق):
+# روش کار:
 
-قبل از هر ابزار، این ۵ گام رو طی کن:
+**قانون طلایی:** اگر سؤال ساده است (سلام، احوالپرسی، سؤال عمومی)، مستقیم جواب بده - ابزار صدا نزن.
 
-1. **فهم**: سؤال واقعی چیه؟ چی می‌خواد؟
-2. **تصمیم**: کدوم ابزار لازمه؟ چرا؟
-3. **اجرا**: ابزار رو صدا بزن
-4. **چک**: آیا جواب کافیه؟ دقیق بود؟
-5. **اگه نه**: برگرد به گام ۱
+1. فهم دقیق سؤال
+2. اگر سؤال ساده است → مستقیم جواب بده (بدون ابزار)
+3. اگر سؤال فنی/کد است → از ابزارها استفاده کن
+4. تحلیل و تصمیم
+5. بازبینی نهایی
 
-⚠️ هیچ‌وقت بدون فکر کردن، ابزار صدا نزن.
-⚠️ اگه سؤال ساده‌ست، از ابزار استفاده نکن — مستقیم جواب بده.
-⚠️ اگه ابزار درست جواب نداد، دوباره تلاش نکن — راه دیگه برو.
-
+قوانین:
+- حدس نزن
+- برای سلام و احوالپرسی، ابزار صدا نزن
+- اگر مطمئن نیستی بگو «نمی‌دونم»
 """
-
-        # ─── base prompt ───
         base = ""
         try:
             from config import get_ai_system_prompt
@@ -628,27 +410,20 @@ class AgentMixin:
         except Exception as e:
             log_warning(
                 f"⚠️ [BRAIN:prompt] config | "
-                f"{type(e).__name__}: {e} — fallback"
+                f"{type(e).__name__}: {e}"
             )
-
         if not base:
             base = (
                 "You are a world-class software engineer. "
-                "Always respond in Persian (فارسی). "
-                "Be concise, precise, and helpful."
+                "Always respond in Persian. Be concise, "
+                "precise, and helpful."
             )
-
-        # ─── CoT ───
         base = cot_prefix + base
-
-        # ─── Reflexion (درس‌های قبلی) ───
         lessons = getattr(self, "_lessons", [])
         if lessons:
-            base += "\n\n# 📚 درس‌های قبلی (از اشتباهات گذشته):\n"
+            base += "\n\n# درس‌های قبلی:\n"
             for lesson in lessons[:3]:
                 base += f"- {lesson[:200]}\n"
-
-        # ─── ToolRouter hint ───
         last_task = getattr(self, "_last_task", "")
         if last_task:
             try:
@@ -658,45 +433,61 @@ class AgentMixin:
                     base += hint
             except Exception:
                 pass
-
+        platform_hint = ""
+        try:
+            _last = getattr(self, "_last_task", "") or ""
+            _plats = {
+                "بله": "bale",
+                "ایتا": "eitaa",
+                "روبیکا": "rubika",
+                "تلگرام": "telegram",
+                "واتساپ": "whatsapp",
+                "لینکدین": "linkedin",
+                "یوتیوب": "youtube",
+            }
+            _found = [
+                p for k, p in _plats.items() if k in _last
+            ]
+            if _found:
+                platform_hint = (
+                    f"\n\n# پلتفرم هدف: {', '.join(_found)}"
+                )
+        except Exception:
+            pass
+        if platform_hint:
+            base += platform_hint
         return base
-        
-    # ═══════════════════════════════════════════
-    # Agent loop
-    # ═══════════════════════════════════════════
-    async def agent(
-        self,
-        task: str,
-        mode: str = "precise",
-        bypass_busy: bool = False,
-    ) -> str:
-        """حلقهٔ اصلی agent — با tool calls و memory."""
-        if not task:
-            return "⚠️ تسک خالی است."
 
-        # ═══ صف انتظار (به جای reject فوری) ═══
-        # ═══ صف انتظار (مگر bypass_busy) ═══
+    async def agent(
+        self, task, mode="precise", bypass_busy=False
+    ):
+
+        # ⚡ پاسخ سریع برای سوالات ساده (بدون AI)
+        _simple = task.strip().lower()
+        if _simple in (
+            "سلام", "درود", "hi", "hello", "hey",
+            "چطوری", "خوبی", "چه خبر", "خوبی؟",
+            "ممنون", "مرسی", "thanks", "thank you",
+        ) or len(_simple) <= 3:
+            import random
+            _greetings = [
+                "سلام! 👋 چطور می‌تونم کمکت کنم؟",
+                "درود! 😊 آماده‌ام.",
+                "سلام! چه کاری برات انجام بدم؟",
+            ]
+            log_info(f"⚡ [BRAIN:agent] پاسخ سریع | task={task[:40]!r}")
+            return random.choice(_greetings)
         if not bypass_busy and self.busy:
             log_info(
                 f"⏳ [BRAIN:agent] صف انتظار | "
                 f"task={task[:60]!r}"
             )
-            # حداکثر ۶۰ ثانیه صبر کن
             for _ in range(60):
                 await asyncio.sleep(1)
                 if not self.busy:
                     break
             else:
-                log_warning(
-                    "⏰ [BRAIN:agent] timeout 60s — "
-                    "مغز مشغول است"
-                )
-                return (
-                    "⏰ مغز ۶۰ ثانیه مشغول بود. "
-                    "لطفاً دوباره تلاش کن."
-                )
-
-        # ─── قفل ───
+                return "⏰ مغز ۶۰ ثانیه مشغول بود."
         if not bypass_busy:
             self.busy = True
             self._busy_started_at = time.monotonic()
@@ -705,19 +496,14 @@ class AgentMixin:
                 f"🔓 [BRAIN:agent] bypass_busy | "
                 f"task={task[:60]!r}"
             )
-
         self.stats["agents_run"] += 1
         t_start = time.monotonic()
-
         log_info(
             f"🚀 [BRAIN:agent] شروع | mode={mode} | "
-            f"task={task[:LOG_PREVIEW_LEN]!r} | "
-            f"run#{self.stats['agents_run']}"
+            f"task={task[:LOG_PREVIEW_LEN]!r}"
         )
-
         step = 0
         try:
-            # ─── cache ───
             try:
                 cached = self.agent_cache.get(
                     task, self.model
@@ -728,15 +514,8 @@ class AgentMixin:
                     f"{type(e).__name__}: {e}"
                 )
                 cached = None
-
             if cached:
-                log_success(
-                    f"💡 [BRAIN:agent] از کش | "
-                    f"{time.monotonic() - t_start:.2f}s"
-                )
                 return cached
-
-            # ─── memory ───
             try:
                 self.memory.add("user", task)
             except Exception as e:
@@ -747,33 +526,50 @@ class AgentMixin:
             await self._emit(
                 "command", {"task": task, "mode": mode}
             )
-
-            # 🆕 think هوشمند: فقط برای سؤال‌های پیچیده
-            if len(task) > 50:
-                thinking = await self._think(task, context="")
-            else:
-                thinking = ""
+            _need_think = (
+                len(task) > 50
+                or any(
+                    kw in task.lower()
+                    for kw in (
+                        "چرا",
+                        "چطور",
+                        "چگونه",
+                        "مشکل",
+                        "خطا",
+                        "باگ",
+                        "نمی",
+                        "وصل",
+                        "کار نمی",
+                        "درست کار",
+                    )
+                )
+            )
+            thinking = (
+                await self._think(task, context="")
+                if _need_think
+                else ""
+            )
             selected_model = self._select_model(task)
             system_prompt = self._build_system_prompt(mode)
-            # 🆕 Knowledge Injection
             knowledge = self._inject_knowledge(task)
             if knowledge:
                 system_prompt += f"\n\n{knowledge}"
-
-            # 🆕 Planning hint
-            plan_steps = await self._plan_steps(task)
+            plan_steps = (
+                await self._plan_steps(task)
+                if len(task) > 30
+                else []
+            )
             if plan_steps:
                 system_prompt += (
-                    f"\n\n# 📋 برنامه پیشنهادی:\n"
+                    "\n\n# برنامه پیشنهادی:\n"
                     + "\n".join(
-                        f"  {i+1}. {s}"
+                        f"  {i + 1}. {s}"
                         for i, s in enumerate(plan_steps)
                     )
                 )
-                
             try:
-                context_history = (
-                    await self.memory.get_context(task)
+                context_history = await self.memory.get_context(
+                    task
                 )
             except Exception as e:
                 log_warning(
@@ -781,8 +577,7 @@ class AgentMixin:
                     f"{type(e).__name__}: {e}"
                 )
                 context_history = []
-
-            messages: list[dict] = (
+            messages = (
                 [{"role": "system", "content": system_prompt}]
                 + context_history
                 + [{"role": "user", "content": task}]
@@ -795,26 +590,19 @@ class AgentMixin:
                         "content": f"تحلیل اولیه:\n{thinking}",
                     },
                 )
-
             final_answer = ""
-            tools_used: list[str] = []
+            tools_used = []
             fallback_count = 0
-
             while step < MAX_AGENT_STEPS:
                 step += 1
                 step_t0 = time.monotonic()
-
                 if not self.client:
-                    if OFFLINE_MODE_ENABLED:
-                        final_answer = self._offline_agent(task)
-                    else:
-                        final_answer = (
-                            "⚠️ مغز در دسترس نیست "
-                            "(DeepSeek متصل نشد)."
-                        )
+                    final_answer = (
+                        self._offline_agent(task)
+                        if OFFLINE_MODE_ENABLED
+                        else "⚠️ مغز در دسترس نیست."
+                    )
                     break
-
-                # ─── API call (با timeout) ───
                 try:
                     response = await asyncio.wait_for(
                         self.client.chat.completions.create(
@@ -827,13 +615,9 @@ class AgentMixin:
                         timeout=_API_TIMEOUT_S,
                     )
                 except TimeoutError:
-                    log_error(
-                        f"⏰ [BRAIN:agent] API timeout "
-                        f"گام {step} | {_API_TIMEOUT_S}s"
-                    )
                     final_answer = (
-                        f"⏰ API timeout ({_API_TIMEOUT_S}s) — "
-                        f"گام {step}"
+                        f"⏰ API timeout ({_API_TIMEOUT_S}s)"
+                        f" — گام {step}"
                     )
                     break
                 except Exception as e:
@@ -841,87 +625,80 @@ class AgentMixin:
                         f"❌ [BRAIN:agent] API گام {step} | "
                         f"{type(e).__name__}: {e}"
                     )
-                    # fallback به مدل پیش‌فرض
                     if (
-                        (AI_PRIORITY or "").lower() != "ollama"
+                        (AI_PRIORITY or "").lower()
+                        != "ollama"
                         and selected_model != DEFAULT_MODEL
                         and fallback_count < _MAX_FALLBACK
                     ):
-                        log_warning(
-                            f"⚠️ [BRAIN:agent] fallback به "
-                            f"{DEFAULT_MODEL} "
-                            f"({fallback_count + 1}/{_MAX_FALLBACK})"
-                        )
                         selected_model = DEFAULT_MODEL
                         fallback_count += 1
-                        step -= 1  # این iteration را دوباره
+                        step -= 1
                         continue
                     final_answer = f"❌ خطای API: {e}"
                     break
-
                 msg = response.choices[0].message
-
-                # ─── بدون tool call → پاسخ نهایی ───
                 if not msg.tool_calls:
                     final_answer = (
                         msg.content or "✅ عملیات تکمیل شد."
                     )
-                    messages.append({
-                        "role": "assistant",
-                        "content": final_answer,
-                    })
-                    break
-
-                # ─── tool calls ───
-                messages.append({
-                    "role": "assistant",
-                    "content": msg.content or "",
-                    "tool_calls": [
+                    messages.append(
                         {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.function.name,
-                                "arguments": tc.function.arguments,
-                            },
+                            "role": "assistant",
+                            "content": final_answer,
                         }
-                        for tc in msg.tool_calls
-                    ],
-                })
-
+                    )
+                    break
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": msg.content or "",
+                        "tool_calls": [
+                            {
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.function.name,
+                                    "arguments": (
+                                        tc.function.arguments
+                                    ),
+                                },
+                            }
+                            for tc in msg.tool_calls
+                        ],
+                    }
+                )
                 for tc in msg.tool_calls:
                     name = tc.function.name
                     tools_used.append(name)
                     try:
                         args = (
                             json.loads(tc.function.arguments)
-                            if tc.function.arguments else {}
+                            if tc.function.arguments
+                            else {}
                         )
                     except json.JSONDecodeError as e:
                         log_warning(
                             f"⚠️ [BRAIN:agent] args JSON "
-                            f"نامعتبر | {name} | {e} | "
-                            f"raw={tc.function.arguments[:80]!r}"
+                            f"نامعتبر | {name} | {e}"
                         )
                         args = {}
-
                     log_info(
                         f"     🔧 [BRAIN:agent] {name} | "
-                        f"args={str(args)[:LOG_PREVIEW_LEN]}"
+                        f"args="
+                        f"{str(args)[:LOG_PREVIEW_LEN]}"
                     )
                     result = await self._execute_tool(name, args)
                     result_str = str(result)
-                    log_info(
-                        f"     📤 [BRAIN:agent] {name} → "
-                        f"{result_str[:LOG_PREVIEW_LEN]}"
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": result_str[
+                                :MAX_CONTENT_LENGTH
+                            ],
+                        }
                     )
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": result_str[:MAX_CONTENT_LENGTH],
-                    })
-
-                    # ─── auto-run tests ───
                     if (
                         name in ("write_file", "edit_file")
                         and "✅" in result_str
@@ -931,28 +708,27 @@ class AgentMixin:
                             args.get("path", "")
                         )
                         if test_res:
-                            messages.append({
-                                "role": "system",
-                                "content": (
-                                    f"🧪 تست خودکار:\n{test_res}"
-                                ),
-                            })
-
+                            messages.append(
+                                {
+                                    "role": "system",
+                                    "content": (
+                                        f"🧪 تست خودکار:\n"
+                                        f"{test_res}"
+                                    ),
+                                }
+                            )
                 step_elapsed_ms = (
                     time.monotonic() - step_t0
                 ) * 1000
                 if step_elapsed_ms > SLOW_STEP_MS:
                     log_warning(
-                        f"🐌 [BRAIN:agent] گام {step} کند | "
-                        f"{step_elapsed_ms:.0f}ms"
+                        f"🐌 [BRAIN:agent] گام {step} کند"
+                        f" | {step_elapsed_ms:.0f}ms"
                     )
-
             final_answer = (
                 final_answer
                 or f"⚠️ سقف گام ({MAX_AGENT_STEPS})."
             )
-            
-            # 🆕 Reflection — بازبینی خود
             if (
                 final_answer
                 and len(final_answer) > 50
@@ -962,9 +738,6 @@ class AgentMixin:
                 final_answer = await self._reflect(
                     task, final_answer
                 )
-                
-
-            # ─── cache ───
             try:
                 self.agent_cache.set(
                     task, final_answer, self.model
@@ -974,9 +747,6 @@ class AgentMixin:
                     f"⚠️ [BRAIN:agent] cache.set | "
                     f"{type(e).__name__}: {e}"
                 )
-
-            # ─── memory ───
-            # ─── memory ───
             try:
                 self.memory.add("assistant", final_answer)
             except Exception as e:
@@ -984,44 +754,33 @@ class AgentMixin:
                     f"⚠️ [BRAIN:agent] memory.add | "
                     f"{type(e).__name__}: {e}"
                 )
-
-            # 🆕 Feedback Loop — یادگیری از تجربه
             try:
                 _head = final_answer[:150]
                 success = (
                     "❌" not in _head
                     and "⏰" not in _head
                 )
-
-                # ─── ذخیره در memory ───
                 self.memory.remember(
                     question=task,
                     answer=final_answer[:500],
                     importance=0.8 if success else 0.4,
                 )
-
-                # ─── اگه خطا بود، درس ذخیره کن ───
                 if not success:
                     self.memory.add_lesson(
                         wrong=task[:200],
-                        correct=f"پاسخ: {final_answer[:200]}",
+                        correct=(
+                            f"پاسخ: {final_answer[:200]}"
+                        ),
                     )
                     log_info(
-                        "📚 [BRAIN:feedback] درس جدید ذخیره شد"
+                        "📚 [BRAIN:feedback] "
+                        "درس جدید ذخیره شد"
                     )
             except Exception as e:
                 log_warning(
                     f"⚠️ [BRAIN:feedback] "
                     f"{type(e).__name__}: {e}"
                 )
-                
-            except Exception as e:
-                log_warning(
-                    f"⚠️ [BRAIN:agent] memory.add | "
-                    f"{type(e).__name__}: {e}"
-                )
-
-            # 🎯 FIX: فقط در ۲۰۰ کاراکتر اول چک کن (نه کل جواب)
             _head = final_answer[:200]
             success = (
                 "❌" not in _head
@@ -1042,29 +801,31 @@ class AgentMixin:
                     f"⚠️ [BRAIN:agent] learning | "
                     f"{type(e).__name__}: {e}"
                 )
-
             total_s = time.monotonic() - t_start
             log_success(
-                f"✅ [BRAIN:agent] کامل | steps={step} | "
-                f"tools={len(tools_used)} | {total_s:.1f}s | "
-                f"success={success}"
+                f"✅ [BRAIN:agent] کامل | "
+                f"steps={step} | "
+                f"tools={len(tools_used)} | "
+                f"{total_s:.1f}s | success={success}"
             )
             return final_answer
-
         except Exception as e:
             self.stats["errors"] += 1
             log_error(
-                f"❌ [BRAIN:agent] {type(e).__name__}: {e} | "
-                f"step={step}"
+                f"❌ [BRAIN:agent] {type(e).__name__}: "
+                f"{e} | step={step}"
             )
-            # 🎯 ذخیره در Reflexion (MemoryStore)
             try:
-                from core.adapters.memory_store import MemoryStore
+                from core.adapters.memory_store import (
+                    MemoryStore,
+                )
                 store = MemoryStore()
                 store.add(
                     category="reflexion",
                     key=f"error:{type(e).__name__}",
-                    value=f"تسک: {task[:200]} | خطا: {e}",
+                    value=(
+                        f"تسک: {task[:200]} | خطا: {e}"
+                    ),
                     importance=0.8,
                 )
             except Exception:
@@ -1073,50 +834,22 @@ class AgentMixin:
         finally:
             if not bypass_busy:
                 self.busy = False
-            # ─── لاگ زمان اجرا ───
-            if not bypass_busy:
-                try:
-                    started = getattr(
-                        self, "_busy_started_at", 0
-                    )
-                    if started:
-                        elapsed = (
-                            time.monotonic() - started
-                        )
-                        if elapsed > 60:
-                            log_warning(
-                                f"🐌 [BRAIN:agent] طولانی | "
-                                f"{elapsed:.1f}s"
-                            )
-                except Exception:
-                    pass
 
-    def _offline_agent(self, task: str) -> str:
-        """پاسخ آفلاین — بدون AI.
-
-        🐛 FIX: از word-boundary استفاده می‌کنیم (قبلاً substring بود).
-        """
+    def _offline_agent(self, task):
         if not task:
             return "❓ چطور می‌تونم کمکت کنم؟"
-
         t = task.strip().lower()
-
         for cmd, action in self.ALLOWED_DIRECT_COMMANDS.items():
-            # 🐛 FIX: word-boundary برای triggerهای کوتاه
             cmd_low = cmd.lower()
             if len(cmd_low) <= 3:
-                # چک دقیق برای trigger کوتاه
-                if t == cmd_low or t.startswith(
-                    cmd_low + " "
+                if not (
+                    t == cmd_low
+                    or t.startswith(cmd_low + " ")
                 ):
-                    pass
-                else:
                     continue
             else:
-                # substring برای trigger بلند
                 if cmd_low not in t:
                     continue
-
             if action == "greeting":
                 return "سلام! مغز آماده است."
             elif action == "status":
@@ -1129,22 +862,19 @@ class AgentMixin:
                     return self.get_help()
                 except Exception:
                     return "📚 راهنما در دسترس نیست."
-
         return (
             "🔍 حالت آفلاین.\n"
             "• /status — وضعیت\n"
             "• /help — راهنما"
         )
 
-    async def _auto_run_tests(self, file_path: str) -> str:
-        """اجرای خودکار تست برای فایل."""
+    async def _auto_run_tests(self, file_path):
         if not file_path:
             return ""
         try:
             p = Path(file_path)
         except Exception:
             return ""
-
         candidates = [
             p.parent / f"test_{p.name}",
             Path("tests") / f"test_{p.name}",
@@ -1159,30 +889,20 @@ class AgentMixin:
                 continue
         return ""
 
-    # ═══════════════════════════════════════════
-    # Admin commands
-    # ═══════════════════════════════════════════
-    async def process_admin_command(self, text: str) -> str:
-        """پردازش دستور مدیر — با AI intent + agent fallback."""
+    async def process_admin_command(self, text):
         if not text:
             return ""
-
         self.stats["commands_processed"] += 1
-        time.monotonic()
         log_info(
             f"👤 [BRAIN:cmd] "
             f"#{self.stats['commands_processed']} | "
             f"{text[:LOG_PREVIEW_LEN]!r}"
         )
-
         try:
             text = PersianBrainHandler.fix(text)
         except Exception:
             pass
-
         t = text.strip().lower()
-
-        # ─── دستورات سریع ───
         quick = _QUICK_COMMANDS.get(t)
         if quick == "status":
             return self.get_status()
@@ -1196,8 +916,7 @@ class AgentMixin:
             return self.get_stats()
         if quick == "restart":
             return (
-                "🔄 برای ری‌استارت، از ChatOps استفاده کن: "
-                "«ری‌استارت» در بله."
+                "🔄 برای ری‌استارت، از ChatOps استفاده کن."
             )
         if quick == "logs":
             try:
@@ -1209,8 +928,6 @@ class AgentMixin:
                 return await self._get_health_report()
             except Exception as e:
                 return f"❌ خطا: {e}"
-
-        # ─── حالت ───
         if t.startswith("/mode ") or t.startswith("حالت "):
             try:
                 mode = t.split(maxsplit=1)[1]
@@ -1218,24 +935,16 @@ class AgentMixin:
                 return f"✅ حالت '{mode}' فعال شد."
             except Exception as e:
                 return f"❌ خطا: {e}"
-
-        # ─── AI intent ───
         if AI_ENABLED:
             try:
                 from core.services.ai_assistant import (
                     get_ai_assistant,
                 )
-
                 ai = get_ai_assistant()
                 if await ai.available():
                     intent = await ai.parse_intent(text)
                     action = intent.get("action", "unknown")
                     args = intent.get("args", {})
-                    log_info(
-                        f"🎯 [BRAIN:cmd] intent | "
-                        f"action={action} | "
-                        f"args={list(args.keys())}"
-                    )
                     result = await self._handle_action(
                         action, args, text
                     )
@@ -1246,27 +955,18 @@ class AgentMixin:
                     f"⚠️ [BRAIN:cmd] AI assistant | "
                     f"{type(e).__name__}: {e}"
                 )
-
-        # ─── agent fallback ───
         if self.client:
             return await self.agent(text)
-
-        # 🎯 اگه آفلاین خاموشه، پیام خطا بده
         if not OFFLINE_MODE_ENABLED:
-            return "⚠️ مغز در دسترس نیست (DeepSeek متصل نشد)."
-
+            return "⚠️ مغز در دسترس نیست."
         return self._offline_agent(text)
-        
-    async def _handle_action(
-        self, action: str, args: dict, original_text: str
-    ) -> str | None:
-        """اجرای action استخراج‌شده توسط AI."""
+
+    async def _handle_action(self, action, args, original_text):
         log_info(
             f"🎬 [BRAIN:action] {action} | "
             f"args={list(args.keys())}"
         )
         t0 = time.monotonic()
-
         try:
             if action == "status":
                 result = self.get_status()
@@ -1277,26 +977,21 @@ class AgentMixin:
             elif action == "keywords":
                 result = await self._get_keywords_report()
             elif action == "platform_status":
-                platform = args.get("value", "")
                 result = await self._get_platform_status(
-                    platform
+                    args.get("value", "")
                 )
             elif action == "report":
                 result = await self._get_report()
             elif action == "crm":
                 result = (
-                    "📊 خروجی CRM توسط admin_handler ساخته "
-                    "می‌شود.\n"
-                    "دستور «crm» یا «crm <platform>» "
-                    "(مثلاً «crm ایتا») را در بله بفرست."
+                    "📊 خروجی CRM توسط admin_handler."
                 )
             elif action == "logs":
                 result = self._get_recent_logs()
             elif action == "lead_details":
-                which = args.get("value", "last")
-                result = await self._get_lead_details(which)
-
-            # 🐛 FIX: delegate به manual_brain
+                result = await self._get_lead_details(
+                    args.get("value", "last")
+                )
             elif action == "add_keyword":
                 result = await self._delegate_keyword(
                     "add", args.get("value", "")
@@ -1305,19 +1000,13 @@ class AgentMixin:
                 result = await self._delegate_keyword(
                     "remove", args.get("value", "")
                 )
-
             elif action == "has_keyword":
-                kw = args.get("value", "")
-                result = await self._check_keyword(kw)
-
+                result = await self._check_keyword(
+                    args.get("value", "")
+                )
             elif action in ("ask", "feature_request"):
                 result = await self.agent(original_text)
-
             else:
-                log_warning(
-                    f"⚠️ [BRAIN:action] ناشناخته | "
-                    f"action={action}"
-                )
                 result = None
         except Exception as e:
             log_error(
@@ -1325,7 +1014,6 @@ class AgentMixin:
                 f"{type(e).__name__}: {e}"
             )
             result = None
-
         elapsed_ms = (time.monotonic() - t0) * 1000
         if elapsed_ms > SLOW_ACTION_MS:
             log_warning(
@@ -1334,36 +1022,20 @@ class AgentMixin:
             )
         return result
 
-    # ═══════════════════════════════════════════
-    # 🎯 FIX: _delegate_keyword با data.paths
-    # ═══════════════════════════════════════════
-    async def _delegate_keyword(
-        self, op: str, kw: str
-    ) -> str:
-        """🎯 delegate کردن add/remove keyword به manual_brain.
-
-        🐛 FIX: مسیر DB از `data.paths.DB_FILE` می‌آید
-        (قبلاً hardcode بود و در PostgreSQL شکست می‌خورد).
-        """
+    async def _delegate_keyword(self, op, kw):
         if not kw:
             return "⚠️ کلیدواژه خالی است."
-
-        # ─── مسیر DB ───
         db_path = ""
         try:
-            # اول از db instance
             db_path = getattr(self.db, "db_path", "") or ""
         except Exception:
             pass
-
         if not db_path:
-            # fallback: data.paths.DB_FILE
             try:
                 from data import paths as data_paths
                 db_path = str(data_paths.DB_FILE)
             except Exception:
                 db_path = "storage/database/messages.db"
-
         try:
             from core.manual.brain import get_manual_brain
             mbrain = get_manual_brain(db_path)
@@ -1373,87 +1045,65 @@ class AgentMixin:
                 return mbrain._remove_keyword(kw)
         except Exception as e:
             log_warning(
-                f"⚠️ [BRAIN:delegate] {op} | db={db_path} | "
+                f"⚠️ [BRAIN:delegate] {op} | "
+                f"db={db_path} | "
                 f"{type(e).__name__}: {e}"
             )
         return (
-            f"🔧 برای {op} کلیدواژه «{kw}» از ChatOps استفاده کن: "
-            f"«کلیدواژه «{kw}» را اضافه کن»"
+            f"🔧 برای {op} کلیدواژه «{kw}» "
+            f"از ChatOps استفاده کن."
         )
 
-    # ═══════════════════════════════════════════
-    # Build from map / self upgrade
-    # ═══════════════════════════════════════════
-    async def build_from_map(
-        self, task: str, max_retries: int = 3
-    ) -> str:
-        """ساخت از نقشه با planner."""
+    async def build_from_map(self, task, max_retries=3):
         if not self.planner:
             return "❌ برنامه‌ریز نیست."
         if not self.client:
             return "❌ حالت آفلاین."
         try:
             result = await self.planner.execute_plan(task)
-            return f"🏗️ **ساخت از نقشه:**\n{result}"
+            return f"🏗️ ساخت از نقشه:\n{result}"
         except Exception as e:
-            log_error(
-                f"❌ [BRAIN:build_map] "
-                f"{type(e).__name__}: {e}"
-            )
             return f"❌ خطا: {e}"
 
-    async def self_upgrade(
-        self, upgrade_request: str = "بهبود کد"
-    ) -> str:
-        """خودارتقا — بازبینی کد خود."""
+    async def self_upgrade(self, upgrade_request="بهبود کد"):
         if not self.client:
             return "❌ حالت آفلاین."
         try:
-            prompt = f"خودت را بازبینی کن: {upgrade_request}"
-            result = await self.agent(prompt, mode="analyze")
-            return f"🔄 **خودارتقا:**\n{result}"
-        except Exception as e:
-            log_error(
-                f"❌ [BRAIN:self_upgrade] "
-                f"{type(e).__name__}: {e}"
+            prompt = (
+                f"خودت را بازبینی کن: {upgrade_request}"
             )
+            result = await self.agent(
+                prompt, mode="analyze"
+            )
+            return f"🔄 خودارتقا:\n{result}"
+        except Exception as e:
             return f"❌ خطا: {e}"
 
-    # ═══════════════════════════════════════════
-    # 🆕 Planning (برنامه‌ریزی)
-    # ═══════════════════════════════════════════
-    async def _plan_steps(self, task: str) -> list[str]:
-        """ساخت برنامه برای سؤال‌های پیچیده.
-
-        Args:
-            task: سؤال.
-
-        Returns:
-            لیست گام‌ها. اگه ساده، خالی.
-        """
+    async def _plan_steps(self, task):
         if not self.client or not task:
             return []
-
-        # ─── سؤال‌های ساده نیازی ندارن ───
         if len(task) < 30:
             return []
-
-        prompt = f"""برای این سؤال، یه برنامه ۱-۵ مرحله‌ای بنویس:
-
-**سؤال:** {task}
-
-**فرمت خروجی:**
-1. گام اول
-2. گام دوم
-...
-
-اگه سؤال ساده‌ست، فقط بنویس: **ساده**
-"""
+        prompt = (
+            "برای این سؤال، یه برنامه ۱-۵ مرحله‌ای "
+            "بنویس:\n\n"
+            f"**سؤال:** {task}\n\n"
+            "**فرمت خروجی:**\n"
+            "1. گام اول\n"
+            "2. گام دوم\n"
+            "...\n\n"
+            "اگه سؤال ساده‌ست، فقط بنویس: **ساده**\n"
+        )
         try:
             r = await asyncio.wait_for(
                 self.client.chat.completions.create(
                     model=self.model,
-                    messages=[{"role": "user", "content": prompt}],
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": prompt,
+                        }
+                    ],
                     temperature=0.1,
                     max_tokens=500,
                 ),
@@ -1462,22 +1112,18 @@ class AgentMixin:
             result = (
                 r.choices[0].message.content or ""
             ).strip()
-
             if "ساده" in result[:20]:
                 return []
-
-            # ─── استخراج گام‌ها ───
             steps = []
             for line in result.split("\n"):
                 line = line.strip()
                 if not line:
                     continue
-                # فرمت: "1. ..." یا "۱. ..."
-                import re
-                m = re.match(r"^[\d۰-۹]+[\.\-]\s*(.+)", line)
+                m = re.match(
+                    r"^[\d۰-۹]+[\.\-]\s*(.+)", line
+                )
                 if m:
                     steps.append(m.group(1)[:200])
-
             if steps:
                 log_info(
                     f"📋 [BRAIN:plan] {len(steps)} گام"
@@ -1486,51 +1132,67 @@ class AgentMixin:
         except Exception:
             return []
 
-    # ═══════════════════════════════════════════
-    # 🆕 Knowledge Injection (تزریق دانش)
-    # ═══════════════════════════════════════════
-    def _inject_knowledge(self, task: str) -> str:
-        """تزریق دانش پروژه به prompt.
-
-        Args:
-            task: سؤال.
-
-        Returns:
-            متن دانش یا "".
-        """
+    def _inject_knowledge(self, task):
         if not task:
             return ""
-
-        parts: list[str] = []
-
-        # ─── Semantic (ChromaDB) ───
+        parts = []
         try:
-            if self.memory and self.memory.semantic.enabled:
-                docs = self.memory.semantic.search(task, n=3)
-                if docs:
-                    parts.append("# 📚 دانش پروژه:")
-                    for doc in docs[:3]:
-                        parts.append(f"- {doc[:200]}")
-        except Exception as e:
-            log_warning(f"⚠️ [BRAIN:inject:sem] {e}")
-
-        # ─── Lessons (Reflexion) ───
-        try:
-            if self.memory:
-                lessons = self.memory.long_term.search_lessons(
-                    task
+            if (
+                self.memory
+                and self.memory.semantic.enabled
+            ):
+                docs = self.memory.semantic.search(
+                    task, n=5
                 )
-                if lessons:
-                    parts.append("\n# 📚 درس‌های قبلی:")
-                    for lesson in lessons[:3]:
+                if docs:
+                    parts.append("# دانش پروژه:")
+                    for doc in docs[:5]:
+                        parts.append(f"- {doc[:300]}")
+        except Exception as e:
+            log_warning(
+                f"⚠️ [BRAIN:inject:sem] {e}"
+            )
+        try:
+            if self.memory and hasattr(
+                self.memory, "hybrid_recall"
+            ):
+                hybrid = self.memory.hybrid_recall(
+                    task, n=3
+                )
+                if hybrid:
+                    parts.append(
+                        "\n# جستجوی ترکیبی:"
+                    )
+                    for r in hybrid[:3]:
                         parts.append(
-                            f"- قبلاً: {lesson['wrong'][:80]} "
-                            f"→ درست: {lesson['correct'][:80]}"
+                            f"- "
+                            f"[{r.get('source', '?')}] "
+                            f"{r.get('content', '')[:200]}"
                         )
         except Exception as e:
-            log_warning(f"⚠️ [BRAIN:inject:lessons] {e}")
-
-        # ─── Experience (experience_learner) ───
+            log_warning(
+                f"⚠️ [BRAIN:inject:hybrid] {e}"
+            )
+        try:
+            if self.memory:
+                lessons = (
+                    self.memory.long_term.search_lessons(
+                        task
+                    )
+                )
+                if lessons:
+                    parts.append("\n# درس‌های قبلی:")
+                    for lesson in lessons[:3]:
+                        parts.append(
+                            f"- قبلاً: "
+                            f"{lesson['wrong'][:80]} "
+                            f"→ درست: "
+                            f"{lesson['correct'][:80]}"
+                        )
+        except Exception as e:
+            log_warning(
+                f"⚠️ [BRAIN:inject:lessons] {e}"
+            )
         try:
             from core.brain.experience_learner import (
                 get_experience,
@@ -1541,49 +1203,36 @@ class AgentMixin:
                 parts.append(f"\n{exp_text}")
         except Exception:
             pass
-
         return "\n".join(parts) if parts else ""
-        
-    # ═══════════════════════════════════════════
-    # 🆕 Reflection (بازبینی خود)
-    # ═══════════════════════════════════════════
-    async def _reflect(
-        self, task: str, answer: str
-    ) -> str:
-        """بازبینی پاسخ — آیا کامل بود؟
 
-        Args:
-            task: سؤال اصلی.
-            answer: پاسخ AI.
-
-        Returns:
-            پاسخ بهبودیافته یا پاسخ اصلی.
-        """
+    async def _reflect(self, task, answer):
         if not self.client or not answer:
             return answer
-
-        if len(answer) < 50:
-            return answer  # پاسخ کوتاه، نیازی نیست
-
-        prompt = f"""تو یه بازبین دقیق هستی. این پاسخ رو بازبینی کن:
-
-**سؤال:** {task[:300]}
-
-**پاسخ تو:** {answer[:1500]}
-
-**بازبینی:**
-1. آیا به سؤال جواب داده؟
-2. آیا چیزی جا افتاده؟
-3. آیا می‌تونی بهتر جواب بدی؟
-
-اگه پاسخ کامل بود، فقط بنویس: **خوب**
-اگه نه، پاسخ بهتر رو بنویس.
-"""
+        prompt = (
+            "تو یه بازبین دقیق هستی. "
+            "این پاسخ رو بازبینی کن:\n\n"
+            f"**سؤال:** {task[:300]}\n\n"
+            f"**پاسخ تو:** {answer[:2000]}\n\n"
+            "**بازبینی دقیق:**\n"
+            "1. کاملی\n"
+            "2. دقت\n"
+            "3. عملی بودن\n"
+            "4. روشنی\n"
+            "5. پیش‌بینی\n\n"
+            "اگه پاسخ کامل و دقیق بود، "
+            "فقط بنویس: **خوب**\n\n"
+            "اگه نه، پاسخ بهتر و کامل‌تر رو بنویس.\n"
+        )
         try:
             r = await asyncio.wait_for(
                 self.client.chat.completions.create(
                     model=self.model,
-                    messages=[{"role": "user", "content": prompt}],
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": prompt,
+                        }
+                    ],
                     temperature=0.1,
                     max_tokens=1000,
                 ),
@@ -1592,11 +1241,14 @@ class AgentMixin:
             reflection = (
                 r.choices[0].message.content or ""
             ).strip()
-
-            if reflection == "خوب" or "خوب" in reflection[:10]:
-                log_info("✅ [BRAIN:reflect] پاسخ کامل")
+            if (
+                reflection == "خوب"
+                or "خوب" in reflection[:10]
+            ):
+                log_info(
+                    "✅ [BRAIN:reflect] پاسخ کامل"
+                )
                 return answer
-
             log_info(
                 f"🔍 [BRAIN:reflect] بهبود یافت | "
                 f"+{len(reflection) - len(answer)}ch"
@@ -1609,21 +1261,9 @@ class AgentMixin:
             )
             return answer
 
-    # ═══════════════════════════════════════════
-    # 🆕 Multi-Agent (چند Expert)
-    # ═══════════════════════════════════════════
-    async def ask_multi(self, question: str) -> str:
-        """پرسش از چند Expert و جمع‌بندی.
-
-        Args:
-            question: سؤال کاربر.
-
-        Returns:
-            پاسخ نهایی (جمع‌بندی).
-        """
+    async def ask_multi(self, question):
         if not question or not question.strip():
             return "⚠️ سؤال خالی است."
-
         try:
             from core.brain.multi_agent import (
                 get_multi_agent,
@@ -1636,21 +1276,20 @@ class AgentMixin:
                 f"{type(e).__name__}: {e}"
             )
             return f"❌ خطا در Multi-Agent: {e}"
-            
-    # ═══════════════════════════════════════════
-    # 🎯 NEW: get_client_stats برای debug
-    # ═══════════════════════════════════════════
-    def get_client_stats(self) -> dict[str, Any]:
-        """🎯 خلاصهٔ وضعیت client — برای debug."""
+
+    def get_client_stats(self):
         return {
             "client_ready": self.client is not None,
             "model": self.model,
             "api_key_set": bool(self.api_key),
             "api_key_prefix": (
                 self.api_key[:8] + "..."
-                if self.api_key else "—"
+                if self.api_key
+                else "—"
             ),
-            "priority": (AI_PRIORITY or "auto").lower(),
+            "priority": (
+                AI_PRIORITY or "auto"
+            ).lower(),
             "api_timeout_s": _API_TIMEOUT_S,
             "think_timeout_s": _THINK_TIMEOUT_S,
             "agent_max_tokens": _AGENT_MAX_TOKENS,

@@ -304,7 +304,7 @@ PERSISTENT_REMEMBER_CONVERSATIONS: bool = _env_bool(
 
 # غیرفعال بودن Semantic (پیش‌فرض: false = فعال)
 DISABLE_SEMANTIC: bool = _env_bool(
-    "BRAIN_DISABLE_SEMANTIC", False
+    "BRAIN_DISABLE_SEMANTIC", True
 )
 
 # سقف نتایج جستجو

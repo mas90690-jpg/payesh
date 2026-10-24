@@ -48,7 +48,6 @@ from core.brain.brain_memory import (
     get_persistent_memory,
     reset_brain_memory,
     reset_persistent_memory,
-    HybridSearch,
 )
 
 # ─── Memory (secondary — memory.py) ───

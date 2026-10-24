@@ -18,7 +18,7 @@ import sqlite3
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+
 
 from core.kernel.logger import (
     log_error,
@@ -197,9 +197,16 @@ class LongTermMemory:
 
     def get_stats(self) -> dict:
         with sqlite3.connect(self.db_path) as conn:
-            k = conn.execute("SELECT COUNT(*) FROM knowledge").fetchone()[0]
-            l = conn.execute("SELECT COUNT(*) FROM lessons").fetchone()[0]
-            return {"knowledge": k, "lessons": l}
+            knowledge_count = conn.execute(
+                "SELECT COUNT(*) FROM knowledge"
+            ).fetchone()[0]
+            lessons_count = conn.execute(
+                "SELECT COUNT(*) FROM lessons"
+            ).fetchone()[0]
+            return {
+                "knowledge": knowledge_count,
+                "lessons": lessons_count,
+            }
 
 
 # ══════════════════════════════════════════════════════════
@@ -271,6 +278,12 @@ class SemanticMemory:
     def __init__(self):
         self.enabled = False
         self.collection = None
+
+        # ⚡ غیرفعال کردن ChromaDB برای سرعت (پیش‌فرض: خاموش)
+        if os.environ.get("DISABLE_CHROMA", "0") == "1":
+            log_info("ℹ️ [SEM:init] ChromaDB غیرفعال (DISABLE_CHROMA=1)")
+            return
+
         try:
             import chromadb
             client = chromadb.PersistentClient(
@@ -701,8 +714,8 @@ class PersistentMemory:
                 )
             else:
                 log_info(
-                    f"🧹 [PM:decay] چیزی تغییر نکرد | "
-                    f"updated=0 | deleted=0"
+                    "🧹 [PM:decay] چیزی تغییر نکرد | "
+                    "updated=0 | deleted=0"
                 )
 
             return {"updated": updated, "deleted": deleted}
@@ -767,7 +780,6 @@ class PersistentMemory:
                 f"{type(e).__name__}: {e}"
             )
             return {"count_updated": 0, "count_deleted": 0}
-
 
     def forget(
         self, days: int = 30, min_importance: float = 0.2
@@ -1271,6 +1283,8 @@ class BrainMemory:
         if self.hybrid_search is None:
             self.hybrid_search = HybridSearch(self)
         return self.hybrid_search.search(query, n=n)
+
+
 # ══════════════════════════════════════════════════════════
 # Singleton BrainMemory
 # ══════════════════════════════════════════════════════════
@@ -1298,6 +1312,8 @@ def reset_brain_memory() -> None:
 # ══════════════════════════════════════════════════════════
 # 🆕 Hybrid Search (FTS + Semantic با RRF)
 # ══════════════════════════════════════════════════════════
+
+
 class HybridSearch:
     """جستجوی ترکیبی: FTS + Semantic.
 
@@ -1444,7 +1460,6 @@ class HybridSearch:
             f"final={len(results)}"
         )
         return results
-
 
 
 __all__ = [

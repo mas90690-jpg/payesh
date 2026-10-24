@@ -1,21 +1,16 @@
 """
 یادگیری، برنامه‌ریزی، خودترمیمی، تست، بازبینی.
 
-نسخهٔ ۲ (این نسخه):
-  - 🎯 `BRAIN_DIR` حالا از `data.paths.BRAIN_DIR` می‌آید (منبع یکتا).
-  - 🎯 `_save_learned_data` و `TaskPlanner.save` حالا `os.fsync` می‌زنند.
-  - 🎯 `WebSearch` حالا timeout و max_bytes env-based.
-  - 🎯 `record_interaction` حالا طول user_input/response را محدود می‌کند.
-  - 🐛 FIX: `TaskPlanner.load` حالا `plans` غیر-dict را امن handle می‌کند.
-  - 🐛 FIX: `TaskPlanner.plan_task` حالا اگر JSON نامعتبر بود، لاگ
-    کامل می‌زند (نه فقط fallback بی‌صدا).
-  - 🐛 FIX: `SelfHealer.fix_bug` حالا `max_attempts` را با حد منطقی
-    sanitize می‌کند.
-  - 🎯 `_env_int` / `_env_float` helper.
-  - 🎯 `_atomic_write_json` helper مشترک.
-  - 🎯 `WebSearch` حالا از `data.paths.BRAIN_DIR` استفاده نمی‌کند
-    (نیازی نبود).
-  - ✅ حفظ همهٔ رفتار نسخهٔ ۱.
+نسخهٔ ۳ (این نسخه):
+  - 🐛 FIX: TestGenerator بلوک تکراری حذف شد.
+  - 🐛 FIX: TestGenerator prompt به ۶۰۰۰ کاراکتر محدود شد.
+  - 🐛 FIX: TestGenerator حالا ast.parse می‌زند.
+  - 🐛 FIX: TestGenerator خروجی خالی را گزارش می‌کند.
+  - 🐛 FIX: SelfHealer.fix_bug IndentationError رفع شد.
+  - 🐛 FIX: SelfHealer.fix_bug snippet ۶۰۰۰.
+  - 🐛 FIX: CodeReviewer.review snippet ۶۰۰۰.
+  - 🎯 max_tokens=2500 (به‌جای 2000).
+  - ✅ حفظ همهٔ رفتار نسخهٔ ۲.
 """
 from __future__ import annotations
 import threading
@@ -109,7 +104,14 @@ def _atomic_write_json(path: Path, data: Any) -> bool:
         )
         return False
 
-
+def _clean_read_output(text: str) -> str:
+    """حذف هدر تزئینی _read_all از ابتدای خروجی."""
+    if not text:
+        return text
+    first, sep, rest = text.partition("\n")
+    if "BRAIN:file:read" in first or first.startswith("📄"):
+        return rest
+    return text
 # ═══════════════════════════════════════════════════════════
 # مسیرهای Brain (از data.paths)
 # ═══════════════════════════════════════════════════════════
@@ -139,6 +141,16 @@ _WEB_SEARCH_TIMEOUT = _env_int(
 )
 _WEB_MAX_RESULTS = _env_int(
     "BRAIN_WEB_MAX_RESULTS", 5, min_val=1, max_val=20
+)
+
+# 🆕 آستانه برای TestGenerator
+_TESTS_MAX_CONTENT_CHARS = _env_int(
+    "BRAIN_TESTS_MAX_CONTENT", 6000,
+    min_val=1000, max_val=50_000,
+)
+_TESTS_MAX_TOKENS = _env_int(
+    "BRAIN_TESTS_MAX_TOKENS", 2500,
+    min_val=500, max_val=8000,
 )
 
 
@@ -264,7 +276,7 @@ class LearningEngine:
             )
 
         self._save_learned_data()
-                # 🎯 ذخیره در MemoryStore جدید
+        # 🎯 ذخیره در MemoryStore جدید
         try:
             store = MemoryStore()
             store.add(
@@ -275,7 +287,7 @@ class LearningEngine:
             )
         except Exception as e:
             log_warning(f"⚠️ [BRAIN:learn] memory_store | {e}")
-            
+
         log_info(
             f"📝 [BRAIN:learn] ثبت | success={success}"
         )
@@ -349,7 +361,8 @@ class LearningEngine:
                 )
         except Exception as e:
             log_warning(f"⚠️ [BRAIN:learn] to_memory_store | {e}")
-            
+
+
 # ═══════════════════════════════════════════════════════════
 # TaskPlanner
 # ═══════════════════════════════════════════════════════════
@@ -539,27 +552,44 @@ class SelfHealer:
             return "❌ حالت آفلاین."
 
         for attempt in range(1, self.max_attempts + 1):
-            content = await self.agent._read_file(file_path)
-            if "⚠️" in content:
-                return f"❌ فایل {file_path} قابل خواندن نیست."
+            content = await self.agent._read_all(file_path)
+            content = _clean_read_output(content)
+            if (
+                not content
+                or content.startswith("⛔")
+                or content.startswith("⚠️ فایل")
+                or content.startswith("⚠️ '")
+                or content.startswith("❌")
+                or content.startswith("⚠️ فایل بزرگتر")
+            ):
+                return (
+                    f"❌ فایل {file_path} قابل خواندن نیست: "
+                    f"{content[:100]}"
+                )
+
+            snippet = content[:_TESTS_MAX_CONTENT_CHARS]
 
             prompt = f"""
 Fix the bug in this code:
-{content}
+```python
+{snippet}
+```
+
 Error: {error_message}
-Provide only corrected code.
+Provide only corrected code inside ```python ... ``` block.
+Do not add explanation.
 """
             try:
                 response = (
                     await self.agent.client
                     .chat.completions.create(
-                        model="deepseek-v4-pro",
+                        model=self.agent.model,
                         messages=[{
                             "role": "user",
                             "content": prompt,
                         }],
                         temperature=0.1,
-                        max_tokens=2000,
+                        max_tokens=_TESTS_MAX_TOKENS,
                     )
                 )
                 corrected = (
@@ -571,8 +601,16 @@ Provide only corrected code.
                     corrected, re.DOTALL,
                 )
                 new_code = (
-                    code_blocks[0] if code_blocks else corrected
+                    code_blocks[0].strip()
+                    if code_blocks else corrected.strip()
                 )
+
+                if not new_code:
+                    log_warning(
+                        f"⚠️ [BRAIN:heal] تلاش {attempt} | "
+                        f"پاسخ خالی"
+                    )
+                    continue
 
                 result = await self.agent._write_file(
                     file_path, new_code
@@ -612,45 +650,105 @@ class TestGenerator:
 
     async def generate_tests(self, file_path: str) -> str:
         """تولید تست pytest برای یک فایل."""
-        content = await self.agent._read_file(file_path)
-        if "⚠️" in content:
-            return f"❌ فایل {file_path} قابل خواندن نیست."
+        content = await self.agent._read_all(file_path)
+        content = _clean_read_output(content)
+       
+
+        if (
+            not content
+            or content.startswith("⛔")
+            or content.startswith("⚠️ فایل")
+            or content.startswith("⚠️ '")
+            or content.startswith("❌")
+            or content.startswith("⚠️ فایل بزرگتر")
+        ):
+            return (
+                f"❌ فایل {file_path} قابل خواندن نیست: "
+                f"{content[:100]}"
+            )
 
         if not self.agent.client:
             return "❌ حالت آفلاین."
 
-        prompt = f"""
-Generate pytest tests for:
-{content}
-Return only test code.
+        # ═══════════════════════════════════════════
+        # 🎯 FIX: خلاصه توابع/کلاس‌ها + محدودسازی content
+        # ═══════════════════════════════════════════
+        import ast
+        summary = "top-level code"
+        try:
+            tree = ast.parse(content)
+            names = []
+            for node in ast.walk(tree):
+                if isinstance(node, ast.FunctionDef):
+                    names.append(f"def {node.name}()")
+                elif isinstance(node, ast.ClassDef):
+                    names.append(f"class {node.name}")
+            if names:
+                summary = ", ".join(names[:30])
+        except Exception as e:
+            log_warning(
+                f"⚠️ [BRAIN:test] ast.parse | "
+                f"{type(e).__name__}: {e}"
+            )
+
+        snippet = content[:_TESTS_MAX_CONTENT_CHARS]
+
+        prompt = f"""Generate pytest tests for this Python module.
+
+Module summary (functions/classes): {summary}
+
+First part of the file:
+```python
+{snippet}
+```
+
+Return ONLY the test code inside ```python ... ``` block.
+Do not add any explanation or markdown text outside the code block.
 """
         try:
             response = (
                 await self.agent.client.chat.completions.create(
-                    model="deepseek-v4-pro",
+                    model=self.agent.model,
                     messages=[{
                         "role": "user",
                         "content": prompt,
                     }],
                     temperature=0.1,
-                    max_tokens=2000,
+                    max_tokens=_TESTS_MAX_TOKENS,
                 )
             )
-            test_code = (
+            raw = (
                 response.choices[0].message.content or ""
             ).strip()
 
+            test_code = raw
             code_blocks = re.findall(
-                r"```python\n(.*?)```",
-                test_code, re.DOTALL,
+                r"```python\n(.*?)```", raw, re.DOTALL,
             )
             if code_blocks:
                 test_code = code_blocks[0]
+            elif "```" in raw:
+                m = re.search(
+                    r"```\w*\n(.*?)```", raw, re.DOTALL,
+                )
+                if m:
+                    test_code = m.group(1)
+
+            test_code = test_code.strip()
+            test_code = test_code.strip("`").strip()
+            if test_code.startswith("python"):
+                test_code = test_code[6:].lstrip()
+
+            if not test_code:
+                return (
+                    f"❌ DeepSeek کد تست برنگرداند "
+                    f"(پاسخ خالی، طول={len(raw)})."
+                )
 
             test_file = (
-                Path(file_path).parent
-                / f"test_{Path(file_path).name}"
+                Path("tests") / f"test_{Path(file_path).name}"
             )
+            test_file.parent.mkdir(parents=True, exist_ok=True)
             result = await self.agent._write_file(
                 str(test_file), test_code
             )
@@ -765,27 +863,42 @@ class CodeReviewer:
 
     async def review(self, file_path: str) -> str:
         """بازبینی یک فایل با AI."""
-        content = await self.agent._read_file(file_path)
-        if "⚠️" in content:
-            return f"❌ فایل {file_path} قابل خواندن نیست."
+        content = await self.agent._read_all(file_path)
+        content = _clean_read_output(content)
+        if (
+            not content
+            or content.startswith("⛔")
+            or content.startswith("⚠️ فایل")
+            or content.startswith("⚠️ '")
+            or content.startswith("❌")
+            or content.startswith("⚠️ فایل بزرگتر")
+        ):
+            return (
+                f"❌ فایل {file_path} قابل خواندن نیست: "
+                f"{content[:100]}"
+            )
 
         if not self.agent.client:
             return "❌ حالت آفلاین."
 
+        snippet = content[:_TESTS_MAX_CONTENT_CHARS]
+
         prompt = f"""
 Review this code (bugs, security, smells, perf):
-{content}
+```python
+{snippet}
+```
 """
         try:
             response = (
                 await self.agent.client.chat.completions.create(
-                    model="deepseek-v4-pro",
+                    model=self.agent.model,
                     messages=[{
                         "role": "user",
                         "content": prompt,
                     }],
                     temperature=0.1,
-                    max_tokens=2000,
+                    max_tokens=_TESTS_MAX_TOKENS,
                 )
             )
             review = (
@@ -797,7 +910,8 @@ Review this code (bugs, security, smells, perf):
                 f"❌ [BRAIN:review] {type(e).__name__}: {e}"
             )
             return f"❌ خطا در بازبینی: {e}"
-            
+
+
 # ═══════════════════════════════════════════════════════════
 # ProductLearner — یادگیری خودکار محصولات
 # ═══════════════════════════════════════════════════════════
@@ -1060,4 +1174,4 @@ class ProductLearner:
                 ),
                 "pending": dict(self._pending),
                 "file": str(self._learn_file),
-            }           
+            }

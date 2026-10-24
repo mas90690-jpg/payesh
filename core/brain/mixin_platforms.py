@@ -17,7 +17,6 @@ import importlib
 import time
 from typing import Any
 
-from core.brain.constants import LOG_PREVIEW_LEN
 from core.kernel.logger import (
     log_error,
     log_info,
@@ -397,12 +396,12 @@ class PlatformMixin:
                     f"  ⚠️ session: وجود ندارد ({session_dir})"
                 )
                 lines.append(
-                    f"      💡 باید login.py اجرا کنی"
+                    "      💡 باید login.py اجرا کنی"
                 )
 
         # ─── ۵) Playwright ───
         try:
-            import playwright
+
             lines.append("  ✅ playwright نصب است")
         except ImportError:
             lines.append("  ❌ playwright نصب نیست")
@@ -548,7 +547,7 @@ class PlatformMixin:
                 await collector.disconnect()
             except Exception:
                 pass
-                
+
     # ═══════════════════════════════════════════
     # 🆕 ریشه‌یابی — چرا پلتفرم وصل نشد؟
     # ═══════════════════════════════════════════
@@ -626,7 +625,7 @@ class PlatformMixin:
                         )
                     else:
                         report.append(
-                            f"  ⏱️  Last poll: ❌ {mins/60:.1f} ساعت پیش"
+                            f"  ⏱️  Last poll: ❌ {mins / 60:.1f} ساعت پیش"
                         )
                 else:
                     report.append("  ⏱️  Last poll: ❌ هیچ")
@@ -685,7 +684,7 @@ class PlatformMixin:
             from config import CHROME_PATH
             import os as _os
             if CHROME_PATH and _os.path.exists(CHROME_PATH):
-                report.append(f"  🌐 مرورگر: ✅ Chrome موجود")
+                report.append("  🌐 مرورگر: ✅ Chrome موجود")
             else:
                 report.append(
                     "  🌐 مرورگر: ⚠️ CHROME_PATH تنظیم نشده"
@@ -831,7 +830,7 @@ class PlatformMixin:
                 collector.connect(), timeout=120
             )
             if not ok:
-                return f"❌ connect ناموفق"
+                return "❌ connect ناموفق"
 
             t_conn = time.monotonic() - t0
 
@@ -896,7 +895,7 @@ class PlatformMixin:
                 lines.append(f"  🟢 {p} — فعال")
             else:
                 lines.append(f"  ⚪ {p} — غیرفعال")
-        return "\n".join(lines)  
+        return "\n".join(lines)
 
     # ═══════════════════════════════════════════
     # 🆕 کنترل پلتفرم — فقط با دستور
@@ -1001,7 +1000,7 @@ class PlatformMixin:
             f"  امروز: {stats['today']}/{stats['max_day']}\n"
             f"  این ساعت: {stats['this_hour']}/{stats['max_hour']}\n"
             f"  ساعت کاری: {stats['work_hours']}"
-        )        
+        )
 
 
 # ═══════════════════════════════════════════
