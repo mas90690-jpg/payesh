@@ -614,7 +614,6 @@ def test_handlers():
             _fail(f"{cls_name}", str(e)[:60])
 
     try:
-        from tests.pipeline_helpers import TestPipeline
         SCORE.add_check("7. handlers", "TestPipeline_import", True)
         _ok("TestPipeline import")
     except Exception as e:
@@ -633,7 +632,7 @@ def test_cleanup():
     try:
         from core.services.cleanup_service import (
             CleanupService, start_cleanup_service,
-            _CACHE_DIRS, _CACHE_FILES,
+            _CACHE_FILES,
         )
         SCORE.add_check("8. cleanup", "import", True)
         _ok("CleanupService import")

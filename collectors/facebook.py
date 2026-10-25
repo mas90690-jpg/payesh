@@ -19,7 +19,6 @@ import os
 import random
 from datetime import datetime
 from typing import Any
-from urllib.parse import urlparse
 
 from analyzers.keyword_finder import get_keyword_finder
 from analyzers.target_filter import get_target_groups
@@ -335,7 +334,7 @@ class FacebookCollector(BaseCollector):
 
         if CHROME_PATH and os.path.exists(CHROME_PATH):
             launch_options["executable_path"] = CHROME_PATH
-            log_info(f"مرورگر فیسبوک با CHROME_PATH باز شد")
+            log_info("مرورگر فیسبوک با CHROME_PATH باز شد")
         else:
             log_info("مرورگر فیسبوک با channel=chrome باز شد")
 
@@ -502,7 +501,7 @@ class FacebookCollector(BaseCollector):
                             await self._human_pause(0.1, 0.3)
                             await self._page.mouse.click(x, y)
                             self._last_scrape_stats["more_clicked"] += 1
-                            log_info(f"      👆 See more کلیک شد")
+                            log_info("      👆 See more کلیک شد")
                             await self._human_pause(1.0, 2.0)
 
                     # See translation (فقط اگه واقعاً وجود داشت)
@@ -520,7 +519,7 @@ class FacebookCollector(BaseCollector):
                             await self._human_pause(0.1, 0.3)
                             await self._page.mouse.click(x, y)
                             self._last_scrape_stats["tr_clicked"] += 1
-                            log_info(f"      👆 See translation کلیک شد")
+                            log_info("      👆 See translation کلیک شد")
                             await self._human_pause(2.0, 2.5)
 
                     try:

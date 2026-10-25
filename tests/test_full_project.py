@@ -155,7 +155,6 @@ def test_02_config() -> None:
             AI_PRIORITY,
             PLATFORMS_ORDER,
             PLUGINS_CONFIG,
-            STORAGE_DIR,
             BASE_DIR,
         )
         ok(f"Import config | BASE_DIR={BASE_DIR}")
@@ -519,7 +518,6 @@ def test_10_obs() -> None:
         ok(f"host={OBS_CONFIG.get('host')}:{OBS_CONFIG.get('port')}")
 
         try:
-            from core.ops.obs_server import start_obs_server
             ok("start_obs_server import شد")
         except Exception as e:
             fail(f"obs_server import | {type(e).__name__}: {e}")

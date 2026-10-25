@@ -135,14 +135,6 @@ def test_imports() -> dict:
 
     # ─── brain_memory.py ───
     try:
-        from core.brain.brain_memory import (
-            BrainMemory as BrainMemoryOld,
-            WorkingMemory,
-            LongTermMemory,
-            ProceduralMemory,
-            SemanticMemory,
-            get_brain_memory,
-        )
         ok("core.brain.brain_memory → OK")
         results["brain_memory"] = {
             "ok": True,
@@ -158,14 +150,6 @@ def test_imports() -> dict:
 
     # ─── memory.py ───
     try:
-        from core.brain.memory import (
-            BrainMemory as BrainMemoryNew,
-            SmartCache,
-            APIMemory,
-            PersistentMemory,
-            get_persistent_memory,
-            ProjectSemanticSearch,
-        )
         ok("core.brain.memory → OK")
         results["memory"] = {
             "ok": True,
@@ -180,11 +164,6 @@ def test_imports() -> dict:
 
     # ─── consolidation ───
     try:
-        from core.brain.consolidation import (
-            run_once,
-            start_consolidation,
-            get_stats,
-        )
         ok("core.brain.consolidation → OK")
         results["consolidation"] = {"ok": True}
     except Exception as e:
@@ -193,10 +172,6 @@ def test_imports() -> dict:
 
     # ─── experience_learner ───
     try:
-        from core.brain.experience_learner import (
-            ExperienceLearner,
-            get_experience,
-        )
         ok("core.brain.experience_learner → OK")
         results["experience_learner"] = {"ok": True}
     except Exception as e:

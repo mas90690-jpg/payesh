@@ -49,11 +49,6 @@ async def main():
     try:
         from core.brain.brain_memory import (
             get_brain_memory,
-            BrainMemory,
-            WorkingMemory,
-            LongTermMemory,
-            ProceduralMemory,
-            SemanticMemory,
         )
         print_test(1, "import BrainMemory", True)
         results["1_import"] = True

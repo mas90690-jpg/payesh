@@ -563,7 +563,7 @@ class EitaaCollector(BaseCollector):
 
         for round_i in range(_MAX_SCROLL_ROUNDS):
             if time.monotonic() - t_start > _MAX_SCROLL_TIME_TOTAL:
-                log_warning(f"⏰ [eitaa] timeout اسکرول")
+                log_warning("⏰ [eitaa] timeout اسکرول")
                 break
 
             items = await self._page.query_selector_all(_CHAT_SELECTOR)

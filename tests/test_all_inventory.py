@@ -229,7 +229,7 @@ def scan_all() -> dict:
             )
         else:
             result["total_fail"] += 1
-            print(f"   ❌ import ناموفق")
+            print("   ❌ import ناموفق")
             print(f"      {err.splitlines()[0] if err else ''}")
             result["errors"].append({
                 "file": rel,

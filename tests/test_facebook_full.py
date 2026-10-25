@@ -23,7 +23,7 @@ from datetime import datetime, timedelta
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests.helpers import (
-    TestReport, banner, check_env, safe_disconnect, section, C,
+    TestReport, banner, safe_disconnect, section,
 )
 from tests.pipeline_helpers import TestPipeline
 

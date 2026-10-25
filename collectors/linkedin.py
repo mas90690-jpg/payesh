@@ -21,7 +21,6 @@ import hashlib
 import json
 import os
 import random
-import re
 from datetime import datetime
 from typing import Any
 from urllib.parse import quote
@@ -833,8 +832,8 @@ class LinkedInCollector(BaseCollector):
             )
             if "• following" in (header or "").lower():
                 log_debug(
-                    f"       🔍 [follower] → True "
-                    f"(header: '• Following')"
+                    "       🔍 [follower] → True "
+                    "(header: '• Following')"
                 )
                 return True
 
@@ -871,8 +870,8 @@ class LinkedInCollector(BaseCollector):
 
             # ─── ۵) نامشخص ───
             log_debug(
-                f"       🔍 [follower] → None "
-                f"(هیچ نشانه‌ای پیدا نشد)"
+                "       🔍 [follower] → None "
+                "(هیچ نشانه‌ای پیدا نشد)"
             )
             return None
 

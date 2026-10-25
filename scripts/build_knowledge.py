@@ -89,7 +89,7 @@ def build_access():
             "read": data.get("read", {}),
             "write": data.get("write", {}),
         }
-        print(f"  ✅ ذخیره شد")
+        print("  ✅ ذخیره شد")
         return result
     except Exception as e:
         print(f"  ❌ {e}")

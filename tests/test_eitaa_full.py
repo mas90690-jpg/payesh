@@ -10,7 +10,6 @@ import os
 import sys
 import time
 from datetime import datetime, timedelta
-from typing import Any
 
 sys.path.insert(
     0,
@@ -275,16 +274,16 @@ async def main(
         report.add("F4.msg.timestamp", "ok" if ts_ok else "warn", f"همه datetime: {ts_ok}")
 
         bad_ct = [m for m in msgs if m.get("chat_type") not in VALID_CHAT_TYPES]
-        report.add("F5.msg.chat_type", "ok" if not bad_ct else "warn", f"{len(bad_ct)} chat_type نامعتبر" if bad_ct else f"همه معتبر")
+        report.add("F5.msg.chat_type", "ok" if not bad_ct else "warn", f"{len(bad_ct)} chat_type نامعتبر" if bad_ct else "همه معتبر")
 
         bad_mt = [m for m in msgs if m.get("media_type") not in VALID_MEDIA_TYPES]
-        report.add("F6.msg.media_type", "ok" if not bad_mt else "warn", f"{len(bad_mt)} media_type نامعتبر" if bad_mt else f"همه معتبر")
+        report.add("F6.msg.media_type", "ok" if not bad_mt else "warn", f"{len(bad_mt)} media_type نامعتبر" if bad_mt else "همه معتبر")
 
         empty_text = [m for m in msgs if not _is_valid_text(m.get("text", ""))]
-        report.add("F7.msg.text", "ok" if not empty_text else "fail", f"{len(empty_text)} پیام با متن خالی/whitespace" if empty_text else f"همه متن دارند")
+        report.add("F7.msg.text", "ok" if not empty_text else "fail", f"{len(empty_text)} پیام با متن خالی/whitespace" if empty_text else "همه متن دارند")
 
         empty_name = [m for m in msgs if not (m.get("chat_name") or "").strip()]
-        report.add("F8.msg.chat_name", "ok" if not empty_name else "fail", f"{len(empty_name)} پیام بدون chat_name" if empty_name else f"همه chat_name دارند")
+        report.add("F8.msg.chat_name", "ok" if not empty_name else "fail", f"{len(empty_name)} پیام بدون chat_name" if empty_name else "همه chat_name دارند")
 
     # ═══════════════════════════════════════════════════
     # G) فیلتر چت سیستمی

@@ -77,7 +77,7 @@ def test_access_control():
             ac_file = Path(data_paths.PROJECT_ROOT) / "data" / "configs" / "access_control.json"
             if ac_file.exists():
                 data = json.loads(ac_file.read_text(encoding="utf-8"))
-                print(f"\n  📄 access_control.json:")
+                print("\n  📄 access_control.json:")
                 print(f"     کلیدها: {list(data.keys())}")
 
                 for key in ("read", "write", "database", "commands"):
@@ -153,7 +153,7 @@ async def test_real_tools():
             await db.init()
 
         brain = get_brain(db=db)
-        print(f"  ✅ Brain آماده")
+        print("  ✅ Brain آماده")
 
         # دستورات تست
         commands = [
@@ -164,7 +164,7 @@ async def test_real_tools():
         ]
 
         for cmd in commands:
-            print(f"\n  ────────────────────────────────────────")
+            print("\n  ────────────────────────────────────────")
             print(f"  📝 دستور: {cmd!r}")
             try:
                 ans = await brain.process_admin_command(cmd)
@@ -172,7 +172,7 @@ async def test_real_tools():
                     preview = ans[:200].replace("\n", " ")
                     print(f"     ✅ {preview}")
                 else:
-                    print(f"     ⚠️ پاسخ خالی")
+                    print("     ⚠️ پاسخ خالی")
             except Exception as e:
                 print(f"     ❌ {type(e).__name__}: {e}")
 

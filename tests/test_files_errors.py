@@ -40,11 +40,11 @@ def test_import(module_name: str, file_path: str) -> bool:
 
     try:
         mod = importlib.import_module(module_name)
-        print(f"✅ import موفق")
+        print("✅ import موفق")
         return True
     except ImportError as e:
         print(f"❌ ImportError: {e}")
-        print(f"\n📍 مسیر خطا:")
+        print("\n📍 مسیر خطا:")
         tb = traceback.format_exc()
         for line in tb.splitlines():
             print(f"   {line}")
@@ -57,7 +57,7 @@ def test_import(module_name: str, file_path: str) -> bool:
         return False
     except Exception as e:
         print(f"❌ {type(e).__name__}: {e}")
-        print(f"\n📍 مسیر خطا:")
+        print("\n📍 مسیر خطا:")
         tb = traceback.format_exc()
         for line in tb.splitlines():
             print(f"   {line}")

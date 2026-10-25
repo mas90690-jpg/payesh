@@ -31,7 +31,7 @@ async def test_safe_brain():
 
         api_key = os.environ.get("DEEPSEEK_API_KEY", "")
         sb = get_safe_brain(api_key=api_key)
-        print(f"  ✅ SafeBrain ساخته شد")
+        print("  ✅ SafeBrain ساخته شد")
 
         # تست ۳ سؤال
         questions = [
@@ -80,7 +80,7 @@ async def test_brain():
             await db.init()
 
         brain = get_brain(db=db)
-        print(f"  ✅ Brain ساخته شد")
+        print("  ✅ Brain ساخته شد")
 
         # تست پیام‌های admin
         questions = [
@@ -125,7 +125,7 @@ async def test_manual_brain():
 
         db_path = str(data_paths.DB_FILE)
         mb = get_manual_brain(db_path)
-        print(f"  ✅ ManualBrain ساخته شد")
+        print("  ✅ ManualBrain ساخته شد")
 
         # آمار
         try:
@@ -176,16 +176,16 @@ async def test_ai_assistant():
     try:
         from core.services.ai_assistant import get_ai_assistant
         ai = get_ai_assistant()
-        print(f"  ✅ AIAssistant ساخته شد")
+        print("  ✅ AIAssistant ساخته شد")
         print(f"  📊 Stats: {ai.get_stats()}")
 
         # تست available
-        print(f"\n  🔍 چک available...")
+        print("\n  🔍 چک available...")
         ok = await ai.available()
         print(f"     {'✅' if ok else '❌'} available={ok}")
 
         if not ok:
-            print(f"     ⚠️ هیچ provider در دسترس نیست")
+            print("     ⚠️ هیچ provider در دسترس نیست")
             return False
 
         # تست chat
@@ -205,7 +205,7 @@ async def test_ai_assistant():
                     print(f"     ✅ پاسخ ({ms:.0f}ms):")
                     print(f"        {preview}")
                 else:
-                    print(f"     ⚠️ پاسخ خالی")
+                    print("     ⚠️ پاسخ خالی")
             except Exception as e:
                 print(f"     ❌ {type(e).__name__}: {e}")
 
