@@ -307,7 +307,7 @@ class SystemMixin:
             ram = psutil.virtual_memory()
             disk_path = "C:\\" if os.name == "nt" else "/"
             disk = psutil.disk_usage(disk_path)
-            boot = datetime.fromtimestamp(psutil.boot_time())
+            boot = datetime.fromtimestamp(psutil.boot_time())  # noqa: DTZ006
             return (
                 f"🔹 CPU: {cpu}%\n"
                 f"🔹 RAM: {ram.percent}%\n"
@@ -446,7 +446,7 @@ class SystemMixin:
         if self.read_only:
             return "⛔ حالت فقط‌خواندنی"
         if not destination:
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")  # noqa: DTZ005
             destination = f"Project_Backup_{ts}.zip"
         try:
             dest_path = self._safepath(destination)

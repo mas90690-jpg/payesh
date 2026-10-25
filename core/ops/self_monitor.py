@@ -434,7 +434,7 @@ class SelfMonitor:
 
         if last:
             mins = (
-                datetime.now() - last
+                datetime.now() - last  # noqa: DTZ005
             ).total_seconds() / 60
             limit = self._idle_limit(platform)
             if mins > limit:
@@ -605,7 +605,7 @@ class SelfMonitor:
         # 🎯 FIX: clamp interval
         interval_s = max(60, int(self.interval))
         cutoff = (
-            datetime.now()
+            datetime.now()  # noqa: DTZ005
             - timedelta(seconds=interval_s)
         )
 

@@ -130,7 +130,7 @@ class ExperienceLearner:
                         "UPDATE experiences "
                         "SET count=?, success=?, note=?, updated_at=? "
                         "WHERE id=?",
-                        (old_count + 1, s, note, datetime.now(), old_id),
+                        (old_count + 1, s, note, datetime.now(), old_id),  # noqa: DTZ005
                     )
                 else:
                     conn.execute(
@@ -368,7 +368,7 @@ class ExperienceLearner:
                 ).fetchall()]
 
             data = {
-                "exported_at": datetime.now().isoformat(),
+                "exported_at": datetime.now().isoformat(),  # noqa: DTZ005
                 "experiences": exp,
                 "notes": notes,
             }

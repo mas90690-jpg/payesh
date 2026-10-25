@@ -394,7 +394,7 @@ class HealthChecker:
 
         return {
             "overall_status": overall.value,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now().isoformat(),  # noqa: DTZ005
             "total_time": total_ms / 1000,
             "components": {
                 name: r.to_dict()
@@ -893,7 +893,7 @@ class HealthChecker:
             }
         return {
             "status": self._get_overall_status().value,
-            "last_check": datetime.now().isoformat(),
+            "last_check": datetime.now().isoformat(),  # noqa: DTZ005
             "components": {
                 name: {
                     "status": r.status.value,
@@ -912,7 +912,7 @@ class HealthChecker:
         overall = result["overall_status"]
         return {
             "status": overall,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now().isoformat(),  # noqa: DTZ005
             "details": result,
         }
 

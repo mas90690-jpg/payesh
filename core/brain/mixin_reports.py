@@ -402,7 +402,7 @@ class ReportsMixin:
                 return f"📡 **{platform}**: دادهای نیست."
 
             # 🎯 FIX: safe date diff
-            now = datetime.now()
+            now = datetime.now()  # noqa: DTZ005
             if last_poll.tzinfo is not None:
                 now = now.replace(tzinfo=last_poll.tzinfo)
 

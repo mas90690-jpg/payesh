@@ -167,7 +167,7 @@ class KeywordAdmin:
         try:
             data = {
                 "version": self._file_version,
-                "updated_at": datetime.now().isoformat(),
+                "updated_at": datetime.now().isoformat(),  # noqa: DTZ005
                 "keywords": {
                     k.strip(): {
                         "tier": (

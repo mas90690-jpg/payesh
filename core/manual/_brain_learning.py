@@ -146,7 +146,7 @@ class BrainLearningMixin:
         try:
             UNKNOWN_FILE.parent.mkdir(parents=True, exist_ok=True)
             entry = {
-                "ts": datetime.now().isoformat(),
+                "ts": datetime.now().isoformat(),  # noqa: DTZ005
                 "text": text,
                 "sender": sender or "unknown",
                 "hash": md5_short(text),
@@ -234,12 +234,12 @@ class BrainLearningMixin:
                     return False
 
         rule = {
-            "name": f"ai_learned_{int(datetime.now().timestamp())}",
+            "name": f"ai_learned_{int(datetime.now().timestamp())}",  # noqa: DTZ005
             "triggers": [q],
             "action": {"type": "text", "text": a},
             "learned": True,
             "source": source,
-            "created_at": datetime.now().isoformat(),
+            "created_at": datetime.now().isoformat(),  # noqa: DTZ005
         }
 
         if auto_promote:
@@ -345,7 +345,7 @@ class BrainLearningMixin:
             return "⛔ پاسخ نامعتبر (خالی/کوتاه/خطا)."
 
         rule_name = (
-            f"user_learned_{int(datetime.now().timestamp())}"
+            f"user_learned_{int(datetime.now().timestamp())}"  # noqa: DTZ005
         )
         if is_sql:
             rule = {
@@ -358,7 +358,7 @@ class BrainLearningMixin:
                 },
                 "learned": True,
                 "source": "user",
-                "created_at": datetime.now().isoformat(),
+                "created_at": datetime.now().isoformat(),  # noqa: DTZ005
             }
         else:
             rule = {
@@ -367,7 +367,7 @@ class BrainLearningMixin:
                 "action": {"type": "text", "text": answer},
                 "learned": True,
                 "source": "user",
-                "created_at": datetime.now().isoformat(),
+                "created_at": datetime.now().isoformat(),  # noqa: DTZ005
             }
 
         self._save_learned(rule)

@@ -410,7 +410,7 @@ async def download_dom_image(
 
     # ─── ۷) نوشتن فایل ───
     # 🐛 FIX: microsecond + short uuid
-    ts = datetime.now().strftime("%Y%m%d%H%M%S%f")
+    ts = datetime.now().strftime("%Y%m%d%H%M%S%f")  # noqa: DTZ005
     short_id = uuid.uuid4().hex[:6]
     filename = f"{safe_prefix}_{ts}_{short_id}{ext}"
     path = os.path.join(media_dir, filename)

@@ -400,7 +400,7 @@ class BackupService:
             stats.setdefault(backup_type, []).append({
                 "path": backup_path,
                 "size": size,
-                "date": datetime.now().isoformat(),
+                "date": datetime.now().isoformat(),  # noqa: DTZ005
             })
             stats[backup_type] = stats[backup_type][-50:]
             self._save_stats(stats)
@@ -647,7 +647,7 @@ class BackupService:
             )
             return None
 
-        timestamp = datetime.now().strftime(
+        timestamp = datetime.now().strftime(  # noqa: DTZ005
             "%Y-%m-%d_%H-%M-%S_%f"
         )
         backup_folder = os.path.join(
@@ -671,7 +671,7 @@ class BackupService:
                 f"پشتیبان روزانه دیتابیس - {timestamp}\n"
                 f"حجم: {src_size:,} bytes\n"
                 f"تاریخ: "
-                f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"  # noqa: DTZ005
             )
             _atomic_write_text(
                 os.path.join(backup_folder, "INFO.txt"),
@@ -730,7 +730,7 @@ class BackupService:
         t_all = time.monotonic()
         log_info("▶️ [BACKUP:full] شروع")
 
-        timestamp = datetime.now().strftime(
+        timestamp = datetime.now().strftime(  # noqa: DTZ005
             "%Y-%m-%d_%H-%M-%S_%f"
         )
         backup_folder = os.path.join(

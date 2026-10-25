@@ -518,7 +518,7 @@ class DailyReporter:
             report_date = target_date
         else:
             report_date = (
-                datetime.now() - timedelta(days=1)
+                datetime.now() - timedelta(days=1)  # noqa: DTZ005
             ).strftime("%Y-%m-%d")
 
         cache_key = f"{report_date}|{platform or 'all'}"
@@ -622,7 +622,7 @@ class DailyReporter:
         # ─── cache update ───
         self._cache["last_report"] = cache_key
         self._cache["last_report_at"] = (
-            datetime.now().isoformat()
+            datetime.now().isoformat()  # noqa: DTZ005
         )
 
         results = self._cache.setdefault("results", {})
@@ -663,7 +663,7 @@ class DailyReporter:
         self, platform: str | None = None
     ):
         return await self.generate_report(
-            datetime.now().strftime("%Y-%m-%d"),
+            datetime.now().strftime("%Y-%m-%d"),  # noqa: DTZ005
             platform=platform,
         )
 
@@ -675,10 +675,10 @@ class DailyReporter:
     ):
         t0 = time.monotonic()
         end_date = (
-            datetime.now() - timedelta(days=1)
+            datetime.now() - timedelta(days=1)  # noqa: DTZ005
         ).strftime("%Y-%m-%d")
         start_date = (
-            datetime.now() - timedelta(days=7)
+            datetime.now() - timedelta(days=7)  # noqa: DTZ005
         ).strftime("%Y-%m-%d")
         label = (
             platform_label(platform)
@@ -810,10 +810,10 @@ class DailyReporter:
         t0 = time.monotonic()
         if date_from is None:
             date_from = (
-                datetime.now() - timedelta(days=7)
+                datetime.now() - timedelta(days=7)  # noqa: DTZ005
             ).strftime("%Y-%m-%d")
         if date_to is None:
-            date_to = datetime.now().strftime("%Y-%m-%d")
+            date_to = datetime.now().strftime("%Y-%m-%d")  # noqa: DTZ005
 
         label = (
             platform_label(platform)
@@ -1069,7 +1069,7 @@ class DailyReporter:
             )
             return None
 
-        timestamp_str = datetime.now().strftime(
+        timestamp_str = datetime.now().strftime(  # noqa: DTZ005
             "%Y%m%d_%H%M%S"
         )
         suffix = self._filename_suffix(platform)
@@ -1109,7 +1109,7 @@ class DailyReporter:
                 f.write(
                     _hdr(
                         "generated_at",
-                        date=datetime.now().strftime(
+                        date=datetime.now().strftime(  # noqa: DTZ005
                             '%Y-%m-%d %H:%M:%S'
                         ),
                     ) + "\n"
@@ -1748,9 +1748,9 @@ class DailyReporter:
         """گزارش ماهانه (۳۰ روز اخیر)."""
         t0 = time.monotonic()
         date_from = (
-            datetime.now() - timedelta(days=30)
+            datetime.now() - timedelta(days=30)  # noqa: DTZ005
         ).strftime("%Y-%m-%d")
-        date_to = datetime.now().strftime("%Y-%m-%d")
+        date_to = datetime.now().strftime("%Y-%m-%d")  # noqa: DTZ005
         label = (
             platform_label(platform)
             if platform else _hdr("all_platforms")

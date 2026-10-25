@@ -496,7 +496,7 @@ class PlatformMixin:
 
             # ─── ۲) fetch ───
             from datetime import datetime, timedelta
-            since = datetime.now() - timedelta(hours=int(hours))
+            since = datetime.now() - timedelta(hours=int(hours))  # noqa: DTZ005
 
             try:
                 messages = await asyncio.wait_for(
@@ -613,7 +613,7 @@ class PlatformMixin:
                 if last:
                     from datetime import datetime
                     mins = (
-                        datetime.now() - last
+                        datetime.now() - last  # noqa: DTZ005
                     ).total_seconds() / 60
                     if mins < 5:
                         report.append(
@@ -835,7 +835,7 @@ class PlatformMixin:
             t_conn = time.monotonic() - t0
 
             from datetime import datetime, timedelta
-            since = datetime.now() - timedelta(hours=24)
+            since = datetime.now() - timedelta(hours=24)  # noqa: DTZ005
 
             try:
                 messages = await asyncio.wait_for(

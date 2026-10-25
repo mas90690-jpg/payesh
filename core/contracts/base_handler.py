@@ -242,7 +242,7 @@ class BaseHandler(ABC):
     def _record_handled(self, process_time: float = 0) -> None:
         """ثبت یک پردازش موفق (داخلی) — با میانگین متحرک."""
         self._stats["handled_count"] += 1
-        self._stats["last_handled"] = datetime.now()
+        self._stats["last_handled"] = datetime.now()  # noqa: DTZ005
 
         old_avg = self._stats["avg_process_time"]
         count = self._stats["handled_count"]

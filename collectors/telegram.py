@@ -200,9 +200,9 @@ class TelegramWebCollector(BaseCollector):
             data = {
                 "first_run_done": True,
                 "first_run_at": getattr(
-                    self, "_first_run_at", datetime.now().isoformat()
+                    self, "_first_run_at", datetime.now().isoformat()  # noqa: DTZ005
                 ),
-                "last_run_at": datetime.now().isoformat(),
+                "last_run_at": datetime.now().isoformat(),  # noqa: DTZ005
             }
             with open(self._state_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
@@ -458,7 +458,7 @@ class TelegramWebCollector(BaseCollector):
         self._needs_backfill = False
 
         if not self._first_run_done:
-            self._first_run_at = datetime.now().isoformat()
+            self._first_run_at = datetime.now().isoformat()  # noqa: DTZ005
             self._first_run_done = True
         self._save_state()
 
@@ -867,11 +867,11 @@ class TelegramWebCollector(BaseCollector):
                     try:
                         ts_int = int(ts_raw)
                         if ts_int > 10_000_000_000:
-                            msg_timestamp = datetime.fromtimestamp(
+                            msg_timestamp = datetime.fromtimestamp(  # noqa: DTZ006
                                 ts_int / 1000
                             )
                         else:
-                            msg_timestamp = datetime.fromtimestamp(
+                            msg_timestamp = datetime.fromtimestamp(  # noqa: DTZ006
                                 ts_int
                             )
                     except (ValueError, OSError):
@@ -940,7 +940,7 @@ class TelegramWebCollector(BaseCollector):
                     except Exception:
                         pass
 
-                final_ts = msg_timestamp or datetime.now()
+                final_ts = msg_timestamp or datetime.now()  # noqa: DTZ005
 
                 self._messages_queue.append({
                     "id": str(mid),

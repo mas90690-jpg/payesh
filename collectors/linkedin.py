@@ -250,7 +250,7 @@ class LinkedInCollector(BaseCollector):
 
     def _save_last_run(self):
         try:
-            today = datetime.now().strftime("%Y-%m-%d")
+            today = datetime.now().strftime("%Y-%m-%d")  # noqa: DTZ005
             with open(self._last_run_path, "w", encoding="utf-8") as f:
                 json.dump({"last_date": today}, f, ensure_ascii=False, indent=2)
             self._last_run_date = today
@@ -258,7 +258,7 @@ class LinkedInCollector(BaseCollector):
             log_warning(f"ذخیرهٔ last_run ناموفق: {e}")
 
     def _already_ran_today(self) -> bool:
-        return self._last_run_date == datetime.now().strftime("%Y-%m-%d")
+        return self._last_run_date == datetime.now().strftime("%Y-%m-%d")  # noqa: DTZ005
 
     def _load_searches(self) -> list[str]:
         out = []
@@ -1166,7 +1166,7 @@ class LinkedInCollector(BaseCollector):
                     "chat_link": permalink,
                     "user_id": author or "",
                     "sender_name": author or "",
-                    "timestamp": datetime.now(),
+                    "timestamp": datetime.now(),  # noqa: DTZ005
                     "media_type": media_type,
                     "file_id": None,
                     "local_file_path": local_path,

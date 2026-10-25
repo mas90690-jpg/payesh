@@ -51,7 +51,7 @@ def _parse_datetime(value: Any) -> datetime:
             ).replace(tzinfo=None)
         except Exception:
             pass
-    return datetime.now()
+    return datetime.now()  # noqa: DTZ005
 
 
 def _parse_keywords(value: Any) -> list[str]:

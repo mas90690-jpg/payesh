@@ -851,7 +851,7 @@ class SQLiteDatabase(BaseDatabase):
                 await conn.commit()
 
     async def update_daily_stats(self):
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = datetime.now().strftime("%Y-%m-%d")  # noqa: DTZ005
         try:
             async with self._get_conn() as conn:
                 cur = await conn.execute(
@@ -929,7 +929,7 @@ class SQLiteDatabase(BaseDatabase):
             return
 
         cutoff = (
-            datetime.now() - timedelta(days=days)
+            datetime.now() - timedelta(days=days)  # noqa: DTZ005
         ).isoformat()
 
         async with self._write_lock:

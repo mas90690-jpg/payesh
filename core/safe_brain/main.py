@@ -316,7 +316,7 @@ class SafeBrain:
             "fallback": 0,
             "persistent_recall": 0,
             "persistent_remember": 0,
-            "started_at": datetime.now().isoformat(),
+            "started_at": datetime.now().isoformat(),  # noqa: DTZ005
             "started_monotonic": time.monotonic(),
         }
 
@@ -1149,7 +1149,7 @@ class SafeBrain:
                 f.write(
                     json.dumps(
                         {
-                            "ts": datetime.now().isoformat(),
+                            "ts": datetime.now().isoformat(),  # noqa: DTZ005
                             "request": text,
                         },
                         ensure_ascii=False,
@@ -1266,7 +1266,7 @@ class SafeBrain:
             "fallback": 0,
             "persistent_recall": 0,
             "persistent_remember": 0,
-            "started_at": datetime.now().isoformat(),
+            "started_at": datetime.now().isoformat(),  # noqa: DTZ005
             "started_monotonic": time.monotonic(),
         }
         log_info("🗑️ [SAFEBRAIN:stats] reset شد")

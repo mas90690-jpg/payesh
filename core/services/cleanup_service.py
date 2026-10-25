@@ -338,7 +338,7 @@ class CleanupService:
 
         t0 = time.monotonic()
         cutoff = time.time() - days * 86400
-        cutoff_dt = datetime.fromtimestamp(cutoff)
+        cutoff_dt = datetime.fromtimestamp(cutoff)  # noqa: DTZ006
 
         scanned = 0
         removed = 0

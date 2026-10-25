@@ -313,9 +313,9 @@ class BaleCollector(BaseCollector):
             data = {
                 "first_run_done": True,
                 "first_run_at": getattr(
-                    self, "_first_run_at", datetime.now().isoformat()
+                    self, "_first_run_at", datetime.now().isoformat()  # noqa: DTZ005
                 ),
-                "last_run_at": datetime.now().isoformat(),
+                "last_run_at": datetime.now().isoformat(),  # noqa: DTZ005
             }
             with open(self._state_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
@@ -1062,7 +1062,7 @@ class BaleCollector(BaseCollector):
         self._needs_backfill = False
 
         if not self._first_run_done:
-            self._first_run_at = datetime.now().isoformat()
+            self._first_run_at = datetime.now().isoformat()  # noqa: DTZ005
             self._first_run_done = True
         self._save_state()
 
@@ -1362,7 +1362,7 @@ class BaleCollector(BaseCollector):
                 if date_ms_raw:
                     try:
                         date_ms = int(date_ms_raw)
-                        msg_timestamp = datetime.fromtimestamp(
+                        msg_timestamp = datetime.fromtimestamp(  # noqa: DTZ006
                             date_ms / 1000
                         )
                     except (ValueError, OSError):
@@ -1440,7 +1440,7 @@ class BaleCollector(BaseCollector):
                     except Exception:
                         pass
 
-                final_ts = msg_timestamp or datetime.now()
+                final_ts = msg_timestamp or datetime.now()  # noqa: DTZ005
 
                 self._messages_queue.append({
                     "id": mid,

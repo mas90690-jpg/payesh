@@ -69,7 +69,7 @@ class WorkingMemory:
             WORKING_FILE.write_text(
                 json.dumps({
                     "items": self.items,
-                    "updated_at": datetime.now().isoformat(),
+                    "updated_at": datetime.now().isoformat(),  # noqa: DTZ005
                 }, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
@@ -81,7 +81,7 @@ class WorkingMemory:
         self.items.append({
             "q": question[:500],
             "a": answer[:1000],
-            "t": datetime.now().isoformat(),
+            "t": datetime.now().isoformat(),  # noqa: DTZ005
             "imp": importance,
         })
         self.items = self.items[-self.MAX_ITEMS:]
@@ -150,7 +150,7 @@ class LongTermMemory:
             if existing:
                 conn.execute(
                     "UPDATE knowledge SET value=?, importance=?, updated_at=? WHERE id=?",
-                    (value, importance, datetime.now(), existing[0]),
+                    (value, importance, datetime.now(), existing[0]),  # noqa: DTZ005
                 )
             else:
                 conn.execute(
@@ -236,7 +236,7 @@ class ProceduralMemory:
                 json.dumps({
                     "tasks_done": self.tasks_done,
                     "patterns": self.patterns,
-                    "updated_at": datetime.now().isoformat(),
+                    "updated_at": datetime.now().isoformat(),  # noqa: DTZ005
                 }, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
@@ -245,7 +245,7 @@ class ProceduralMemory:
 
     def mark_done(self, task: str):
         """ثبت کار انجام‌شده."""
-        self.tasks_done[task.lower().strip()] = datetime.now().isoformat()
+        self.tasks_done[task.lower().strip()] = datetime.now().isoformat()  # noqa: DTZ005
         self._save()
 
     def is_done(self, task: str, within_hours: int = 24) -> bool:
@@ -255,7 +255,7 @@ class ProceduralMemory:
             return False
         try:
             done_at = datetime.fromisoformat(self.tasks_done[key])
-            return (datetime.now() - done_at) < timedelta(hours=within_hours)
+            return (datetime.now() - done_at) < timedelta(hours=within_hours)  # noqa: DTZ005
         except Exception:
             return False
 
@@ -301,7 +301,7 @@ class SemanticMemory:
         if not self.enabled:
             return
         try:
-            doc_id = doc_id or f"doc_{datetime.now().timestamp()}"
+            doc_id = doc_id or f"doc_{datetime.now().timestamp()}"  # noqa: DTZ005
             self.collection.add(
                 documents=[text],
                 metadatas=[metadata if metadata else {"_type": "general"}],

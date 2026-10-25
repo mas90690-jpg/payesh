@@ -471,9 +471,9 @@ class FormulaManager:
             "type": ftype,
             "created_at": (
                 old.get("created_at")
-                or datetime.now().isoformat()
+                or datetime.now().isoformat()  # noqa: DTZ005
             ),
-            "updated_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat(),  # noqa: DTZ005
             "created_by": created_by,
             "run_count": old.get("run_count", 0),
             "last_run": old.get("last_run"),
@@ -739,7 +739,7 @@ class FormulaManager:
         # ─── backup (خارج از lock) ───
         backup_name = ""
         try:
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")  # noqa: DTZ005
             backup_name = f"{name}_{ts}.db"
             backup_path = BACKUP_DIR / backup_name
             BACKUP_DIR.mkdir(parents=True, exist_ok=True)
@@ -905,7 +905,7 @@ class FormulaManager:
         if not info or not isinstance(info, dict):
             return
         info["run_count"] = info.get("run_count", 0) + 1
-        info["last_run"] = datetime.now().isoformat()
+        info["last_run"] = datetime.now().isoformat()  # noqa: DTZ005
         if save:
             self._save(data)
 
@@ -915,7 +915,7 @@ class FormulaManager:
         """ثبت در audit log — با lock."""
         try:
             entry = {
-                "ts": datetime.now().isoformat(),
+                "ts": datetime.now().isoformat(),  # noqa: DTZ005
                 "formula": name,
                 "sql": sql[:500],
                 "rows": count,

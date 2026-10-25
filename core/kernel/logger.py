@@ -286,7 +286,7 @@ class ConsoleFormatter(logging.Formatter):
             self._color = False
 
     def format(self, record: logging.LogRecord) -> str:
-        ts = datetime.fromtimestamp(
+        ts = datetime.fromtimestamp(  # noqa: DTZ006
             record.created
         ).strftime("%Y-%m-%d %H:%M:%S")
         emoji = _EMOJI.get(record.levelname, "")
@@ -537,7 +537,7 @@ class Logger:
             self._stats["by_level"][levelname] = (
                 self._stats["by_level"].get(levelname, 0) + 1
             )
-            self._stats["last_log_time"] = datetime.now()
+            self._stats["last_log_time"] = datetime.now()  # noqa: DTZ005
         except Exception:
             pass
 

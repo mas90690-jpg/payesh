@@ -393,7 +393,7 @@ def _rows(
 
     if days > 0:
         since = (
-            datetime.now() - timedelta(days=days)
+            datetime.now() - timedelta(days=days)  # noqa: DTZ005
         ).strftime("%Y-%m-%d")
         where_parts.append("date(timestamp) >= ?")
         params.append(since)
@@ -904,7 +904,7 @@ def export_crm(
         )
         return None
 
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")  # noqa: DTZ005
 
     # ─── حالت split ───
     if split:

@@ -671,7 +671,7 @@ class WebCollector(BaseCollector):
             "chat_link": url,  # آدرس دقیق صفحه
             "user_id": domain,
             "sender_name": domain,
-            "timestamp": datetime.now(),
+            "timestamp": datetime.now(),  # noqa: DTZ005
             "media_type": "text",
             "file_id": None,
             "local_file_path": None,

@@ -64,7 +64,7 @@ class SafeAction:
 
     @staticmethod
     def _is_work_time() -> bool:
-        now = datetime.now().hour
+        now = datetime.now().hour  # noqa: DTZ005
         return WORK_HOUR_START <= now <= WORK_HOUR_END
 
     def _check_limits(self) -> tuple[bool, str]:

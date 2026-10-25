@@ -604,7 +604,7 @@ class AdminActions:
                 )
             else:
                 mins = (
-                    datetime.now() - last
+                    datetime.now() - last  # noqa: DTZ005
                 ).total_seconds() / 60
                 mark = "✅" if mins < 30 else "⚠️"
                 lines.append(
@@ -754,7 +754,7 @@ class AdminActions:
                 f"(شاید تازه شروع شده یا وصل نیست)."
             )
 
-        mins = (datetime.now() - last).total_seconds() / 60
+        mins = (datetime.now() - last).total_seconds() / 60  # noqa: DTZ005
         if mins < 30:
             return (
                 f"✅ {p_fa}: فعال — آخرین فعالیت "
@@ -1014,7 +1014,7 @@ class AdminActions:
                 f.write(
                     json.dumps(
                         {
-                            "ts": datetime.now().isoformat(),
+                            "ts": datetime.now().isoformat(),  # noqa: DTZ005
                             "request": text,
                         },
                         ensure_ascii=False,

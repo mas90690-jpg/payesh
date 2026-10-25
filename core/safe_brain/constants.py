@@ -432,7 +432,7 @@ def _write_custom_kw_dict(
     try:
         data = {
             "version": _KW_FILE_VERSION,
-            "updated_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat(),  # noqa: DTZ005
             "keywords": {
                 k.strip(): {
                     # 🎯 FIX: استفاده از helper مشترک

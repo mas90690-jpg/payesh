@@ -101,7 +101,7 @@ except Exception:
 # ═══════════════════════════════════════════
 # ثابت‌ها
 # ═══════════════════════════════════════════
-_SERVER_START = datetime.now()
+_SERVER_START = datetime.now()  # noqa: DTZ005
 
 
 def _build_platform_order() -> tuple[str, ...]:
@@ -532,7 +532,7 @@ def _gather_counts_sqlite(
             # 🎯 FIX: per-platform last 24h با localtime
             try:
                 since = (
-                    datetime.now() - timedelta(hours=24)
+                    datetime.now() - timedelta(hours=24)  # noqa: DTZ005
                 ).strftime("%Y-%m-%d %H:%M:%S")
                 for p, n in cur.execute(
                     "SELECT platform, COUNT(*) "
@@ -569,7 +569,7 @@ def _sys_stats() -> dict[str, Any]:
         "cpu": 0,
         "ram": 0,
         "uptime": (
-            datetime.now() - _SERVER_START
+            datetime.now() - _SERVER_START  # noqa: DTZ005
         ).total_seconds(),
     }
     try:
@@ -1216,7 +1216,7 @@ def server_info() -> dict[str, Any]:
     return {
         "started_at": _SERVER_START.isoformat(),
         "uptime_s": (
-            datetime.now() - _SERVER_START
+            datetime.now() - _SERVER_START  # noqa: DTZ005
         ).total_seconds(),
         "platform_order": list(_PLATFORM_ORDER),
         "rate_limit": {

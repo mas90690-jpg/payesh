@@ -175,8 +175,8 @@ class SmartCache:
                 return None
             try:
                 age = (
-                    datetime.now()
-                    - datetime.fromtimestamp(entry["timestamp"])
+                    datetime.now()  # noqa: DTZ005
+                    - datetime.fromtimestamp(entry["timestamp"])  # noqa: DTZ006
                 )
                 if age >= self.ttl:
                     # expired — حذف

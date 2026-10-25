@@ -169,8 +169,8 @@ class PostgresDatabase(BaseDatabase):
             try:
                 return datetime.fromisoformat(value)
             except Exception:
-                return datetime.now()
-        return datetime.now()
+                return datetime.now()  # noqa: DTZ005
+        return datetime.now()  # noqa: DTZ005
 
     def _spawn_task(self, coro) -> None:
         """🐛 FIX: ساخت task با reference نگه‌داری."""
@@ -681,7 +681,7 @@ class PostgresDatabase(BaseDatabase):
         🔒 SEC FIX: `_DB_TIMEZONE` حالا به‌عنوان پارامتر bind
         می‌رود (نه f-string).
         """
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = datetime.now().strftime("%Y-%m-%d")  # noqa: DTZ005
         try:
             async with self._pool.acquire() as conn:
                 exists = await conn.fetchval(

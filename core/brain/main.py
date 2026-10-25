@@ -322,7 +322,7 @@ class Brain(
             "commands_processed": 0,
             "agents_run": 0,
             "errors": 0,
-            "started_at": datetime.now().isoformat(),
+            "started_at": datetime.now().isoformat(),  # noqa: DTZ005
         }
 
         # 🐛 FIX: flag برای جلوگیری از thread تکراری

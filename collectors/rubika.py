@@ -276,9 +276,9 @@ class RubikaCollector(BaseCollector):
             data = {
                 "first_run_done": True,
                 "first_run_at": getattr(
-                    self, "_first_run_at", datetime.now().isoformat()
+                    self, "_first_run_at", datetime.now().isoformat()  # noqa: DTZ005
                 ),
-                "last_run_at": datetime.now().isoformat(),
+                "last_run_at": datetime.now().isoformat(),  # noqa: DTZ005
             }
             with open(self._state_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
@@ -469,9 +469,9 @@ class RubikaCollector(BaseCollector):
             ts_int = int(time_val)
             # اگه بزرگتر از 10 میلیارد بود → میلی‌ثانیه
             if ts_int > 10_000_000_000:
-                return datetime.fromtimestamp(ts_int / 1000)
+                return datetime.fromtimestamp(ts_int / 1000)  # noqa: DTZ006
             else:
-                return datetime.fromtimestamp(ts_int)
+                return datetime.fromtimestamp(ts_int)  # noqa: DTZ006
         except (ValueError, OSError, TypeError):
             return None
 
@@ -626,7 +626,7 @@ class RubikaCollector(BaseCollector):
             "chat_link": chat_link,
             "user_id": str(getattr(update, "author_guid", "") or ""),
             "sender_name": self._extract_sender_name(update),
-            "timestamp": msg_timestamp or datetime.now(),
+            "timestamp": msg_timestamp or datetime.now(),  # noqa: DTZ005
             "media_type": media_type,
             "file_id": file_id,
             "local_file_path": local_file_path,
@@ -647,7 +647,7 @@ class RubikaCollector(BaseCollector):
                 "audio": ".mp3",
                 "file": "",
             }.get(media_type, "")
-            stamp = file_id or datetime.now().strftime("%Y%m%d%H%M%S%f")
+            stamp = file_id or datetime.now().strftime("%Y%m%d%H%M%S%f")  # noqa: DTZ005
             save_path = os.path.join(
                 self._media_dir, f"rubika_{stamp}{ext}"
             )
@@ -775,7 +775,7 @@ class RubikaCollector(BaseCollector):
 
         # ─── ذخیره state ───
         if not self._first_run_done:
-            self._first_run_at = datetime.now().isoformat()
+            self._first_run_at = datetime.now().isoformat()  # noqa: DTZ005
             self._first_run_done = True
         self._save_state()
 
@@ -960,11 +960,11 @@ class RubikaCollector(BaseCollector):
                             try:
                                 ts_int = int(mtime)
                                 if ts_int > 10_000_000_000:
-                                    msg_timestamp = datetime.fromtimestamp(
+                                    msg_timestamp = datetime.fromtimestamp(  # noqa: DTZ006
                                         ts_int / 1000
                                     )
                                 else:
-                                    msg_timestamp = datetime.fromtimestamp(
+                                    msg_timestamp = datetime.fromtimestamp(  # noqa: DTZ006
                                         ts_int
                                     )
                             except (ValueError, OSError):
@@ -1032,7 +1032,7 @@ class RubikaCollector(BaseCollector):
                             "sender_name": str(
                                 self._dig(m, "author_title") or ""
                             ),
-                            "timestamp": msg_timestamp or datetime.now(),
+                            "timestamp": msg_timestamp or datetime.now(),  # noqa: DTZ005
                             "media_type": "text",
                             "file_id": None,
                             "local_file_path": None,

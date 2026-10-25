@@ -505,7 +505,7 @@ class DataAPI:
         try:
             data = {
                 "version": "2.0.0",
-                "updated_at": datetime.now().isoformat(),
+                "updated_at": datetime.now().isoformat(),  # noqa: DTZ005
                 "keywords": {
                     k.strip(): {
                         "tier": (

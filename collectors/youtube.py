@@ -171,9 +171,9 @@ class YouTubeCollector(BaseCollector):
             data = {
                 "first_run_done": True,
                 "first_run_at": getattr(
-                    self, "_first_run_at", datetime.now().isoformat()
+                    self, "_first_run_at", datetime.now().isoformat()  # noqa: DTZ005
                 ),
-                "last_run_at": datetime.now().isoformat(),
+                "last_run_at": datetime.now().isoformat(),  # noqa: DTZ005
             }
             with open(self._state_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
@@ -498,7 +498,7 @@ class YouTubeCollector(BaseCollector):
         self._save_seen()
 
         if not self._first_run_done:
-            self._first_run_at = datetime.now().isoformat()
+            self._first_run_at = datetime.now().isoformat()  # noqa: DTZ005
             self._first_run_done = True
         self._save_state()
 
@@ -701,7 +701,7 @@ class YouTubeCollector(BaseCollector):
                 "chat_link": video_url,
                 "user_id": "",
                 "sender_name": channel or "YouTube",
-                "timestamp": datetime.now(),
+                "timestamp": datetime.now(),  # noqa: DTZ005
                 "media_type": "video",
                 "file_id": None,
                 "local_file_path": None,

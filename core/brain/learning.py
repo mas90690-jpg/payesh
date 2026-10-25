@@ -239,7 +239,7 @@ class LearningEngine:
         """🎯 FIX: محدودسازی طول."""
         details = details or {}
         interaction = {
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now().isoformat(),  # noqa: DTZ005
             "user_input": str(user_input)[:_MAX_USER_INPUT_LEN],
             "response": str(response)[:_MAX_RESPONSE_LEN],
             "success": bool(success),
@@ -986,7 +986,7 @@ class ProductLearner:
     def _save(self) -> bool:
         """ذخیره با atomic + fsync."""
         self._learned["updated_at"] = (
-            datetime.now().isoformat()
+            datetime.now().isoformat()  # noqa: DTZ005
         )
         return _atomic_write_json(
             self._learn_file, self._learned

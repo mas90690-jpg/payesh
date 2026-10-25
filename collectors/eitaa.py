@@ -291,9 +291,9 @@ class EitaaCollector(BaseCollector):
             data = {
                 "first_run_done": True,
                 "first_run_at": getattr(
-                    self, "_first_run_at", datetime.now().isoformat()
+                    self, "_first_run_at", datetime.now().isoformat()  # noqa: DTZ005
                 ),
-                "last_run_at": datetime.now().isoformat(),
+                "last_run_at": datetime.now().isoformat(),  # noqa: DTZ005
             }
             with open(self._state_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
@@ -660,7 +660,7 @@ class EitaaCollector(BaseCollector):
         self._needs_backfill = False
 
         if not self._first_run_done:
-            self._first_run_at = datetime.now().isoformat()
+            self._first_run_at = datetime.now().isoformat()  # noqa: DTZ005
             self._first_run_done = True
         self._save_state()
 
@@ -891,9 +891,9 @@ class EitaaCollector(BaseCollector):
                             try:
                                 ts_val = int(ts_raw)
                                 if ts_val > 10_000_000_000:
-                                    msg_timestamp = datetime.fromtimestamp(ts_val / 1000)
+                                    msg_timestamp = datetime.fromtimestamp(ts_val / 1000)  # noqa: DTZ006
                                 else:
-                                    msg_timestamp = datetime.fromtimestamp(ts_val)
+                                    msg_timestamp = datetime.fromtimestamp(ts_val)  # noqa: DTZ006
                                 date_ms = ts_val
                             except (ValueError, OSError):
                                 pass
@@ -978,7 +978,7 @@ class EitaaCollector(BaseCollector):
                     pass
 
                 # ─── ⑭ timestamp نهایی ───
-                final_ts = msg_timestamp or datetime.now()
+                final_ts = msg_timestamp or datetime.now()  # noqa: DTZ005
 
                 # ─── ⑮ اضافه به صف ───
                 self._messages_queue.append({

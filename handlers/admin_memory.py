@@ -234,7 +234,7 @@ class AdminMemory:
                 os.makedirs(parent, exist_ok=True)
 
             entry = {
-                "ts": datetime.now().isoformat(),
+                "ts": datetime.now().isoformat(),  # noqa: DTZ005
                 "q": q_str,
                 "a": a_str,
             }

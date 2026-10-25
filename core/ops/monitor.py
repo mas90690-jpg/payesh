@@ -177,7 +177,7 @@ class SystemMonitor:
     """مانیتورینگ منابع سیستم با هشدارهای آستانه‌ای + cooldown."""
 
     def __init__(self):
-        self.start_time = datetime.now()
+        self.start_time = datetime.now()  # noqa: DTZ005
         self.metrics_history: list[Metric] = []
         self.alerts: list[Alert] = []
         self._monitoring = False
@@ -372,7 +372,7 @@ class SystemMonitor:
         # ─── Uptime ───
         try:
             uptime = (
-                datetime.now() - self.start_time
+                datetime.now() - self.start_time  # noqa: DTZ005
             ).total_seconds()
             self._add_metric(
                 "uptime", uptime, "seconds"
@@ -623,7 +623,7 @@ class SystemMonitor:
         )
 
         # alertهای 60 ثانیه اخیر
-        now = datetime.now()
+        now = datetime.now()  # noqa: DTZ005
         recent = [
             a for a in self.alerts
             if (now - a.timestamp).total_seconds() < 60
@@ -726,7 +726,7 @@ class SystemMonitor:
             "cooldowns_count": len(cooldowns),
             "cooldown_keys": list(cooldowns.keys()),
             "uptime_s": (
-                datetime.now() - self.start_time
+                datetime.now() - self.start_time  # noqa: DTZ005
             ).total_seconds(),
             "uptime_str": self._uptime_str(),
             "thresholds_s": {
@@ -776,7 +776,7 @@ class PerformanceMonitor:
             stats = self.module_stats[key]
             stats["calls"] += 1
             stats["last_call"] = (
-                datetime.now().isoformat()
+                datetime.now().isoformat()  # noqa: DTZ005
             )
         except Exception as e:
             log_warning(

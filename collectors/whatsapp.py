@@ -763,7 +763,7 @@ class WhatsAppCollector(BaseCollector):
                         "chat_link": None,
                         "user_id": "",
                         "sender_name": sender_name,
-                        "timestamp": datetime.now(),
+                        "timestamp": datetime.now(),  # noqa: DTZ005
                         "media_type": media_type,
                         "file_id": None,
                         "local_file_path": local_file_path,

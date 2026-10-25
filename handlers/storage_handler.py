@@ -218,7 +218,7 @@ class StorageHandler(BaseHandler):
             "user_id": getattr(raw, "user_id", "unknown"),
             "sender_name": getattr(raw, "sender_name", None),
             "platform": getattr(raw, "platform", "bale"),
-            "timestamp": (getattr(raw, "timestamp", None) or datetime.now()),
+            "timestamp": (getattr(raw, "timestamp", None) or datetime.now()),  # noqa: DTZ005
             "media_type": getattr(raw, "media_type", "text"),
             "file_id": getattr(raw, "file_id", None),
             "local_file_path": getattr(raw, "local_file_path", None),
@@ -331,7 +331,7 @@ class StorageHandler(BaseHandler):
             chat_name=raw.get("chat_name") or "Unknown",
             sender_name=(raw.get("sender_name") or raw.get("user_id") or ""),
             text=msg_text,
-            time=raw.get("timestamp") or datetime.now(),
+            time=raw.get("timestamp") or datetime.now(),  # noqa: DTZ005
         )
         analyzed = await self.keyword_finder.analyze(analyzed)
 

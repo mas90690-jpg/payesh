@@ -558,7 +558,7 @@ def fix_fstrings(
                     from core.brain.constants import BACKUP_DIR
                     from datetime import datetime as _dt
                     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-                    ts = _dt.now().strftime("%Y%m%d_%H%M%S_%f")
+                    ts = _dt.now().strftime("%Y%m%d_%H%M%S_%f")  # noqa: DTZ005
                     backup = BACKUP_DIR / f"{fpath.stem}_{ts}.py"
                     backup.write_text(original, encoding="utf-8")
                 except Exception:

@@ -153,7 +153,7 @@ class Event:
 
     def __post_init__(self):
         if self.timestamp is None:
-            self.timestamp = datetime.now()
+            self.timestamp = datetime.now()  # noqa: DTZ005
 
     def __repr__(self) -> str:
         return (
@@ -236,7 +236,7 @@ class EventBus:
             "slow_handlers": 0,
             "timeout_handlers": 0,
             "events_by_name": {},
-            "started_at": datetime.now().isoformat(),
+            "started_at": datetime.now().isoformat(),  # noqa: DTZ005
         }
 
         log_success(
@@ -678,7 +678,7 @@ class EventBus:
         if self._event_history:
             try:
                 delta = (
-                    datetime.now()
+                    datetime.now()  # noqa: DTZ005
                     - self._event_history[-1].timestamp
                 )
                 last_age_s = round(
@@ -780,7 +780,7 @@ class EventBus:
                 "slow_handlers": 0,
                 "timeout_handlers": 0,
                 "events_by_name": {},
-                "started_at": datetime.now().isoformat(),
+                "started_at": datetime.now().isoformat(),  # noqa: DTZ005
             }
         log_info("🗑️ [EVENTBUS:clear_stats] آمار پاک شد")
 

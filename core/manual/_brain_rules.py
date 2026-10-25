@@ -328,7 +328,7 @@ class BrainRulesMixin:
         last = self.api.platform_last_poll(p)
         if not last:
             return f"ℹ️ {p}: هنوز فعالیتی ثبت نشده."
-        mins = (datetime.now() - last).total_seconds() / 60
+        mins = (datetime.now() - last).total_seconds() / 60  # noqa: DTZ005
         if mins < 30:
             return f"✅ {p}: فعال — {int(mins)} دقیقه پیش"
         return f"⚠️ {p}: آخرین فعالیت {int(mins)} دقیقه پیش"

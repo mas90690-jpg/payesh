@@ -363,9 +363,9 @@ class BaleBotCollector(BaseCollector):
             "chat_link": None,
             "user_id": user_id,
             "sender_name": sender_name,
-            "timestamp": datetime.fromtimestamp(
+            "timestamp": datetime.fromtimestamp(  # noqa: DTZ006
                 msg.get("date", 0) or 0
-            ) if msg.get("date") else datetime.now(),
+            ) if msg.get("date") else datetime.now(),  # noqa: DTZ005
             "media_type": self._detect_media_type(msg),
             "file_id": None,
             "local_file_path": None,

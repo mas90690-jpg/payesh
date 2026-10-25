@@ -175,8 +175,8 @@ class FacebookCollector(BaseCollector):
         try:
             data = {
                 "first_run_done": True,
-                "first_run_at": getattr(self, "_first_run_at", datetime.now().isoformat()),
-                "last_run_at": datetime.now().isoformat(),
+                "first_run_at": getattr(self, "_first_run_at", datetime.now().isoformat()),  # noqa: DTZ005
+                "last_run_at": datetime.now().isoformat(),  # noqa: DTZ005
             }
             with open(self._state_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
@@ -427,7 +427,7 @@ class FacebookCollector(BaseCollector):
         self._save_seen()
 
         if not self._first_run_done:
-            self._first_run_at = datetime.now().isoformat()
+            self._first_run_at = datetime.now().isoformat()  # noqa: DTZ005
             self._first_run_done = True
         self._save_state()
 
@@ -590,7 +590,7 @@ class FacebookCollector(BaseCollector):
                         "chat_link": link,
                         "user_id": author or "",
                         "sender_name": author or "",
-                        "timestamp": datetime.now(),
+                        "timestamp": datetime.now(),  # noqa: DTZ005
                         "media_type": media_type,
                         "file_id": None,
                         "local_file_path": local_file_path,

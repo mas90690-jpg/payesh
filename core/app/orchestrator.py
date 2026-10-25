@@ -650,7 +650,7 @@ class Orchestrator:
                 source = "db"
             else:
                 last_poll = (
-                    datetime.now() - timedelta(hours=24)
+                    datetime.now() - timedelta(hours=24)  # noqa: DTZ005
                 )
                 source = "default(-24h)"
 
@@ -679,7 +679,7 @@ class Orchestrator:
                 )
 
             await self.db.update_last_poll(
-                platform, datetime.now()
+                platform, datetime.now()  # noqa: DTZ005
             )
 
             elapsed_ms = (time.monotonic() - t0) * 1000
@@ -726,7 +726,7 @@ class Orchestrator:
 
             if not db_last:
                 last_poll = (
-                    datetime.now() - timedelta(hours=24)
+                    datetime.now() - timedelta(hours=24)  # noqa: DTZ005
                 )
                 src = "default(-24h)"
                 log_info(
@@ -799,7 +799,7 @@ class Orchestrator:
                 await self._emit_batch(platform, history)
 
             await self.db.update_last_poll(
-                platform, datetime.now()
+                platform, datetime.now()  # noqa: DTZ005
             )
 
             elapsed_ms = (time.monotonic() - t0) * 1000
@@ -850,7 +850,7 @@ class Orchestrator:
 
         if not last_poll:
             last_poll = (
-                datetime.now() - timedelta(hours=24)
+                datetime.now() - timedelta(hours=24)  # noqa: DTZ005
             )
 
         # ─── fetch ───
@@ -873,7 +873,7 @@ class Orchestrator:
 
         # ─── ضربان زنده ───
         await self.db.update_last_poll(
-            platform, datetime.now()
+            platform, datetime.now()  # noqa: DTZ005
         )
 
     # ─── سازگاری ───

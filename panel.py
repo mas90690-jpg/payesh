@@ -414,7 +414,7 @@ def backup() -> None:
     if not os.path.exists(DB_PATH):
         _cprint(C.YELLOW, "  ! No database to back up.")
         return
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")  # noqa: DTZ005
     dest = os.path.join(BACKUP_DIR, f"manual_messages_{stamp}.db")
     try:
         src = _sqlite_connect(DB_PATH)
@@ -472,7 +472,7 @@ def report() -> None:
     except _Cancelled: return
     label = platform or "all platforms"
     _cprint(C.CYAN, f"  ..) Generating reports (days={days or 'all'}, {label})...")
-    date_from = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d") if days and days > 0 else None
+    date_from = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d") if days and days > 0 else None  # noqa: DTZ005
     try:
         from core.services.daily_reporter import generate_detailed_report, generate_executive_report
         exec_path = generate_executive_report(date_from=date_from, date_to=None, platform=platform)
@@ -524,7 +524,7 @@ def _run_script(filename: str, label: str) -> bool:
         _cprint(C.RED, f"  ✗ Not found: {path}")
         return False
         
-    log_path = os.path.join(CONSOLE_LOGS_DIR, f"{_safe_filename(label)}_{datetime.now():%Y%m%d_%H%M%S}.log")
+    log_path = os.path.join(CONSOLE_LOGS_DIR, f"{_safe_filename(label)}_{datetime.now():%Y%m%d_%H%M%S}.log")  # noqa: DTZ005
     os.makedirs(CONSOLE_LOGS_DIR, exist_ok=True)
     
     print()
@@ -712,7 +712,7 @@ def recent_reports() -> None:
     
     _cprint(C.CYAN, f"\n  Latest {min(15, len(files))} files:")
     for mtime, name, size in files[:15]:
-        _cprint(C.WHITE, f"    [{datetime.fromtimestamp(mtime):%Y-%m-%d %H:%M}] {name:45s}  ({size/1024:.1f} KB)")
+        _cprint(C.WHITE, f"    [{datetime.fromtimestamp(mtime):%Y-%m-%d %H:%M}] {name:45s}  ({size/1024:.1f} KB)")  # noqa: DTZ006
 
 def console_logs() -> None:
     if not os.path.isdir(CONSOLE_LOGS_DIR):
@@ -729,7 +729,7 @@ def console_logs() -> None:
     
     _cprint(C.CYAN, "\n  📁 Console Logs")
     for mtime, name, size in files[:20]:
-        _cprint(C.WHITE, f"    [{datetime.fromtimestamp(mtime):%Y-%m-%d %H:%M:%S}] {size/1024:>7.1f} KB  {name}")
+        _cprint(C.WHITE, f"    [{datetime.fromtimestamp(mtime):%Y-%m-%d %H:%M:%S}] {size/1024:>7.1f} KB  {name}")  # noqa: DTZ006
     
     print()
     _cprint(C.WHITE, "    [o] Open folder | [l] View latest | [c] Clear | [Enter] Back")
@@ -769,7 +769,7 @@ def github_push() -> None:
     else: _cprint(C.GRAY, "    (no changes)")
     
     if not _confirm("\n  Continue? [y/N]: "): return
-    msg = (_ask_input("  Commit message (Enter = auto): ") or "").strip() or f"Update via panel {datetime.now():%Y-%m-%d %H:%M}"
+    msg = (_ask_input("  Commit message (Enter = auto): ") or "").strip() or f"Update via panel {datetime.now():%Y-%m-%d %H:%M}"  # noqa: DTZ005
     
     _git(["add", "-A"])
     rc, out = _git(["commit", "-m", msg])

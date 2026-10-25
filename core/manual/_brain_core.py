@@ -390,7 +390,7 @@ class BrainCoreMixin:
                     "success": 0, "fail": 0, "last_used": None
                 }
             self.stats[name][key] = self.stats[name].get(key, 0) + 1
-            self.stats[name]["last_used"] = datetime.now().isoformat()
+            self.stats[name]["last_used"] = datetime.now().isoformat()  # noqa: DTZ005
         self._save_stats()
 
     # ═══════════════════════════════════════════

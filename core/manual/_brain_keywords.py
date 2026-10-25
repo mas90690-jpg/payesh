@@ -129,7 +129,7 @@ class BrainKeywordsMixin:
 
         data = {
             "version": "2.0.0",
-            "updated_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat(),  # noqa: DTZ005
             "keywords": clean,
         }
         ok = self._atomic_write_json(CUSTOM_KW_FILE, data)
@@ -652,7 +652,7 @@ class BrainKeywordsMixin:
         self, hours: int = 24, limit: int = 20
     ) -> list[dict]:
         """🎯 FIX: timeout-aware date comparison."""
-        cutoff = datetime.now() - timedelta(hours=hours)
+        cutoff = datetime.now() - timedelta(hours=hours)  # noqa: DTZ005
         logs = self._read_recent_logs(1000)
         errors: list[dict] = []
 

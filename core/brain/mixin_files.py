@@ -115,7 +115,7 @@ _LOCKED_WRITE_FILES: tuple[str, ...] = (
 
 def _make_backup_path(src: Path) -> Path:
     """ساخت مسیر بکاپ با timestamp میکروثانیه."""
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")  # noqa: DTZ005
     return BACKUP_DIR / f"{src.stem}_{ts}{src.suffix}"
 
 
@@ -556,7 +556,7 @@ class FilesMixin:
         try:
             st = p.stat()
             size = st.st_size
-            mtime = datetime.fromtimestamp(st.st_mtime)
+            mtime = datetime.fromtimestamp(st.st_mtime)  # noqa: DTZ006
             mtime_str = mtime.strftime("%Y-%m-%d %H:%M:%S")
         except Exception as e:
             return f"❌ خطا در خواندن اطلاعات: {e}"
@@ -969,7 +969,7 @@ class FilesMixin:
                     if item.is_dir()
                     else human_bytes(st.st_size)
                 )
-                mtime = datetime.fromtimestamp(
+                mtime = datetime.fromtimestamp(  # noqa: DTZ006
                     st.st_mtime
                 ).strftime("%Y-%m-%d %H:%M")
                 # مسیر نسبی
@@ -1173,7 +1173,7 @@ class FilesMixin:
             return "ℹ️ این محتوا از قبل در دانشنامه هست."
 
         # ساخت بلوک جدید
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M")  # noqa: DTZ005
         section_clean = (section or "یاد گرفته‌شده‌ها").strip()
         if not section_clean:
             section_clean = "یاد گرفته‌شده‌ها"

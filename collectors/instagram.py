@@ -498,7 +498,7 @@ class InstagramCollector(BaseCollector):
             "chat_link": f"https://instagram.com/{username}",
             "user_id": "",
             "sender_name": username,
-            "timestamp": datetime.now(),
+            "timestamp": datetime.now(),  # noqa: DTZ005
             "media_type": "text",
             "file_id": None,
             "local_file_path": None,
@@ -643,7 +643,7 @@ class InstagramCollector(BaseCollector):
             "chat_link": f"https://instagram.com/{username}",
             "user_id": "",
             "sender_name": username,
-            "timestamp": datetime.now(),
+            "timestamp": datetime.now(),  # noqa: DTZ005
             "media_type": "text",
             "file_id": None,
             "local_file_path": None,

@@ -96,9 +96,9 @@ async def run_once() -> dict:
     stats = _load_stats()
     stats["runs"] += 1
     stats["moved_total"] += moved
-    stats["last_run"] = datetime.now().isoformat()
+    stats["last_run"] = datetime.now().isoformat()  # noqa: DTZ005
     if not stats["started_at"]:
-        stats["started_at"] = datetime.now().isoformat()
+        stats["started_at"] = datetime.now().isoformat()  # noqa: DTZ005
     _save_stats(stats)
 
     # 🆕 Memory Decay (فراموشی تدریجی)
@@ -160,7 +160,7 @@ async def _loop():
             if last:
                 try:
                     last_dt = datetime.fromisoformat(last)
-                    elapsed = (datetime.now() - last_dt).total_seconds()
+                    elapsed = (datetime.now() - last_dt).total_seconds()  # noqa: DTZ005
                     if elapsed < INTERVAL_HOURS * 3600:
                         remaining = INTERVAL_HOURS * 3600 - elapsed
                         log_info(
