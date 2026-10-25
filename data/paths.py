@@ -207,7 +207,6 @@ __all__ = [
     # helpers
     "ensure_runtime_dirs",
     
-    "AI_SYSTEM_PROMPT",
     "AI_PERSONA",
     "AI_MODE_PROMPTS",
 ]

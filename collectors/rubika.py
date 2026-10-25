@@ -884,12 +884,6 @@ class RubikaCollector(BaseCollector):
         _max_chats = _get_max_chats()
 
         try:
-            since_ts = (
-                int(effective_since.timestamp())
-                if effective_since
-                else 0
-            )
-
             chats_resp = await self._client.get_chats()
             all_chats = self._extract_list(chats_resp, "chats")
             self._last_scrape_stats["total_chats"] = len(all_chats)

@@ -27,10 +27,10 @@ import asyncio
 import random
 import time
 from datetime import datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from core.kernel.logger import (
-    log_error, log_info, log_success, log_warning,
+    log_error, log_info, log_success,
 )
 
 
@@ -54,7 +54,7 @@ DANGEROUS_ACTIONS = frozenset({
 # SafeAction — امنیت مشترک
 # ═══════════════════════════════════════════
 class SafeAction:
-    _shared_stats: dict[str, list[float]] = {}
+    _shared_stats: ClassVar[dict[str, list[float]]] = {}
 
     def __init__(self, platform: str):
         self.platform = platform

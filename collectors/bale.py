@@ -1319,7 +1319,6 @@ class BaleCollector(BaseCollector):
                     timeout=_SELECTOR_TIMEOUT_MS / 1000,
                 )
                 if messages:
-                    used_sel = sel
                     log_info(
                         f"   ✅ پیام‌ها با {sel} ({len(messages)})"
                     )

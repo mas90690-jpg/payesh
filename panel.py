@@ -11,7 +11,6 @@ import sqlite3
 import subprocess
 import sys
 import time
-import traceback
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any
@@ -73,7 +72,7 @@ _GIT_PREVIEW_LIMIT = 15
 _GIT_HARD_LIMIT = 20
 _MENU_DB_TIMEOUT_S = 0.5
 
-_PUSH_REMOTES = ["origin", "backup"]
+_PUSH_REMOTES = ["origin", "payesh"]
 
 # UI Layout
 _HEADER_INNER_WIDTH = 66
@@ -647,6 +646,13 @@ def ai_status() -> None:
             tags = json.loads(r.read().decode("utf-8"))
         _cprint(C.GREEN, f"  ✓ Ollama UP at {AI['url']}")
         _cprint(C.WHITE, f"    model: {AI['model']}")
+        models = [
+            m.get("name", "?")
+            for m in tags.get("models", [])
+            if m.get("name")
+        ]
+        if models:
+            _cprint(C.WHITE, f"    available: {', '.join(models[:5])}")
     except Exception:
         _cprint(C.YELLOW, "  ! Ollama DOWN")
     ids = PLUGINS_CONFIG.get("adminhandler", {}).get("admin_ids", [])

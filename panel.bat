@@ -1,4 +1,4 @@
 @echo off
-cd /d "F:\payesh plat"
+cd /d "%~dp0"
 venv\Scripts\python.exe panel.py
 pause

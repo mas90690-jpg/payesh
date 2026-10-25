@@ -771,7 +771,7 @@ class TelegramWebCollector(BaseCollector):
                 await asyncio.sleep(self._chat_open_delay)
 
                 try:
-                    count = await asyncio.wait_for(
+                    await asyncio.wait_for(
                         self._scrape_current_chat(
                             chat_name, pid,
                             effective_since=effective_since,

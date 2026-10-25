@@ -1077,10 +1077,6 @@ class LinkedInCollector(BaseCollector):
 
                     else:
                         # None: یا Company یا نامشخص
-                        # از نام پست در header تشخیص می‌دهیم
-                        header = await post.evaluate(
-                            "(el) => (el.innerText || '').slice(0, 200)"
-                        )
                         # اگر «Feed post\n\n<Name>\n\n» و Name شبیه شرکت بود
                         # ساده: چک کنیم آیا در aria-label ها
                         # «Open control menu for post by X» هست بدون Follow

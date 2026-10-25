@@ -610,7 +610,7 @@ async def login_youtube() -> bool:
 
     print(f"[..] اجرای Chrome واقعی با پورت {CDP_PORT}...")
     try:
-        proc = subprocess.Popen(cmd)
+        subprocess.Popen(cmd)
     except Exception as e:
         print(f"[X] خطا در اجرای Chrome: {e}")
         return False
@@ -787,7 +787,7 @@ async def login_facebook() -> bool:
 
     print(f"[..] اجرای Chrome واقعی با پورت {CDP_PORT}...")
     try:
-        proc = subprocess.Popen(cmd)
+        subprocess.Popen(cmd)
     except Exception as e:
         print(f"[X] خطا در اجرای Chrome: {e}")
         return False
