@@ -184,7 +184,7 @@ class Brain(
     """مغز هوشمند امن — ترکیب همهٔ mixinها."""
 
     # ─── reference به TOOL_MAP (در _build_tool_map پر می‌شود) ───
-    TOOL_MAP: dict[str, Any] = {}
+    TOOL_MAP: dict[str, Any] = {}  # noqa: RUF012 — ClassVar با _build_tool_map سازگار نیست
 
     def __init__(
         self,
@@ -365,7 +365,7 @@ def _build_tool_map() -> dict[str, Any]:
     Returns:
         dict {tool_name: method}.
     """
-    TOOL_MAP: dict[str, Any] = {}  # noqa: RUF012 — ClassVar نشکست (باگ _build_tool_map)
+    tool_map: dict[str, Any] = {}
     missing: list[str] = []
 
     for tool_name, method_name in _TOOL_METHODS.items():
