@@ -1,1 +1,4 @@
-extend-exclude = ["backups_before_fix"] 
+extend-exclude = [
+    "backups_before_fix",
+    "tests",
+]
