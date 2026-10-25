@@ -417,13 +417,15 @@ async def download_dom_image(
 
     try:
         t_w = time.monotonic()
-        with open(path, "wb") as f:
-            f.write(raw)
-            try:
-                f.flush()
-                os.fsync(f.fileno())
-            except (AttributeError, OSError):
-                pass
+        def _write():
+            with open(path, "wb") as f:
+                f.write(raw)
+                try:
+                    f.flush()
+                    os.fsync(f.fileno())
+                except (AttributeError, OSError):
+                    pass
+        await asyncio.to_thread(_write)
         write_ms = (time.monotonic() - t_w) * 1000
     except asyncio.CancelledError:
         _safe_remove(path, safe_prefix)

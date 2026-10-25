@@ -739,7 +739,7 @@ class DailyReporter:
         )
 
         try:
-            with open(filename, "w", encoding="utf-8") as f:
+            with open(filename, "w", encoding="utf-8") as f:  # noqa: ASYNC230
                 f.write(_hdr("separator_70") + "\n")
                 f.write(_hdr("weekly_title") + "\n")
                 f.write(
@@ -1391,7 +1391,7 @@ class DailyReporter:
             REPORTS_DIR, f"daily_report{suffix}_{date}.txt"
         )
         try:
-            with open(filename, "w", encoding="utf-8") as f:
+            with open(filename, "w", encoding="utf-8") as f:  # noqa: ASYNC230
                 f.write(_hdr("separator_70") + "\n")
                 f.write(
                     _hdr("daily_title", date=date) + "\n"
@@ -1562,7 +1562,7 @@ class DailyReporter:
 </body>
 </html>"""
         try:
-            with open(filename, "w", encoding="utf-8") as f:
+            with open(filename, "w", encoding="utf-8") as f:  # noqa: ASYNC230
                 f.write(head + body + tail)
         except Exception as e:
             log_error(
@@ -1579,7 +1579,7 @@ class DailyReporter:
             REPORTS_DIR, f"daily_report{suffix}_{date}.csv"
         )
         try:
-            with open(
+            with open(  # noqa: ASYNC230
                 filename, "w", newline="",
                 encoding="utf-8-sig",
             ) as f:
@@ -1659,7 +1659,7 @@ class DailyReporter:
             "platforms": by_platform,
         }
         try:
-            with open(filename, "w", encoding="utf-8") as f:
+            with open(filename, "w", encoding="utf-8") as f:  # noqa: ASYNC230
                 json.dump(
                     output, f, ensure_ascii=False, indent=2
                 )

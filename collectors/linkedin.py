@@ -399,8 +399,10 @@ class LinkedInCollector(BaseCollector):
         try:
             if not os.path.exists(self._state_path):
                 return False
-            with open(self._state_path, encoding="utf-8") as f:
-                state = json.load(f)
+            def _load():
+                with open(self._state_path, encoding="utf-8") as f:
+                    return json.load(f)
+            state = await asyncio.to_thread(_load)
             cookies = state.get("cookies") or []
             if cookies:
                 await self._context.add_cookies(cookies)
@@ -1234,8 +1236,10 @@ class LinkedInCollector(BaseCollector):
             self._user_data_dir, "linkedin_dom_dump.html"
         )
         html = await self._page.content()
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(html)
+        def _write():
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(html)
+        await asyncio.to_thread(_write)
         log_info(f"DOM در {path}")
         return path
 

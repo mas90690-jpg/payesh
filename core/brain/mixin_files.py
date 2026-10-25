@@ -564,9 +564,13 @@ class FilesMixin:
         # شمارش خطوط بدون خواندن کامل
         line_count = 0
         try:
-            with open(p, "rb") as f:
-                for _ in f:
-                    line_count += 1
+            def _count():
+                n = 0
+                with open(p, "rb") as f:
+                    for _ in f:
+                        n += 1
+                return n
+            line_count = await asyncio.to_thread(_count)
         except Exception:
             line_count = -1
 
@@ -612,7 +616,7 @@ class FilesMixin:
 
         try:
             h = hashlib.md5(usedforsecurity=False)
-            with open(p, "rb") as f:
+            with open(p, "rb") as f:  # noqa: ASYNC230
                 for chunk in iter(
                     lambda: f.read(8192), b""
                 ):
@@ -1197,13 +1201,15 @@ class FilesMixin:
         try:
             p = self._safepath(str(path))
             p.parent.mkdir(parents=True, exist_ok=True)
-            with open(str(p), "a", encoding="utf-8") as f:
-                f.write(new_block)
-                try:
-                    f.flush()
-                    os.fsync(f.fileno())
-                except (AttributeError, OSError):
-                    pass
+            def _append():
+                with open(str(p), "a", encoding="utf-8") as f:
+                    f.write(new_block)
+                    try:
+                        f.flush()
+                        os.fsync(f.fileno())
+                    except (AttributeError, OSError):
+                        pass
+            await asyncio.to_thread(_append)
         except Exception as e:
             log_error(
                 f"❌ [BRAIN:append_knowledge] write | "

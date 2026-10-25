@@ -129,8 +129,10 @@ class ReportsMixin:
             tmp_path = env_path + ".tmp"
             lines: list[str] = []
             if os.path.exists(env_path):
-                with open(env_path, encoding="utf-8") as f:
-                    lines = f.readlines()
+                def _read():
+                    with open(env_path, encoding="utf-8") as f:
+                        return f.readlines()
+                lines = await asyncio.to_thread(_read)
 
             found = False
             for i, ln in enumerate(lines):
@@ -144,13 +146,15 @@ class ReportsMixin:
                 lines.append(f"{key_u}={value}\n")
 
             # 🎯 FIX: fsync برای durability
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                f.writelines(lines)
-                try:
-                    f.flush()
-                    os.fsync(f.fileno())
-                except (AttributeError, OSError):
-                    pass
+            def _write_env():
+                with open(tmp_path, "w", encoding="utf-8") as f:
+                    f.writelines(lines)
+                    try:
+                        f.flush()
+                        os.fsync(f.fileno())
+                    except (AttributeError, OSError):
+                        pass
+            await asyncio.to_thread(_write_env)
             os.replace(tmp_path, env_path)
 
             # fsync دایرکتوری (POSIX)

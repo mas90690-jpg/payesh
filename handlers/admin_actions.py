@@ -1074,8 +1074,10 @@ class AdminActions:
             )
             spawned = True
             try:
-                with open(self.pid_file, "w") as f:
-                    f.write(str(proc.pid))
+                def _write_pid():
+                    with open(self.pid_file, "w") as f:
+                        f.write(str(proc.pid))
+                await asyncio.to_thread(_write_pid)
                 log_info(
                     f"🔁 [ADMIN:restart] PID جدید={proc.pid}"
                 )

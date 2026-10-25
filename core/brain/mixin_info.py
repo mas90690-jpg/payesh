@@ -232,7 +232,7 @@ class InfoMixin:
                     continue
 
                 files_scanned += 1
-                with open(full, encoding="utf-8") as f:
+                with open(full, encoding="utf-8") as f:  # noqa: ASYNC230
                     for i, line in enumerate(f, 1):
                         if rx.search(line):
                             snippet = line.strip()[

@@ -808,8 +808,10 @@ class WhatsAppCollector(BaseCollector):
     async def dump_dom(self, path: str = None) -> str:
         path = path or os.path.join(self._user_data_dir, "whatsapp_dom_dump.html")
         html = await self._page.content()
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(html)
+        def _write():
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(html)
+        await asyncio.to_thread(_write)
         log_info(f"DOM در {path} ذخیره شد")
         return path
 

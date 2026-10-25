@@ -1040,8 +1040,10 @@ class EitaaCollector(BaseCollector):
             if not self._page:
                 return ""
             html = await self._page.content()
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(html)
+            def _write():
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(html)
+            await asyncio.to_thread(_write)
             return path
         except Exception:
             return ""
