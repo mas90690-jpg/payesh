@@ -367,7 +367,7 @@ class FacebookCollector(BaseCollector):
     def _force_kill_chrome(self):
         try:
             import subprocess
-            subprocess.run(["taskkill", "/F", "/IM", "chrome.exe"], capture_output=True, timeout=5)
+            subprocess.run(["taskkill", "/F", "/IM", "chrome.exe"], capture_output=True, timeout=5, check=False)
         except Exception:
             pass
 

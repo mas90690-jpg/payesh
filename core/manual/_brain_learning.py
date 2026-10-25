@@ -443,6 +443,7 @@ class BrainLearningMixin:
                 capture_output=True, text=True, timeout=30,
                 encoding="utf-8", errors="replace",
                 cwd=str(ROOT),
+                check=False,
             )
             elapsed_ms = (time.monotonic() - t0) * 1000
             out = (r.stdout or "") + (r.stderr or "")
@@ -520,6 +521,7 @@ class BrainLearningMixin:
                 [sys.executable, "-c", full_code],
                 capture_output=True, text=True, timeout=10,
                 encoding="utf-8", errors="replace", cwd=str(ROOT),
+                check=False,
             )
             elapsed_ms = (time.monotonic() - t0) * 1000
             out = (r.stdout or "") + (r.stderr or "")

@@ -748,7 +748,7 @@ def console_logs() -> None:
 # ══════════════════════════════════════════════════════════════════════
 def _git(args: list[str]) -> tuple[int, str]:
     try:
-        r = subprocess.run(["git"] + args, cwd=ROOT, capture_output=True, text=True, timeout=120, encoding="utf-8", errors="replace")
+        r = subprocess.run(["git"] + args, cwd=ROOT, capture_output=True, text=True, timeout=120, encoding="utf-8", errors="replace", check=False)
         return r.returncode, (r.stdout or "") + (r.stderr or "")
     except FileNotFoundError: return 127, "git is not installed"
     except subprocess.TimeoutExpired: return 124, "git timed out"

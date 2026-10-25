@@ -394,6 +394,7 @@ class YouTubeCollector(BaseCollector):
             subprocess.run(
                 ["taskkill", "/F", "/IM", "chrome.exe"],
                 capture_output=True, timeout=5,
+                check=False,
             )
         except Exception:
             pass

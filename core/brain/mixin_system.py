@@ -57,6 +57,7 @@ class SystemMixin:
             r = subprocess.run(
                 ["git", "status", "--porcelain"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=PROJECT_BASE,
+                check=False,
             )
             return r.stdout or "✅ Working tree clean"
         except Exception as e:
@@ -69,7 +70,8 @@ class SystemMixin:
             r = subprocess.run(
                 cmd, capture_output=True, text=True,
                 encoding="utf-8", errors="replace",
-                cwd=PROJECT_BASE
+                cwd=PROJECT_BASE,
+                check=False,
             )
             return r.stdout[:MAX_CONTENT_LENGTH] or "✅ بدون تغییر"
         except Exception as e:
@@ -89,6 +91,7 @@ class SystemMixin:
             r = subprocess.run(
                 ["git", "commit", "-m", message],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=PROJECT_BASE,
+                check=False,
             )
             log_success(
                 f"✅ [BRAIN:git:commit] "
@@ -104,6 +107,7 @@ class SystemMixin:
             r = subprocess.run(
                 ["git", "log", f"-{n}", "--oneline", "--decorate"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=PROJECT_BASE,
+                check=False,
             )
             return r.stdout or "📭 هیچ کامیتی یافت نشد."
         except Exception as e:
@@ -122,7 +126,8 @@ class SystemMixin:
                 else ["git", "checkout", name]
             )
             r = subprocess.run(
-                cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=PROJECT_BASE
+                cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=PROJECT_BASE,
+                check=False,
             )
             return r.stdout[:2000] or f"✅ برنچ {name}"
         except Exception as e:
@@ -272,6 +277,7 @@ class SystemMixin:
             r = subprocess.run(
                 tokens,
                 shell=False,
+                check=False,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
@@ -370,6 +376,7 @@ class SystemMixin:
             r = subprocess.run(
                 ["ping", param, "2", host],
                 capture_output=True, text=True, timeout=10,
+                check=False,
             )
             return r.stdout[:3000] or f"✅ {host} پاسخ داد."
         except Exception as e:
@@ -385,6 +392,7 @@ class SystemMixin:
             r = subprocess.run(
                 cmd, shell=False, capture_output=True, text=True,
                 timeout=TESTS_TIMEOUT_S, cwd=PROJECT_BASE,
+                check=False,
             )
             return (
                 r.stdout[:4000]
@@ -403,6 +411,7 @@ class SystemMixin:
             r = subprocess.run(
                 cmd, shell=False, capture_output=True, text=True,
                 timeout=PYTEST_COVERAGE_TIMEOUT_S, cwd=PROJECT_BASE,
+                check=False,
             )
             return (
                 f"✅ گزارش پوشش در htmlcov/ ذخیره شد.\n"
@@ -417,6 +426,7 @@ class SystemMixin:
                 ["bandit", "-r", path, "-f", "txt"],
                 capture_output=True, text=True,
                 timeout=BANDIT_TIMEOUT_S,
+                check=False,
             )
             return (
                 r.stdout
@@ -512,6 +522,7 @@ class SystemMixin:
                 [sys.executable, tmp],
                 capture_output=True, text=True,
                 timeout=PY_EXEC_TIMEOUT_S,
+                check=False,
                 cwd=PROJECT_BASE,
             )
             out = (r.stdout or "") + (r.stderr or "")

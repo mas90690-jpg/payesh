@@ -128,6 +128,7 @@ def _run_tool(
             timeout=timeout,
             cwd=cwd,
             encoding="utf-8",
+            check=False,
             errors="replace",
         )
 

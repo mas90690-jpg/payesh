@@ -536,6 +536,7 @@ class BaleCollector(BaseCollector):
                  "get", "ProcessId,CommandLine"],
                 capture_output=True, text=True, timeout=10,
                 encoding="utf-8", errors="ignore",
+                check=False,
             ).stdout
         except Exception:
             return
@@ -553,6 +554,7 @@ class BaleCollector(BaseCollector):
                 subprocess.run(
                     ["taskkill", "/F", "/PID", m.group(1), "/T"],
                     capture_output=True, timeout=5,
+                    check=False,
                 )
             except Exception:
                 pass
