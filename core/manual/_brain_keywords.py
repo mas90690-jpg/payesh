@@ -26,7 +26,6 @@ import re
 from datetime import datetime, timedelta
 
 from core.kernel.logger import log_info, log_success, log_warning
-
 from core.manual._brain_core import (
     CUSTOM_KW_FILE,
     LOG_FILE,
@@ -399,18 +398,18 @@ class BrainKeywordsMixin:
         target_tier: str | None = None
         for pat, tier in (
             (
-                r"(^|\s)(1|t1|تی\s*1|سطح\s*1|وزن\s*1|"
-                r"level\s*1|tier\s*1)(\s|$)",
+                (r"(^|\s)(1|t1|تی\s*1|سطح\s*1|وزن\s*1|"
+                r"level\s*1|tier\s*1)(\s|$)"),
                 "T1",
             ),
             (
-                r"(^|\s)(2|t2|تی\s*2|سطح\s*2|وزن\s*2|"
-                r"level\s*2|tier\s*2)(\s|$)",
+                (r"(^|\s)(2|t2|تی\s*2|سطح\s*2|وزن\s*2|"
+                r"level\s*2|tier\s*2)(\s|$)"),
                 "T2",
             ),
             (
-                r"(^|\s)(3|t3|تی\s*3|سطح\s*3|وزن\s*3|"
-                r"level\s*3|tier\s*3)(\s|$)",
+                (r"(^|\s)(3|t3|تی\s*3|سطح\s*3|وزن\s*3|"
+                r"level\s*3|tier\s*3)(\s|$)"),
                 "T3",
             ),
         ):

@@ -33,9 +33,14 @@ patch_console(verbose=False)
 # ═══════════════════════════════════════════
 # config + logger
 # ═══════════════════════════════════════════
+import contextlib
+
 from config import LOGIN_INPUT_TIMEOUT_S, PLUGINS_CONFIG
 from core.kernel.logger import (
-    log_error, log_info, log_success, log_warning,
+    log_error,
+    log_info,
+    log_success,
+    log_warning,
 )
 from data import paths as data_paths
 
@@ -508,12 +513,10 @@ async def login_telegram() -> bool:
         print("⏳ منتظر می‌مانم تا مرورگر را ببندی...")
         print()
 
-        try:
+        with contextlib.suppress(Exception):
             await ctx.pages[0].wait_for_event(
                 "close", timeout=600000
             )
-        except Exception:
-            pass
 
         print()
         print("[OK] نشست تلگرام وِب ذخیره شد ✅")
@@ -555,6 +558,7 @@ async def login_youtube() -> bool:
         return False
 
     import subprocess
+
     from config import CHROME_PATH
 
     # ─── مسیر پروفایل اختصاصی ───
@@ -649,14 +653,12 @@ async def login_youtube() -> bool:
 
         # ─── تزریق stealth روی context فعلی ───
         # (این کار فقط برای اطمینان است — چون Chrome واقعی است)
-        try:
+        with contextlib.suppress(Exception):
             await context.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', {
                     get: () => undefined
                 });
             """)
-        except Exception:
-            pass
 
         # ─── goto یوتیوب (اگر قبلاً باز نبود) ───
         try:
@@ -734,6 +736,7 @@ async def login_facebook() -> bool:
         return False
 
     import subprocess
+
     from config import CHROME_PATH
 
     user_data_dir = str(
@@ -824,14 +827,12 @@ async def login_facebook() -> bool:
         page = context.pages[0] if context.pages else await context.new_page()
 
         # ─── تزریق stealth ───
-        try:
+        with contextlib.suppress(Exception):
             await context.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', {
                     get: () => undefined
                 });
             """)
-        except Exception:
-            pass
 
         # ─── goto فیسبوک (اگر قبلاً باز نبود) ───
         try:
@@ -1195,9 +1196,7 @@ async def main() -> None:
         print()
         print("╔" + "═" * 58 + "╗")
         print(
-            "║  ⚠️  توجه: ربات الان روشن است (PID: {:>6})         ║".format(
-                pid or 0
-            )
+            f"║  ⚠️  توجه: ربات الان روشن است (PID: {pid or 0:>6})         ║"
         )
         print("║  برای لاگین مرورگری، ابتدا ربات را Stop کن.          ║")
         print("╚" + "═" * 58 + "╝")

@@ -26,6 +26,7 @@ BaseHandler — کلاس پایه برای همه هندلرها (قابلیت�
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import time
 from abc import ABC, abstractmethod
@@ -208,10 +209,8 @@ class BaseHandler(ABC):
             name = self.__class__.__name__
 
         event_name = "?"
-        try:
+        with contextlib.suppress(Exception):
             event_name = getattr(event, "name", "?")
-        except Exception:
-            pass
 
         log_error(
             f"❌ [HANDLER:error] {name} | event={event_name} | "

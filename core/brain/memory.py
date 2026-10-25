@@ -29,6 +29,21 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+# ═══════════════════════════════════════════════════════════
+# 🆕 Alias — brain_memory به‌عنوان منبع اصلی
+# ═══════════════════════════════════════════════════════════
+from core.brain.brain_memory import (
+    BrainMemory as _BrainMemoryNew,
+)
+from core.brain.brain_memory import (
+    PersistentMemory as _PersistentMemoryNew,
+)
+from core.brain.brain_memory import (
+    get_persistent_memory as _get_persistent_new,
+)
+from core.brain.brain_memory import (
+    reset_persistent_memory as _reset_persistent_new,
+)
 from core.brain.constants import (
     CACHE_DIR,
     CACHE_SAVE_INTERVAL_S,
@@ -52,16 +67,6 @@ from core.kernel.logger import (
     log_info,
     log_success,
     log_warning,
-)
-
-# ═══════════════════════════════════════════════════════════
-# 🆕 Alias — brain_memory به‌عنوان منبع اصلی
-# ═══════════════════════════════════════════════════════════
-from core.brain.brain_memory import (
-    BrainMemory as _BrainMemoryNew,
-    PersistentMemory as _PersistentMemoryNew,
-    get_persistent_memory as _get_persistent_new,
-    reset_persistent_memory as _reset_persistent_new,
 )
 
 # Alias عمومی
@@ -642,11 +647,11 @@ class ProjectSemanticSearch:
 # __all__
 # ═══════════════════════════════════════════
 __all__ = [
-    "SmartCache",
     "APIMemory",
     "BrainMemory",           # alias به brain_memory.BrainMemory
-    "ProjectSemanticSearch",
     "PersistentMemory",      # حفظ برای سازگاری
+    "ProjectSemanticSearch",
+    "SmartCache",
     "get_persistent_memory",
     "reset_persistent_memory",
 ]

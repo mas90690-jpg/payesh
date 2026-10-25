@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
-
 
 _TRUE = frozenset({"true", "1", "yes", "on", "y", "t"})
 _FALSE = frozenset({"false", "0", "no", "off", "n", "f"})
@@ -12,13 +12,11 @@ def _warn(msg: str) -> None:
     try:
         print(f"[env] {msg}", file=sys.stderr)
     except Exception:
-        try:
+        with contextlib.suppress(Exception):
             os.write(
                 2,
                 f"[env] {msg}\n".encode("utf-8", errors="replace"),
             )
-        except Exception:
-            pass
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -88,6 +86,12 @@ _env_str = env_str
 
 
 __all__ = [
-    "env_bool", "env_int", "env_float", "env_str",
-    "_env_bool", "_env_int", "_env_float", "_env_str",
+    "_env_bool",
+    "_env_float",
+    "_env_int",
+    "_env_str",
+    "env_bool",
+    "env_float",
+    "env_int",
+    "env_str",
 ]

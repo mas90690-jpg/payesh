@@ -38,6 +38,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import threading
 import time
@@ -200,10 +201,7 @@ def _is_async_callable(handler: Callable) -> bool:
 
     # ─── instance با __call__ async ───
     call = getattr(handler, "__call__", None)
-    if call is not None and asyncio.iscoroutinefunction(call):
-        return True
-
-    return False
+    return bool(call is not None and asyncio.iscoroutinefunction(call))
 
 
 # ═══════════════════════════════════════════
@@ -523,10 +521,8 @@ class EventBus:
 
     def _on_task_done(self, task: asyncio.Task) -> None:
         """حذف taskهای تمام‌شده از لیست."""
-        try:
+        with contextlib.suppress(ValueError):
             self._pending_tasks.remove(task)
-        except ValueError:
-            pass
 
         # 🐛 FIX: cancelled امن
         if task.cancelled():
@@ -664,10 +660,8 @@ class EventBus:
             )
             return None
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 self.unsubscribe(event_name, handler)
-            except Exception:
-                pass
 
     # ═══════════════════════════════════════════
     # آمار و تاریخچه
@@ -825,8 +819,8 @@ EventBusOld = EventBus
 # __all__
 # ═══════════════════════════════════════════
 __all__ = [
-    "EventBus",
     "Event",
+    "EventBus",
     "EventPriority",
     "_event_log_enabled",
 ]

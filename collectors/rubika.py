@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -28,9 +29,7 @@ from datetime import datetime
 from typing import Any
 
 from core.contracts.base_collector import BaseCollector, ConnectionStatus
-from core.kernel.logger import (
-    log_debug, log_error, log_info, log_success, log_warning
-)
+from core.kernel.logger import log_debug, log_error, log_info, log_success, log_warning
 
 try:
     from rubpy import Client
@@ -67,7 +66,7 @@ def _get_max_chats() -> int:
     """RUBIKA_MAX_CHATS را می‌خواند."""
     try:
         v = int(os.getenv("RUBIKA_MAX_CHATS", "0"))
-        return v if v >= 0 else 0
+        return max(v, 0)
     except (TypeError, ValueError):
         return 0
 
@@ -186,9 +185,9 @@ def _extract_name_from_obj(obj) -> tuple[str | None, str | None]:
 class RubikaCollector(BaseCollector):
     def __init__(
         self,
-        phone: str = None,
-        password: str = None,
-        poll_seconds: int = None,
+        phone: str | None = None,
+        password: str | None = None,
+        poll_seconds: int | None = None,
         **kwargs,
     ):
         super().__init__()
@@ -436,10 +435,7 @@ class RubikaCollector(BaseCollector):
             return False
         if n in _SYSTEM_NAMES:
             return True
-        for prefix in _SYSTEM_PREFIXES:
-            if n.startswith(prefix):
-                return True
-        return False
+        return any(n.startswith(prefix) for prefix in _SYSTEM_PREFIXES)
 
     # ═══════════════════════════════════════════════
     # استخراج timestamp
@@ -605,11 +601,11 @@ class RubikaCollector(BaseCollector):
         chat_guid_str = str(object_guid or chat_name)
         if message_id:
             mid = hashlib.sha256(
-                f"{chat_guid_str}:{message_id}".encode("utf-8")
+                f"{chat_guid_str}:{message_id}".encode()
             ).hexdigest()[:32]
         else:
             mid = hashlib.sha256(
-                f"{chat_guid_str}:{text[:200]}".encode("utf-8")
+                f"{chat_guid_str}:{text[:200]}".encode()
             ).hexdigest()[:32]
 
         # timestamp
@@ -724,7 +720,7 @@ class RubikaCollector(BaseCollector):
     # fetch_messages
     # ═══════════════════════════════════════════════
     async def fetch_messages(
-        self, since: datetime = None
+        self, since: datetime | None = None
     ) -> list[dict[str, Any]]:
         if not self._connected or not self._client:
             return []
@@ -874,7 +870,7 @@ class RubikaCollector(BaseCollector):
     # fetch_from_chats
     # ═══════════════════════════════════════════════
     async def _fetch_from_chats(
-        self, effective_since: datetime = None
+        self, effective_since: datetime | None = None
     ) -> list[dict[str, Any]]:
         if not self._client:
             return []
@@ -992,7 +988,7 @@ class RubikaCollector(BaseCollector):
                             continue
 
                         mid = hashlib.sha256(
-                            f"{guid}:{message_id}".encode("utf-8")
+                            f"{guid}:{message_id}".encode()
                         ).hexdigest()[:32]
 
                         # ─── dedupe سراسری ───
@@ -1062,7 +1058,7 @@ class RubikaCollector(BaseCollector):
     # fetch_history
     # ═══════════════════════════════════════════════
     async def fetch_history(
-        self, since: datetime = None
+        self, since: datetime | None = None
     ) -> list[dict[str, Any]]:
         return await self.fetch_messages(since)
 
@@ -1128,15 +1124,11 @@ class RubikaCollector(BaseCollector):
         self._running = False
         if self._loop_task and not self._loop_task.done():
             self._loop_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._loop_task
-            except asyncio.CancelledError:
-                pass
         if self._client:
-            try:
+            with contextlib.suppress(Exception):
                 await self._client.disconnect()
-            except Exception:
-                pass
         self._connected = False
         self._set_status(ConnectionStatus.DISCONNECTED)
         log_info("🔌 قطع ارتباط از روبیکا")

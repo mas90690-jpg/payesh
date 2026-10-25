@@ -34,7 +34,6 @@ from core.kernel.logger import log_error, log_info, log_success, log_warning
 # 🎯 داده‌محور
 from data.loader import load_json
 
-
 # ═══════════════════════════════════════════════════════════
 # helpers — داده‌محور
 # ═══════════════════════════════════════════════════════════

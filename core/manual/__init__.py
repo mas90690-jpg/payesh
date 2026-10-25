@@ -4,7 +4,10 @@ from core.manual.data_api import DataAPI
 from core.manual.rules import RULES, get_rules_count, reload_rules
 
 __all__ = [
-    "ManualBrain", "get_manual_brain",
+    "RULES",
     "DataAPI",
-    "RULES", "reload_rules", "get_rules_count",
+    "ManualBrain",
+    "get_manual_brain",
+    "get_rules_count",
+    "reload_rules",
 ]

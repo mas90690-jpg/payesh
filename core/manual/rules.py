@@ -132,9 +132,7 @@ def _is_valid_rule(rule: Any) -> bool:
     action = rule.get("action")
     if not isinstance(action, dict):
         return False
-    if not action.get("type"):
-        return False
-    return True
+    return action.get("type")
 
 
 def _sanitize_rule(
@@ -431,7 +429,7 @@ def _maybe_reload() -> None:
     # تغییر داشته → reload
     with _RULES_LOCK:
         changed = (
-            _RULES_CACHE_MTIME != current_mtime
+            current_mtime != _RULES_CACHE_MTIME
         )
     if changed:
         log_info("🔄 [RULES:hot-reload] تغییر شناسایی شد")

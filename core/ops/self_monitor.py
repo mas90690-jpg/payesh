@@ -33,6 +33,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import time
@@ -785,10 +786,8 @@ class SelfMonitor:
         """درخواست توقف."""
         self._running = False
         if self._stop_event is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._stop_event.set()
-            except Exception:
-                pass
         log_info("🛑 [MONITOR:stop] درخواست توقف")
 
     def get_stats(self) -> dict[str, Any]:
@@ -854,8 +853,8 @@ async def start_self_monitor(
 # __all__
 # ═══════════════════════════════════════════
 __all__ = [
+    "DB_PATH",
+    "LOG_FILE",
     "SelfMonitor",
     "start_self_monitor",
-    "LOG_FILE",
-    "DB_PATH",
 ]

@@ -11,12 +11,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
 import time
 from pathlib import Path
-
 
 from config import AI, AI_ENABLED, AI_PRIORITY, OFFLINE_MODE_ENABLED
 from core.brain.constants import (
@@ -209,9 +209,7 @@ class AgentMixin:
             elif model_str.startswith("gpt"):
                 base_url = _OPENAI_URL
             elif not (
-                model_str.startswith("deepseek")
-                or model_str.startswith("claude")
-                or model_str.startswith("gpt")
+                model_str.startswith(("deepseek", "claude", "gpt"))
             ):
                 old_model = self.model
                 self.model = _env_str(
@@ -368,14 +366,14 @@ class AgentMixin:
         if self.read_only:
             return self.model
         coding_pats = [
-            r"\b(کد|بنویس|develop|write|create|build|python"
-            r"|تابع|کلاس)\b",
-            r"\b(refactor|debug|fix|test|api|database|sql"
-            r"|query)\b",
+            (r"\b(کد|بنویس|develop|write|create|build|python"
+            r"|تابع|کلاس)\b"),
+            (r"\b(refactor|debug|fix|test|api|database|sql"
+            r"|query)\b"),
             r"\b(رفع|اشکال|خطا|error|bug|issue)\b",
         ]
         if (
-            any(re.search(p, task, re.I) for p in coding_pats)
+            any(re.search(p, task, re.IGNORECASE) for p in coding_pats)
             or len(task) > _LONG_TASK_LEN
         ):
             log_info(
@@ -898,10 +896,8 @@ class AgentMixin:
             f"#{self.stats['commands_processed']} | "
             f"{text[:LOG_PREVIEW_LEN]!r}"
         )
-        try:
+        with contextlib.suppress(Exception):
             text = PersianBrainHandler.fix(text)
-        except Exception:
-            pass
         t = text.strip().lower()
         quick = _QUICK_COMMANDS.get(t)
         if quick == "status":
@@ -928,7 +924,7 @@ class AgentMixin:
                 return await self._get_health_report()
             except Exception as e:
                 return f"❌ خطا: {e}"
-        if t.startswith("/mode ") or t.startswith("حالت "):
+        if t.startswith(("/mode ", "حالت ")):
             try:
                 mode = t.split(maxsplit=1)[1]
                 self.set_mode(mode)
@@ -1026,10 +1022,8 @@ class AgentMixin:
         if not kw:
             return "⚠️ کلیدواژه خالی است."
         db_path = ""
-        try:
+        with contextlib.suppress(Exception):
             db_path = getattr(self.db, "db_path", "") or ""
-        except Exception:
-            pass
         if not db_path:
             try:
                 from data import paths as data_paths

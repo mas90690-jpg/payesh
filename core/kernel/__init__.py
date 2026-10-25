@@ -1,53 +1,52 @@
 """core.kernel — هستهٔ سیستم."""
 
 # ─── logger ───
-from core.kernel.logger import (
-    log_info,
-    log_success,
-    log_error,
-    log_warning,
-    log_debug,
-    log_exception,
-    log_critical,
-    log_duration,
-    get_logger,
-    reset_logger,
-)
-
 # ─── console ───
 from core.kernel.console_compat import (
+    get_status,
+    is_patched,
     patch_console,
     restore_console,
-    is_patched,
-    get_status,
 )
 
 # ─── event bus ───
 from core.kernel.event_bus import (
-    EventBus,
     Event,
+    EventBus,
     EventPriority,
+)
+from core.kernel.logger import (
+    get_logger,
+    log_critical,
+    log_debug,
+    log_duration,
+    log_error,
+    log_exception,
+    log_info,
+    log_success,
+    log_warning,
+    reset_logger,
 )
 
 __all__ = [
+    "Event",
+    # event bus
+    "EventBus",
+    "EventPriority",
+    "get_logger",
+    "get_status",
+    "is_patched",
+    "log_critical",
+    "log_debug",
+    "log_duration",
+    "log_error",
+    "log_exception",
     # logger
     "log_info",
     "log_success",
-    "log_error",
     "log_warning",
-    "log_debug",
-    "log_exception",
-    "log_critical",
-    "log_duration",
-    "get_logger",
-    "reset_logger",
     # console
     "patch_console",
+    "reset_logger",
     "restore_console",
-    "is_patched",
-    "get_status",
-    # event bus
-    "EventBus",
-    "Event",
-    "EventPriority",
 ]

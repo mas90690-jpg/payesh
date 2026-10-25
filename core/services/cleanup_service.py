@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import shutil
 import time
@@ -83,7 +84,11 @@ try:
 except Exception:
     from config import (
         MEDIA_DIR as _CFG_MEDIA,
+    )
+    from config import (
         REPORTS_DIR as _CFG_REPORTS,
+    )
+    from config import (
         STORAGE_DIR as _CFG_STORAGE,
     )
     MEDIA_DIR = str(_CFG_MEDIA)
@@ -294,12 +299,10 @@ class CleanupService:
                 path, followlinks=False
             ):
                 for f in files:
-                    try:
+                    with contextlib.suppress(Exception):
                         total += os.path.getsize(
                             os.path.join(root, f)
                         )
-                    except Exception:
-                        pass
         except Exception:
             pass
         return total / 1024
@@ -353,10 +356,9 @@ class CleanupService:
                 scanned += 1
                 try:
                     mtime = os.path.getmtime(path)
-                    if mtime > newest_mtime:
-                        newest_mtime = mtime
+                    newest_mtime = max(newest_mtime, mtime)
 
-                    if mtime < cutoff:
+                    if mtime < cutoff:  # noqa: SIM102
                         if CleanupService._safe_remove(path):
                             removed += 1
                 except FileNotFoundError:
@@ -519,10 +521,8 @@ class CleanupService:
                     stats["freed_kb"] += size
                 except Exception:
                     pass
-                try:
+                with contextlib.suppress(ValueError):
                     dirs.remove("__pycache__")
-                except ValueError:
-                    pass
 
         elapsed_ms = (time.monotonic() - t0) * 1000
         log_success(
@@ -744,10 +744,8 @@ class CleanupService:
         """درخواست توقف."""
         self._running = False
         if self._stop_event is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._stop_event.set()
-            except Exception:
-                pass
         log_info("🛑 [CLEANUP:stop] درخواست توقف")
 
     async def shutdown(self) -> None:
@@ -757,10 +755,8 @@ class CleanupService:
             if not t.done():
                 t.cancel()
         for t in self._pending_tasks:
-            try:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await t
-            except (asyncio.CancelledError, Exception):
-                pass
         self._pending_tasks.clear()
 
     # ═══════════════════════════════════════════
@@ -834,11 +830,11 @@ async def start_cleanup_service(db=None) -> CleanupService:
 
 
 __all__ = [
-    "CleanupService",
-    "start_cleanup_service",
+    "CLEANUP_TYPE_MEDIA",
+    "CLEANUP_TYPE_REPORTS",
     "MEDIA_DIR",
     "REPORTS_DIR",
     "STORAGE_DIR",
-    "CLEANUP_TYPE_MEDIA",
-    "CLEANUP_TYPE_REPORTS",
+    "CleanupService",
+    "start_cleanup_service",
 ]

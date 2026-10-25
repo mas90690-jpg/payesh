@@ -11,8 +11,12 @@ from analyzers.priority_finder import PriorityFinder, get_priority_finder
 from analyzers.target_filter import TargetGroups, get_target_groups
 
 __all__ = [
-    "KeywordFinder", "get_keyword_finder",
-    "LeadScorer", "get_lead_scorer",
-    "PriorityFinder", "get_priority_finder",
-    "TargetGroups", "get_target_groups",
+    "KeywordFinder",
+    "LeadScorer",
+    "PriorityFinder",
+    "TargetGroups",
+    "get_keyword_finder",
+    "get_lead_scorer",
+    "get_priority_finder",
+    "get_target_groups",
 ]

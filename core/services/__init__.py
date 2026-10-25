@@ -10,8 +10,8 @@ from core.services.daily_reporter import search_lead
 
 __all__ = [
     "AIAssistant",
+    "export_crm",
     "get_ai_assistant",
     "reset_ai_assistant",
-    "export_crm",
     "search_lead",
 ]

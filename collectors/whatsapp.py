@@ -22,6 +22,7 @@
 QR را اسکن می‌کنی؛ نشست در پروفایل مرورگر (user_data_dir) ذخیره می‌ماند.
 """
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -33,7 +34,11 @@ from analyzers.keyword_finder import get_keyword_finder
 from analyzers.target_filter import get_target_groups
 from core.contracts.base_collector import BaseCollector, ConnectionStatus
 from core.kernel.logger import (
-    log_debug, log_error, log_info, log_success, log_warning,
+    log_debug,
+    log_error,
+    log_info,
+    log_success,
+    log_warning,
 )
 
 # ایمپورتِ playwright در سطح ماژول با محافظ
@@ -79,7 +84,7 @@ CHAT_ITEM_SELECTORS = [
 class WhatsAppCollector(BaseCollector):
     def __init__(
         self,
-        phone: str = None,
+        phone: str | None = None,
         headless: bool = True,
         poll_seconds: int = 180,
         max_chats: int = 15,
@@ -153,9 +158,7 @@ class WhatsAppCollector(BaseCollector):
         if not name:
             return False
         n = str(name).strip()
-        if not n or n == _DEFAULT_CHAT_NAME:
-            return False
-        return True
+        return not (not n or n == _DEFAULT_CHAT_NAME)
 
     # ==================================================
     # ضدتکراری ماندگار (روی دیسک)
@@ -204,10 +207,8 @@ class WhatsAppCollector(BaseCollector):
 
             if self._context:
                 log_warning("⚠️ [whatsapp:connect] context قدیمی باز — بستن")
-                try:
+                with contextlib.suppress(Exception):
                     await self._context.close()
-                except Exception:
-                    pass
                 self._context = None
                 self._page = None
 
@@ -292,10 +293,8 @@ class WhatsAppCollector(BaseCollector):
                 # ─── تشخیص دقیق دلیل شکست ───
                 url = self._page.url or ""
                 title = ""
-                try:
+                with contextlib.suppress(Exception):
                     title = await self._page.title()
-                except Exception:
-                    pass
 
                 log_error("❌ [whatsapp] لاگین تشخیص داده نشد")
                 log_info(f"   URL: {url[:100]}")
@@ -536,7 +535,7 @@ class WhatsAppCollector(BaseCollector):
     # ==================================================
     # خواندن پیام‌های جدید از چتِ باز
     # ==================================================
-    async def fetch_messages(self, since: datetime = None) -> list[dict[str, Any]]:
+    async def fetch_messages(self, since: datetime | None = None) -> list[dict[str, Any]]:
         if not self._connected or not self._page:
             return []
         try:
@@ -591,10 +590,8 @@ class WhatsAppCollector(BaseCollector):
             log_warning(
                 "⚠️ [whatsapp] هیچ چتی در لیست پیدا نشد — DOM dump برای بررسی"
             )
-            try:
+            with contextlib.suppress(Exception):
                 await self.dump_dom()
-            except Exception:
-                pass
             await self._scrape_open_chat()
             return
 
@@ -713,7 +710,7 @@ class WhatsAppCollector(BaseCollector):
                 if not mid:
                     # 🎯 FIX: chat_name را هم داخل hash بیاور
                     mid = hashlib.sha256(
-                        f"{chat_name}:{text}".encode("utf-8")
+                        f"{chat_name}:{text}".encode()
                     ).hexdigest()[:16]
 
                 uniq = f"{chat_name}:{mid}"
@@ -805,7 +802,7 @@ class WhatsAppCollector(BaseCollector):
                 continue
         return _DEFAULT_CHAT_NAME
 
-    async def dump_dom(self, path: str = None) -> str:
+    async def dump_dom(self, path: str | None = None) -> str:
         path = path or os.path.join(self._user_data_dir, "whatsapp_dom_dump.html")
         html = await self._page.content()
         def _write():

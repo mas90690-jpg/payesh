@@ -20,18 +20,6 @@ import time
 from typing import Any
 
 from analyzers.keyword_finder import get_keyword_finder
-from core.adapters import messenger_registry
-from core.adapters.command_parser import parse_command
-from core.contracts.base_handler import BaseHandler
-from core.kernel.logger import log_error, log_info, log_success, log_warning
-from core.safe_brain import get_safe_brain
-from core.services.ai_assistant import get_ai_assistant
-from data.loader import load_json
-from handlers._ai_utils import is_valid_ai_answer
-from handlers.admin_actions import AdminActions
-from handlers.admin_memory import AdminMemory
-from handlers.keyword_admin import KeywordAdmin
-
 from config import (
     ADMIN_ENABLED,
     ADMIN_IDS,
@@ -41,9 +29,18 @@ from config import (
     PLATFORMS_ORDER,
     SQLITE_CONFIG,
 )
-
+from core.adapters import messenger_registry
+from core.adapters.command_parser import parse_command
+from core.contracts.base_handler import BaseHandler
+from core.kernel.logger import log_error, log_info, log_success, log_warning
+from core.safe_brain import get_safe_brain
+from core.services.ai_assistant import get_ai_assistant
 from data import paths as data_paths
-
+from data.loader import load_json
+from handlers._ai_utils import is_valid_ai_answer
+from handlers.admin_actions import AdminActions
+from handlers.admin_memory import AdminMemory
+from handlers.keyword_admin import KeywordAdmin
 
 # ─── Optional imports (graceful) ───
 try:
@@ -258,11 +255,7 @@ class DomainGuard:
                 )
                 return False
 
-        for kw in in_d:
-            if kw and kw in text_lower:
-                return True
-
-        return False
+        return any(kw and kw in text_lower for kw in in_d)
 
     def get_reply(self, query: str) -> str:
         tpl = self._data.get("out_of_domain_reply", "")
@@ -1069,9 +1062,7 @@ class AdminHandler(BaseHandler):
         ct = raw.get("chat_type")
         uid = raw.get("user_id")
 
-        if ct in ("private", "user"):
-            ct = "private"
-        elif uid is not None and str(chat_id) == str(uid):
+        if ct in ("private", "user") or uid is not None and str(chat_id) == str(uid):
             ct = "private"
 
         if not text:

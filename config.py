@@ -23,15 +23,25 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from data import paths as data_paths
 from dotenv import load_dotenv
+
 from core.utils.env import (
-    env_bool as _env_bool,
-    env_int as _env_int,
-    env_float as _env_float,
-    env_str as _env_str,
     _warn,
 )
+from core.utils.env import (
+    env_bool as _env_bool,
+)
+from core.utils.env import (
+    env_float as _env_float,
+)
+from core.utils.env import (
+    env_int as _env_int,
+)
+from core.utils.env import (
+    env_str as _env_str,
+)
+from data import paths as data_paths
+
 # ─── Load .env (force override) ───
 load_dotenv(override=False)
 
@@ -1515,47 +1525,93 @@ def reload() -> None:
 # Public API (برای Health Check، IDE، ابزارهای تحلیل)
 # ══════════════════════════════════════════════════════════
 __all__ = [
-    # ─── مسیرها ───
-    "BASE_DIR", "CHROME_PATH", "STORAGE_DIR",
-    "DB_DIR", "SESSIONS_DIR", "LOGS_DIR", "PYCACHE_DIR",
-    "MEDIA_DIR", "REPORTS_DIR", "BACKUPS_DIR",
-    # ─── ثابت‌های سراسری ───
-    "PLATFORMS_ORDER", "ALL_PLATFORMS", "PLATFORMS_ACTIVE",
-    # ─── سوییچ‌های اصلی ───
-    "AI_ENABLED", "AI_PRIORITY", "EVENT_LOG", "DATABASE_TYPE",
     # ─── Admin ───
-    "ADMIN_ENABLED", "ADMIN_PLATFORM", "ADMIN_IDS",
-    "ADMIN_MEMORY_MAX", "MEMORY_MAX",    
-    # ─── Brand token ───
-    "BRAND_TOKEN_ENABLED", "BRAND_TOKEN_MIN_LEN",
-    # ─── Monitor ───
-    "MONITOR_ENABLED", "MONITOR_INTERVAL_SECONDS",
-    "SELF_MONITOR_ENABLED", "SELF_MONITOR_INTERVAL",
-    "SELF_MONITOR_ERROR_THRESHOLD", "SELF_MONITOR_STALE_MINUTES",
-    # ─── main/login ───
-    "MAIN_BALE_WAIT_S", "LOGIN_INPUT_TIMEOUT_S", "MAIN_SKIP_VENV_CHECK",
-    # ─── Brain ───
-    "FULL_ACCESS", "USE_API_MEMORY",
-    "MEMORY_API_URL", "MEMORY_API_KEY",
+    "ADMIN_ENABLED",
+    "ADMIN_IDS",
+    "ADMIN_MEMORY_MAX",
+    "ADMIN_PLATFORM",
+    "AI",
+    # ─── سوییچ‌های اصلی ───
+    "AI_ENABLED",
+    "AI_MODE_PROMPTS",
     # ─── AI Persona (NEW) ───
-    "AI_PERSONA", "AI_SYSTEM_PROMPT", "AI_MODE_PROMPTS",
-    "get_ai_system_prompt", "get_ai_persona", "get_ai_mode_prompt",
+    "AI_PERSONA",
+    "AI_PRIORITY",
+    "AI_SYSTEM_PROMPT",
+    "ALL_PLATFORMS",
+    "BACKUPS_DIR",
+    "BACKUP_CONFIG",
+    # ─── مسیرها ───
+    "BASE_DIR",
+    "BRAIN_CONFIG",
+    # ─── Brand token ───
+    "BRAND_TOKEN_ENABLED",
+    "BRAND_TOKEN_MIN_LEN",
+    "CHROME_PATH",
+    "COLLECTORS_CONFIG",
+    "CRM_CONFIG",
+    "DATABASE_TYPE",
+    "DB_DIR",
+    "EVENT_LOG",
+    # ─── Brain ───
+    "FULL_ACCESS",
+    "KEYWORDS_CONFIG",
+    "LEAD_ALERTS",
+    "LOGIN_INPUT_TIMEOUT_S",
+    "LOGS_DIR",
+    "LOG_CONFIG",
+    # ─── main/login ───
+    "MAIN_BALE_WAIT_S",
+    "MAIN_CONFIG",
+    "MAIN_SKIP_VENV_CHECK",
+    "MEDIA_DIR",
+    "MEMORY_API_KEY",
+    "MEMORY_API_URL",
+    "MEMORY_MAX",
+    "MONITOR",
+    # ─── Monitor ───
+    "MONITOR_ENABLED",
+    "MONITOR_INTERVAL_SECONDS",
+    "OBS_CONFIG",
+    "PLATFORMS_ACTIVE",
+    # ─── ثابت‌های سراسری ───
+    "PLATFORMS_ORDER",
+    "PLUGINS_CONFIG",
+    "POSTGRES_CONFIG",
+    "PYCACHE_DIR",
+    "REPORT",
+    "REPORTS_DIR",
+    "RETENTION",
+    "SAFE_BRAIN_CONFIG",
+    "SELF_MONITOR",
+    "SELF_MONITOR_ENABLED",
+    "SELF_MONITOR_ERROR_THRESHOLD",
+    "SELF_MONITOR_INTERVAL",
+    "SELF_MONITOR_STALE_MINUTES",
+    "SESSIONS_DIR",
     # ─── Config dicts ───
-    "SQLITE_CONFIG", "POSTGRES_CONFIG", "CRM_CONFIG",
-    "SYSTEM_CONFIG", "RETENTION",
-    "MONITOR", "SELF_MONITOR",
-    "KEYWORDS_CONFIG", "LOG_CONFIG", "BACKUP_CONFIG",
-    "REPORT", "OBS_CONFIG", "MAIN_CONFIG", "SAFE_BRAIN_CONFIG",
-    "PLUGINS_CONFIG", "COLLECTORS_CONFIG",
-    "AI", "BRAIN_CONFIG", "LEAD_ALERTS",
-    # ─── توابع کمکی ───
-    "get_proxy", "get_browser_proxy",
-    "get_admin_ids",
-    "get_bale_config", "get_rubika_config", "get_eitaa_config",
-    "get_telegram_config", "get_whatsapp_config",
-    "get_linkedin_config", "get_instagram_config", "get_web_config",
-    "get_youtube_config",
-    "get_facebook_config",   # 🆕
+    "SQLITE_CONFIG",
+    "STORAGE_DIR",
+    "SYSTEM_CONFIG",
+    "USE_API_MEMORY",
     "get_active_platforms",
-    "log_config_summary", "reload",
+    "get_admin_ids",
+    "get_ai_mode_prompt",
+    "get_ai_persona",
+    "get_ai_system_prompt",
+    "get_bale_config",
+    "get_browser_proxy",
+    "get_eitaa_config",
+    "get_facebook_config",   # 🆕
+    "get_instagram_config",
+    "get_linkedin_config",
+    # ─── توابع کمکی ───
+    "get_proxy",
+    "get_rubika_config",
+    "get_telegram_config",
+    "get_web_config",
+    "get_whatsapp_config",
+    "get_youtube_config",
+    "log_config_summary",
+    "reload",
 ]

@@ -14,7 +14,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-from core.kernel.logger import log_info, log_warning, log_success
+from core.kernel.logger import log_info, log_success, log_warning
 
 # ══════════════════════════════════════════════════════════
 # تنظیمات
@@ -218,8 +218,8 @@ def get_stats() -> dict:
 
 
 __all__ = [
+    "get_stats",
     "run_once",
     "start_consolidation",
     "stop_consolidation",
-    "get_stats",
 ]

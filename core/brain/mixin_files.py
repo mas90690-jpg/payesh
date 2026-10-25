@@ -23,6 +23,8 @@
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import difflib
 import hashlib
 import os
@@ -845,10 +847,8 @@ class FilesMixin:
         try:
             p.write_text(new_content, encoding="utf-8")
         except Exception as e:
-            try:
+            with contextlib.suppress(Exception):
                 shutil.copy2(backup, p)
-            except Exception:
-                pass
             return f"❌ خطا (بازیابی شد): {e}"
 
         # diff
@@ -978,7 +978,7 @@ class FilesMixin:
                 except Exception:
                     rel = item.name
                 items.append(
-                    f"{icon} {str(rel):<40} "
+                    f"{icon} {rel!s:<40} "
                     f"{size:>12}  {mtime}"
                 )
             except Exception:

@@ -400,8 +400,8 @@ class PluginLoader:
         except Exception as e:
             return (
                 True,
-                f"config در دسترس نیست "
-                f"({type(e).__name__}) — پیش‌فرض فعال",
+                (f"config در دسترس نیست "
+                f"({type(e).__name__}) — پیش‌فرض فعال"),
             )
 
         plugin_name = plugin_class.__name__.lower()
@@ -452,14 +452,14 @@ class PluginLoader:
             if not (all_names & set(enabled_list)):
                 return (
                     False,
-                    f"در enabled_plugins نیست "
-                    f"(list={enabled_list[:3]}...)",
+                    (f"در enabled_plugins نیست "
+                    f"(list={enabled_list[:3]}...)"),
                 )
 
         # ─── ۳) is_enabled روی کلاس ───
         if hasattr(plugin_class, "is_enabled"):
             # 🐛 FIX: callable check
-            attr = getattr(plugin_class, "is_enabled")
+            attr = plugin_class.is_enabled
             if callable(attr):
                 try:
                     result = attr()
@@ -470,9 +470,9 @@ class PluginLoader:
                 except Exception as e:
                     return (
                         True,
-                        f"is_enabled() خطا "
+                        (f"is_enabled() خطا "
                         f"({type(e).__name__}: {e}) — "
-                        f"پیش‌فرض فعال",
+                        f"پیش‌فرض فعال"),
                     )
 
         return True, "بدون محدودیت در config"
@@ -683,8 +683,8 @@ class PluginLoader:
             )
             return (
                 instance,
-                f"fallback: constructor() | "
-                f"{elapsed_ms:.0f}ms",
+                (f"fallback: constructor() | "
+                f"{elapsed_ms:.0f}ms"),
             )
         except Exception as e:
             log_error(
@@ -694,8 +694,8 @@ class PluginLoader:
             )
             return (
                 None,
-                f"هم پارامتری و هم fallback ناموفق "
-                f"({type(e).__name__})",
+                (f"هم پارامتری و هم fallback ناموفق "
+                f"({type(e).__name__})"),
             )
 
     # ─── سازگاری عقب‌رو ───

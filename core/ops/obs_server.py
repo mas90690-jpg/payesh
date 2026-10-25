@@ -30,12 +30,12 @@ from __future__ import annotations
 
 import asyncio
 import os
+import pathlib
 import re
 import sqlite3
 import threading
 import time
 import traceback
-import pathlib
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -44,6 +44,8 @@ _STATIC_DIR = (
     pathlib.Path(__file__).resolve()
     .parent.parent.parent / "static"
 )
+import contextlib
+
 from core.kernel.logger import (
     log_error,
     log_info,
@@ -357,7 +359,7 @@ def render_prometheus(
 class _TTLCache:
     """کش ساده با TTL — thread-safe."""
 
-    __slots__ = ("ttl", "_value", "_time", "_lock")
+    __slots__ = ("_lock", "_time", "_value", "ttl")
 
     def __init__(self, ttl_s: float):
         self.ttl = ttl_s
@@ -596,7 +598,10 @@ class _RateLimiter:
     """rate limiter per-IP با پنجرهٔ ثابت."""
 
     __slots__ = (
-        "max_req", "window_s", "_buckets", "_lock",
+        "_buckets",
+        "_lock",
+        "max_req",
+        "window_s",
     )
 
     def __init__(self, max_req: int, window_s: int):
@@ -1169,10 +1174,8 @@ async def start_obs_server(
         task = app_.get("_obs_cleanup_task")
         if task and not task.done():
             task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
-            except (asyncio.CancelledError, Exception):
-                pass
 
     app.on_startup.append(_start_periodic_cleanup)
     app.on_cleanup.append(_stop_periodic_cleanup)
@@ -1245,11 +1248,11 @@ def get_stats() -> dict[str, Any]:
 # __all__
 # ═══════════════════════════════════════════
 __all__ = [
-    "start_obs_server",
-    "render_prometheus",
-    "server_info",
-    "get_stats",
-    "reset_caches",
-    "get_rate_limiter_stats",
     "_PLATFORM_ORDER",
+    "get_rate_limiter_stats",
+    "get_stats",
+    "render_prometheus",
+    "reset_caches",
+    "server_info",
+    "start_obs_server",
 ]

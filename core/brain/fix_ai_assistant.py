@@ -23,7 +23,7 @@ end_idx = None
 for j in range(start_idx + 1, len(lines)):
     line = lines[j]
     # ─── چک کن indent و شروع تعریف ───
-    if line.startswith("    async def ") or line.startswith("    def "):
+    if line.startswith(("    async def ", "    def ")):
         end_idx = j
         break
 

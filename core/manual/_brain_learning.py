@@ -30,21 +30,19 @@ from collections.abc import Callable
 from datetime import datetime
 
 from core.kernel.logger import log_error, log_info, log_success, log_warning
-
 from core.manual._brain_core import (
+    LOG_PREVIEW_LEN,
     MAX_TRIGGER_LEN,
-    MIN_TRIGGER_LEN,
     MAX_UNKNOWN_LINES,
+    MIN_TRIGGER_LEN,
+    ROOT,
     SLOW_PROCESS_MS,
     UNKNOWN_FILE,
     UNKNOWN_MIN_REPEAT,
     UNKNOWN_TAIL_BYTES,
-    LOG_PREVIEW_LEN,
-    ROOT,
     md5_short,
     tail_lines,
 )
-
 
 # ═══════════════════════════════════════════════════════════
 # ثابت‌های python sandbox
@@ -114,8 +112,8 @@ _PY_SAFE_PREAMBLE = (
 
 # الگوهای کد خطرناک (برای python_file و inline)
 _DANGER_PATTERNS = (
-    r"\bos\.(system|popen|fork|exec|remove|unlink|"
-    r"rmdir|rename|chmod|makedirs|mkdir)\b",
+    (r"\bos\.(system|popen|fork|exec|remove|unlink|"
+    r"rmdir|rename|chmod|makedirs|mkdir)\b"),
     r"\bsubprocess\b",
     r"\b__import__\b",
     r"\beval\b", r"\bexec\b", r"\bcompile\b",
@@ -142,7 +140,7 @@ class BrainLearningMixin:
     # ═══════════════════════════════════════════
     # Self-learning
     # ═══════════════════════════════════════════
-    def _log_unknown(self, text: str, sender: str = None):
+    def _log_unknown(self, text: str, sender: str | None = None):
         try:
             UNKNOWN_FILE.parent.mkdir(parents=True, exist_ok=True)
             entry = {
@@ -564,9 +562,7 @@ class BrainLearningMixin:
             if names and fm.has_pending_confirm(names[0]):
                 return fm.execute(names[0], confirm=True)
 
-        if text.startswith("اجرا کن ") or text.startswith(
-            "اجرا فرمول "
-        ):
+        if text.startswith(("اجرا کن ", "اجرا فرمول ")):
             names = self._extract_quoted(text)
             if not names:
                 return "📝 قالب: «اجرا کن «اسم»»"
@@ -609,7 +605,7 @@ class BrainLearningMixin:
             return self._handle_learn_command(text)
 
         # تأیید
-        if text.startswith("تأیید ") or text.startswith("تایید "):
+        if text.startswith(("تأیید ", "تایید ")):
             name = text.split(" ", 1)[1].strip().strip("«»\"'")
             if self.promote_candidate(name):
                 return f"✅ قانون «{name}» فعال شد."
@@ -754,7 +750,7 @@ class BrainLearningMixin:
     async def process(
         self,
         text: str,
-        sender: str = None,
+        sender: str | None = None,
         ai_fallback: Callable | None = None,
     ) -> str | None:
         """🎯 FIX: dispatcher — CC از ۳۳ به ~۶ کاهش یافت.

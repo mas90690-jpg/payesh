@@ -27,6 +27,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -85,10 +86,8 @@ def _atomic_write_json(path: Any, data: Any) -> bool:
     tmp = path.with_suffix(".tmp")
     try:
         # ─── mkdir ───
-        try:
+        with contextlib.suppress(Exception):
             path.parent.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass
 
         # ─── write + fsync ───
         payload = json.dumps(
@@ -657,6 +656,6 @@ class SafeCache:
 # __all__
 # ═══════════════════════════════════════════
 __all__ = [
-    "SafeMemory",
     "SafeCache",
+    "SafeMemory",
 ]

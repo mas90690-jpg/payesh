@@ -19,14 +19,20 @@
       * tools audit (code, file, fix_fstrings).
 """
 from __future__ import annotations
-from typing import Any
-from core.brain.mixin_platforms import PlatformMixin
+
 import threading
 import time
 from datetime import datetime
+from typing import Any
 
 # 🎯 از config (منبع یکتا)
 from config import AI, AI_PRIORITY
+
+# 🆕 از brain_memory (سیستم اصلی با ۵ حافظه)
+from core.brain.brain_memory import (
+    BrainMemory,
+    get_brain_memory,
+)
 from core.brain.constants import (
     DEFAULT_MODEL,
 )
@@ -39,21 +45,16 @@ from core.brain.learning import (
     WebSearch,
 )
 
-# 🆕 از brain_memory (سیستم اصلی با ۵ حافظه)
-from core.brain.brain_memory import (
-    BrainMemory,
-    get_brain_memory,
-)
 # APIMemory / SmartCache / ProjectSemanticSearch هنوز از memory.py
 from core.brain.memory import (
     APIMemory,
     ProjectSemanticSearch,
     SmartCache,
 )
-
 from core.brain.mixin_agent import AgentMixin
 from core.brain.mixin_files import FilesMixin
 from core.brain.mixin_info import InfoMixin
+from core.brain.mixin_platforms import PlatformMixin
 from core.brain.mixin_reports import ReportsMixin
 from core.brain.mixin_system import SystemMixin
 from core.brain.utils import PersianBrainHandler
@@ -63,7 +64,6 @@ from core.kernel.logger import (
     log_success,
     log_warning,
 )
-
 
 # ═══════════════════════════════════════════════════════════
 # لیست ابزارهای موردانتظار (نام → نام متد)
@@ -262,6 +262,7 @@ class Brain(
         self._consolidation_started = False
         try:
             import asyncio
+
             from core.brain.consolidation import start_consolidation
 
             try:

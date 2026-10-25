@@ -16,20 +16,22 @@ _PROJECT_ROOT = os.path.dirname(
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from core.kernel.console_compat import patch_console  # noqa: E402
+from core.kernel.console_compat import patch_console
 
 patch_console()
 
-from config import PYCACHE_DIR  # noqa: E402
+from config import PYCACHE_DIR
 
 os.makedirs(PYCACHE_DIR, exist_ok=True)
 os.environ["PYTHONPYCACHEPREFIX"] = PYCACHE_DIR
 
-from core.app.orchestrator import Orchestrator  # noqa: E402
-from core.app.plugin_loader import PluginLoader  # noqa: E402
-from core.database import create_database  # noqa: E402
-from core.kernel.event_bus import EventBus  # noqa: E402
-from core.kernel.logger import log_error, log_success  # noqa: E402
+import contextlib
+
+from core.app.orchestrator import Orchestrator
+from core.app.plugin_loader import PluginLoader
+from core.database import create_database
+from core.kernel.event_bus import EventBus
+from core.kernel.logger import log_error, log_success
 
 
 async def main() -> None:
@@ -44,8 +46,8 @@ async def main() -> None:
     loader = PluginLoader()
     loader.set_dependencies(db=db, scorer=None)
 
-    from config import BRAIN_CONFIG
     from config import AI as _AI_CFG  # 🐛 FIX: api_key
+    from config import BRAIN_CONFIG
     from core.safe_brain import get_safe_brain
 
     # 🐛 FIX: api_key از config.AI (مثل main.py)
@@ -91,10 +93,8 @@ async def main() -> None:
     await asyncio.sleep(60)
     log_success("LIVE STARTUP TEST: 60s elapsed — shutting down cleanly")
     task.cancel()
-    try:
+    with contextlib.suppress(asyncio.CancelledError):
         await task
-    except asyncio.CancelledError:
-        pass
     await orch.stop()
     await db.close()
     print("LIVE STARTUP TEST COMPLETE")

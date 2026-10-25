@@ -26,6 +26,7 @@
 - تأخیر بین ترجمه‌ها برای جلوگیری از خطای 429 گوگل
 """
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -36,7 +37,11 @@ from urllib.parse import urljoin, urlparse
 
 from core.contracts.base_collector import BaseCollector, ConnectionStatus
 from core.kernel.logger import (
-    log_debug, log_error, log_info, log_success, log_warning,
+    log_debug,
+    log_error,
+    log_info,
+    log_success,
+    log_warning,
 )
 
 DEFAULT_UA = (
@@ -104,7 +109,7 @@ _JUNK_MIN_LEN = 800
 class WebCollector(BaseCollector):
     def __init__(
         self,
-        sources_file: str = None,
+        sources_file: str | None = None,
         max_pages: int = 40,
         timeout: int = 20,
         translate: bool = False,
@@ -231,7 +236,7 @@ class WebCollector(BaseCollector):
     # ==================================================
     # خواندن منابع
     # ==================================================
-    async def fetch_messages(self, since: datetime = None) -> list[dict[str, Any]]:
+    async def fetch_messages(self, since: datetime | None = None) -> list[dict[str, Any]]:
         if not self._connected or not self._sources:
             return []
 
@@ -465,10 +470,8 @@ class WebCollector(BaseCollector):
                 "وب: هیچ مرورگری برای رندر باز نشد "
                 "(Chrome/Edge/Chromium نصب نیست)"
             )
-            try:
+            with contextlib.suppress(Exception):
                 await self._bpw.stop()
-            except Exception:
-                pass
             self._bpw = None
             return None
             
@@ -483,10 +486,8 @@ class WebCollector(BaseCollector):
             await page.goto(
                 url, wait_until="domcontentloaded", timeout=max(self.timeout, 45) * 1000
             )
-            try:
+            with contextlib.suppress(Exception):
                 await page.wait_for_load_state("networkidle", timeout=8000)
-            except Exception:
-                pass
             await asyncio.sleep(2.0)  # فرصت به JS برای لود محتوا
             # گاهی صفحه در حال ناوبری است؛ content() را با چند تلاش بگیر
             for _ in range(3):
@@ -500,10 +501,8 @@ class WebCollector(BaseCollector):
             return None
         finally:
             if page:
-                try:
+                with contextlib.suppress(Exception):
                     await page.close()
-                except Exception:
-                    pass
 
     async def _rendered_links(self, url) -> list[str]:
         """صفحه را رندر می‌کند، چند بار اسکرول می‌کند و همهٔ لینک‌های هم‌دامنه را از DOMِ
@@ -520,10 +519,8 @@ class WebCollector(BaseCollector):
             )
             await asyncio.sleep(2.0)
             for _ in range(5):
-                try:
+                with contextlib.suppress(Exception):
                     await page.mouse.wheel(0, 2000)
-                except Exception:
-                    pass
                 await asyncio.sleep(1.0)
             hrefs = await page.eval_on_selector_all(
                 "a[href]", "els => els.map(e => e.href)"
@@ -534,10 +531,8 @@ class WebCollector(BaseCollector):
             return []
         finally:
             if page:
-                try:
+                with contextlib.suppress(Exception):
                     await page.close()
-                except Exception:
-                    pass
 
     async def _close_browser(self):
         try:

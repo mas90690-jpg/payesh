@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 from datetime import datetime
@@ -22,7 +23,11 @@ import aiohttp
 from analyzers.keyword_finder import get_keyword_finder
 from core.contracts.base_collector import BaseCollector, ConnectionStatus
 from core.kernel.logger import (
-    log_debug, log_error, log_info, log_success, log_warning,
+    log_debug,
+    log_error,
+    log_info,
+    log_success,
+    log_warning,
 )
 
 _PLATFORM = "bale"
@@ -47,14 +52,11 @@ class BaleBotCollector(BaseCollector):
             return False
 
         token = os.getenv("BALE_BOT_TOKEN", "").strip()
-        if not token:
-            return False
-
-        return True
+        return token
 
     def __init__(
         self,
-        bot_token: str = None,
+        bot_token: str | None = None,
         poll_seconds: int = 5,
         long_poll_timeout: int = 25,
         admin_ids: list[str] | None = None,
@@ -156,7 +158,7 @@ class BaleBotCollector(BaseCollector):
         except Exception as e:
             log_warning(f"ذخیرهٔ offset: {e}")
 
-    async def connect(self, headless: bool = None) -> bool:
+    async def connect(self, headless: bool | None = None) -> bool:
         if self._connected:
             return True
 
@@ -374,13 +376,12 @@ class BaleBotCollector(BaseCollector):
             "raw_update": update,
         }
 
-        if chat_type == "group":
-            if not self._kw.has_match(text):
-                log_debug(
-                    f"⏭️ [bale_bot:kw] بدون کلیدواژه | "
-                    f"{chat_name} | {text[:40]}"
-                )
-                return
+        if chat_type == "group" and not self._kw.has_match(text):
+            log_debug(
+                f"⏭️ [bale_bot:kw] بدون کلیدواژه | "
+                f"{chat_name} | {text[:40]}"
+            )
+            return
 
         self._messages_queue.append(unified)
         log_info(
@@ -405,7 +406,7 @@ class BaleBotCollector(BaseCollector):
         return "text"
 
     async def fetch_messages(
-        self, since: datetime = None
+        self, since: datetime | None = None
     ) -> list[dict[str, Any]]:
         if not self._connected:
             return []
@@ -488,15 +489,11 @@ class BaleBotCollector(BaseCollector):
 
         if self._loop_task and not self._loop_task.done():
             self._loop_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._loop_task
-            except asyncio.CancelledError:
-                pass
         if self._session:
-            try:
+            with contextlib.suppress(Exception):
                 await self._session.close()
-            except Exception:
-                pass
         self._session = None
         self._connected = False
         self._set_status(ConnectionStatus.DISCONNECTED)
@@ -505,5 +502,5 @@ class BaleBotCollector(BaseCollector):
     async def check_health(self) -> bool:
         return self._connected
 
-    async def dump_dom(self, path: str = None) -> str:
+    async def dump_dom(self, path: str | None = None) -> str:
         return ""

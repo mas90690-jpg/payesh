@@ -17,6 +17,7 @@
   - 🎯 لاگ دقیق لحظه‌به‌لحظه
 """
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -28,7 +29,11 @@ from urllib.parse import quote
 from analyzers.keyword_finder import get_keyword_finder
 from core.contracts.base_collector import BaseCollector, ConnectionStatus
 from core.kernel.logger import (
-    log_debug, log_error, log_info, log_success, log_warning,
+    log_debug,
+    log_error,
+    log_info,
+    log_success,
+    log_warning,
 )
 
 # ─── URLها ───
@@ -73,18 +78,18 @@ _COMPANY_MARKERS = ("view company:", "view company profile")
 class LinkedInCollector(BaseCollector):
     def __init__(
         self,
-        email: str = None,
-        password: str = None,
+        email: str | None = None,
+        password: str | None = None,
         headless: bool = True,
         poll_seconds: int = 600,
-        searches_file: str = None,
+        searches_file: str | None = None,
         max_results: int = 15,
         search_delay: float = 6.0,
         scrolls: int = 3,
         monitor_feed: bool = True,
         max_feed_posts: int = 100,
         add_query_to_keywords: bool = True,
-        feed_url: str = None,
+        feed_url: str | None = None,
         following_only: bool = True,
         stop_on_non_follower: bool = True,
         once_per_day: bool = True,
@@ -290,10 +295,8 @@ class LinkedInCollector(BaseCollector):
 
             if self._context:
                 log_warning("⚠️ [linkedin:connect] context قدیمی باز — بستن")
-                try:
+                with contextlib.suppress(Exception):
                     await self._context.close()
-                except Exception:
-                    pass
                 self._context = None
                 self._page = None
 
@@ -360,10 +363,8 @@ class LinkedInCollector(BaseCollector):
             await self._page.fill("input#username", self.email)
             await self._page.fill("input#password", self.password)
             await asyncio.sleep(0.5)
-            try:
+            with contextlib.suppress(Exception):
                 await self._page.click('button[type="submit"]')
-            except Exception:
-                pass
             for _ in range(20):
                 await asyncio.sleep(2)
                 if await self._is_logged_in():
@@ -413,23 +414,23 @@ class LinkedInCollector(BaseCollector):
 
     async def _launch_context(self, use_headless: bool):
         from config import CHROME_PATH
-        base = dict(
-            user_data_dir=self._user_data_dir,
-            headless=use_headless,
-            viewport={"width": 1366, "height": 900},
-            user_agent=(
+        base = {
+            "user_data_dir": self._user_data_dir,
+            "headless": use_headless,
+            "viewport": {"width": 1366, "height": 900},
+            "user_agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/126.0.0.0 Safari/537.36"
             ),
-            args=[
+            "args": [
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-extensions",
                 "--no-first-run",
             ],
-        )
+        }
         if CHROME_PATH:
             try:
                 ctx = await self._pw.chromium.launch_persistent_context(
@@ -491,7 +492,7 @@ class LinkedInCollector(BaseCollector):
     # ═══════════════════════════════════════════════════
     # fetch_messages
     # ═══════════════════════════════════════════════════
-    async def fetch_messages(self, since: datetime = None) -> list[dict[str, Any]]:
+    async def fetch_messages(self, since: datetime | None = None) -> list[dict[str, Any]]:
         if not self._connected or not self._page:
             return []
 
@@ -602,14 +603,12 @@ class LinkedInCollector(BaseCollector):
         log_info("🖱️ scroll آهسته...")
         total = self._scrolls + 3
         for i in range(total):
-            try:
+            with contextlib.suppress(Exception):
                 await page.mouse.move(
                     random.randint(400, 900),
                     random.randint(300, 700),
                     steps=random.randint(5, 15),
                 )
-            except Exception:
-                pass
             await self._human_scroll(random.randint(800, 1400))
             await self._human_delay(2, 4)
             if (i + 1) % 2 == 0:
@@ -896,8 +895,7 @@ class LinkedInCollector(BaseCollector):
             if ck:
                 if "FeedType" in ck:
                     ck = ck.split("FeedType")[0]
-                if ck.startswith("update-card-focus"):
-                    ck = ck[len("update-card-focus"):]
+                ck = ck.removeprefix("update-card-focus")
                 if ck:
                     return hashlib.sha256(
                         f"linkedin:{ck}".encode()
@@ -928,7 +926,7 @@ class LinkedInCollector(BaseCollector):
         self,
         posts,
         source: str,
-        query: str = None,
+        query: str | None = None,
         human: bool = False,
     ) -> int:
         count = 0
@@ -951,7 +949,6 @@ class LinkedInCollector(BaseCollector):
                         await self._human_delay(0.3, 0.8)
                     except Exception as e:
                         log_debug(f"   scroll skip: {type(e).__name__}")
-                        pass
 
                 # ═══════════════════════════════════════
                 # ۱) کلیک "…more" ← قبل از چک فالوور
@@ -1231,7 +1228,7 @@ class LinkedInCollector(BaseCollector):
             pass
         return None
 
-    async def dump_dom(self, path: str = None) -> str:
+    async def dump_dom(self, path: str | None = None) -> str:
         path = path or os.path.join(
             self._user_data_dir, "linkedin_dom_dump.html"
         )

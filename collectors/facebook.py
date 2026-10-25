@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -24,7 +25,11 @@ from analyzers.keyword_finder import get_keyword_finder
 from analyzers.target_filter import get_target_groups
 from core.contracts.base_collector import BaseCollector, ConnectionStatus
 from core.kernel.logger import (
-    log_debug, log_error, log_info, log_success, log_warning,
+    log_debug,
+    log_error,
+    log_info,
+    log_success,
+    log_warning,
 )
 
 # ─── Patchright ───
@@ -263,10 +268,8 @@ class FacebookCollector(BaseCollector):
 
             if self._context:
                 log_warning("⚠️ [facebook:connect] context قدیمی — بستن")
-                try:
+                with contextlib.suppress(Exception):
                     await self._context.close()
-                except Exception:
-                    pass
                 self._context = None
                 self._page = None
 
@@ -397,7 +400,7 @@ class FacebookCollector(BaseCollector):
     # ═══════════════════════════════════════════════
     # fetch_messages
     # ═══════════════════════════════════════════════
-    async def fetch_messages(self, since: datetime = None) -> list[dict[str, Any]]:
+    async def fetch_messages(self, since: datetime | None = None) -> list[dict[str, Any]]:
         if not self._connected or not self._page:
             return []
 
@@ -449,7 +452,7 @@ class FacebookCollector(BaseCollector):
     # ═══════════════════════════════════════════════
     # اسکرپ فید
     # ═══════════════════════════════════════════════
-    async def _scrape_feed(self, effective_since: datetime = None):
+    async def _scrape_feed(self, effective_since: datetime | None = None):
         log_info("🏠 [facebook] فید Home (Patchright + رفتار انسانی)")
 
         try:
@@ -547,7 +550,7 @@ class FacebookCollector(BaseCollector):
                         continue
                     processed_links.add(link)
 
-                    mid = hashlib.sha256(f"facebook:{link}".encode("utf-8")).hexdigest()[:32]
+                    mid = hashlib.sha256(f"facebook:{link}".encode()).hexdigest()[:32]
 
                     if mid in self._seen_ids:
                         self._last_scrape_stats["skipped_seen"] += 1
@@ -613,7 +616,7 @@ class FacebookCollector(BaseCollector):
         log_info(f"⏭️ [facebook:send] غیرفعال | chat_id={chat_id}")
         return False
 
-    async def dump_dom(self, path: str = None) -> str:
+    async def dump_dom(self, path: str | None = None) -> str:
         path = path or os.path.join(self._user_data_dir, "facebook_dom_dump.html")
         try:
             if not self._page:

@@ -19,7 +19,6 @@ import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 
-
 from core.kernel.logger import (
     log_error,
     log_info,
@@ -358,9 +357,9 @@ class PersistentMemory:
         # ─── lazy import (circular-safe) ───
         try:
             from core.brain.constants import (
-                PERSISTENT_MEMORY_ENABLED,
                 PERSISTENT_DB_PATH,
                 PERSISTENT_MAX_ROWS,
+                PERSISTENT_MEMORY_ENABLED,
             )
         except Exception:
             PERSISTENT_MEMORY_ENABLED = True
@@ -675,11 +674,10 @@ class PersistentMemory:
             return {"updated": 0, "deleted": 0}
 
         try:
-            with self._lock:
-                with sqlite3.connect(self.db_path) as conn:
-                    # ─── ۱) کاهش importance ───
-                    cur1 = conn.execute(
-                        """
+            with self._lock, sqlite3.connect(self.db_path) as conn:
+                # ─── ۱) کاهش importance ───
+                cur1 = conn.execute(
+                    """
                         UPDATE memory
                         SET importance = importance * ?
                         WHERE julianday('now')
@@ -687,13 +685,13 @@ class PersistentMemory:
                           AND (access_count = 0
                                OR access_count IS NULL)
                         """,
-                        (factor, days_per_cycle),
-                    )
-                    updated = cur1.rowcount or 0
+                    (factor, days_per_cycle),
+                )
+                updated = cur1.rowcount or 0
 
-                    # ─── ۲) حذف موارد کم‌اهمیت ───
-                    cur2 = conn.execute(
-                        """
+                # ─── ۲) حذف موارد کم‌اهمیت ───
+                cur2 = conn.execute(
+                    """
                         DELETE FROM memory
                         WHERE importance < ?
                           AND julianday('now')
@@ -701,11 +699,11 @@ class PersistentMemory:
                           AND (access_count = 0
                                OR access_count IS NULL)
                         """,
-                        (min_importance, delete_after_days),
-                    )
-                    deleted = cur2.rowcount or 0
+                    (min_importance, delete_after_days),
+                )
+                deleted = cur2.rowcount or 0
 
-                    conn.commit()
+                conn.commit()
 
             if updated > 0 or deleted > 0:
                 log_success(
@@ -741,24 +739,23 @@ class PersistentMemory:
             return {"count_updated": 0, "count_deleted": 0}
 
         try:
-            with self._lock:
-                with sqlite3.connect(self.db_path) as conn:
-                    # ─── چک updated ───
-                    row1 = conn.execute(
-                        """
+            with self._lock, sqlite3.connect(self.db_path) as conn:
+                # ─── چک updated ───
+                row1 = conn.execute(
+                    """
                         SELECT COUNT(*) FROM memory
                         WHERE julianday('now')
                               - julianday(created_at) > ?
                           AND (access_count = 0
                                OR access_count IS NULL)
                         """,
-                        (days_per_cycle,),
-                    ).fetchone()
-                    count_updated = row1[0] if row1 else 0
+                    (days_per_cycle,),
+                ).fetchone()
+                count_updated = row1[0] if row1 else 0
 
-                    # ─── چک deleted ───
-                    row2 = conn.execute(
-                        """
+                # ─── چک deleted ───
+                row2 = conn.execute(
+                    """
                         SELECT COUNT(*) FROM memory
                         WHERE importance < ?
                           AND julianday('now')
@@ -766,9 +763,9 @@ class PersistentMemory:
                           AND (access_count = 0
                                OR access_count IS NULL)
                         """,
-                        (min_importance, delete_after_days),
-                    ).fetchone()
-                    count_deleted = row2[0] if row2 else 0
+                    (min_importance, delete_after_days),
+                ).fetchone()
+                count_deleted = row2[0] if row2 else 0
 
             return {
                 "count_updated": count_updated,
@@ -1441,10 +1438,7 @@ class HybridSearch:
         results: list[dict] = []
         for rid, data in sorted_items[:n]:
             sources = data["sources"]
-            if len(sources) == 2:
-                source = "both"
-            else:
-                source = list(sources)[0]
+            source = "both" if len(sources) == 2 else next(iter(sources))
 
             results.append({
                 "id": rid,
@@ -1464,14 +1458,14 @@ class HybridSearch:
 
 __all__ = [
     "BrainMemory",
-    "WorkingMemory",
+    "HybridSearch",
     "LongTermMemory",
+    "PersistentMemory",
     "ProceduralMemory",
     "SemanticMemory",
-    "PersistentMemory",
+    "WorkingMemory",
     "get_brain_memory",
-    "reset_brain_memory",
     "get_persistent_memory",
+    "reset_brain_memory",
     "reset_persistent_memory",
-    "HybridSearch",
 ]

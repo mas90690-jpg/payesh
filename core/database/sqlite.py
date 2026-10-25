@@ -18,7 +18,7 @@ import json
 import os
 import re
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -327,24 +327,24 @@ class SQLiteDatabase(BaseDatabase):
             )
 
             indexes = [
-                "CREATE INDEX IF NOT EXISTS idx_messages_timestamp "
-                "ON messages(timestamp)",
-                "CREATE INDEX IF NOT EXISTS idx_messages_keywords "
-                "ON messages(keywords)",
-                "CREATE INDEX IF NOT EXISTS idx_messages_platform "
-                "ON messages(platform)",
-                "CREATE INDEX IF NOT EXISTS idx_messages_chat "
-                "ON messages(chat_name, timestamp)",
-                "CREATE INDEX IF NOT EXISTS idx_messages_tier "
-                "ON messages(priority_tier)",
-                "CREATE INDEX IF NOT EXISTS idx_leads_score "
-                "ON leads(opportunity_score DESC)",
-                "CREATE INDEX IF NOT EXISTS idx_leads_timestamp "
-                "ON leads(timestamp)",
-                "CREATE INDEX IF NOT EXISTS idx_leads_tier "
-                "ON leads(priority_tier)",
-                "CREATE INDEX IF NOT EXISTS idx_daily_stats_date "
-                "ON daily_stats(date)",
+                ("CREATE INDEX IF NOT EXISTS idx_messages_timestamp "
+                "ON messages(timestamp)"),
+                ("CREATE INDEX IF NOT EXISTS idx_messages_keywords "
+                "ON messages(keywords)"),
+                ("CREATE INDEX IF NOT EXISTS idx_messages_platform "
+                "ON messages(platform)"),
+                ("CREATE INDEX IF NOT EXISTS idx_messages_chat "
+                "ON messages(chat_name, timestamp)"),
+                ("CREATE INDEX IF NOT EXISTS idx_messages_tier "
+                "ON messages(priority_tier)"),
+                ("CREATE INDEX IF NOT EXISTS idx_leads_score "
+                "ON leads(opportunity_score DESC)"),
+                ("CREATE INDEX IF NOT EXISTS idx_leads_timestamp "
+                "ON leads(timestamp)"),
+                ("CREATE INDEX IF NOT EXISTS idx_leads_tier "
+                "ON leads(priority_tier)"),
+                ("CREATE INDEX IF NOT EXISTS idx_daily_stats_date "
+                "ON daily_stats(date)"),
             ]
             for idx in indexes:
                 try:
@@ -513,10 +513,9 @@ class SQLiteDatabase(BaseDatabase):
         msg_id = message.get("id")
         platform = message.get("platform", "?")
         try:
-            async with self._write_lock:
-                async with self._get_conn() as conn:
-                    cursor = await conn.execute(
-                        """
+            async with self._write_lock, self._get_conn() as conn:
+                cursor = await conn.execute(
+                    """
                         INSERT OR IGNORE INTO messages (
                             id, platform, platform_message_id, text,
                             text_translated, chat_id, chat_name,
@@ -529,39 +528,39 @@ class SQLiteDatabase(BaseDatabase):
                         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
                                   ?,?,?,?,?,?,?,?,?)
                         """,
-                        (
-                            msg_id,
-                            platform,
-                            message.get("platform_message_id"),
-                            (message.get("text") or "")[:5000],
-                            message.get("text_translated"),
-                            message.get("chat_id"),
-                            message.get("chat_name", "Unknown"),
-                            message.get("chat_username"),
-                            message.get("chat_link"),
-                            message.get("chat_type"),
-                            message.get("user_id"),
-                            message.get("sender_name"),
-                            message.get("timestamp"),
-                            message.get("keywords", ""),
-                            message.get("media_type", "text"),
-                            message.get("file_id"),
-                            message.get("local_file_path"),
-                            message.get("caption"),
-                            message.get("reply_to"),
-                            message.get("opportunity_score", 0),
-                            message.get("opportunity_type"),
-                            message.get("priority_tier", "T0"),
-                            message.get("matched_products", ""),
-                            message.get("brands", ""),
-                            json.dumps(
-                                message.get("raw_data", {}),
-                                ensure_ascii=False,
-                            )[:10000],
-                        ),
-                    )
-                    await conn.commit()
-                    rowid = cursor.lastrowid or 1
+                    (
+                        msg_id,
+                        platform,
+                        message.get("platform_message_id"),
+                        (message.get("text") or "")[:5000],
+                        message.get("text_translated"),
+                        message.get("chat_id"),
+                        message.get("chat_name", "Unknown"),
+                        message.get("chat_username"),
+                        message.get("chat_link"),
+                        message.get("chat_type"),
+                        message.get("user_id"),
+                        message.get("sender_name"),
+                        message.get("timestamp"),
+                        message.get("keywords", ""),
+                        message.get("media_type", "text"),
+                        message.get("file_id"),
+                        message.get("local_file_path"),
+                        message.get("caption"),
+                        message.get("reply_to"),
+                        message.get("opportunity_score", 0),
+                        message.get("opportunity_type"),
+                        message.get("priority_tier", "T0"),
+                        message.get("matched_products", ""),
+                        message.get("brands", ""),
+                        json.dumps(
+                            message.get("raw_data", {}),
+                            ensure_ascii=False,
+                        )[:10000],
+                    ),
+                )
+                await conn.commit()
+                rowid = cursor.lastrowid or 1
 
             log_info(
                 f"💾 [DB:sqlite:save_message] OK | "
@@ -581,10 +580,9 @@ class SQLiteDatabase(BaseDatabase):
         lead_id = lead.get("id")
         platform = lead.get("platform", "?")
         try:
-            async with self._write_lock:
-                async with self._get_conn() as conn:
-                    cursor = await conn.execute(
-                        """
+            async with self._write_lock, self._get_conn() as conn:
+                cursor = await conn.execute(
+                    """
                         INSERT OR IGNORE INTO leads (
                             id, message_id, platform, text, chat_id,
                             chat_name, user_id, timestamp, keywords,
@@ -593,27 +591,27 @@ class SQLiteDatabase(BaseDatabase):
                             matched_products, brands
                         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                         """,
-                        (
-                            lead_id,
-                            lead.get("message_id"),
-                            platform,
-                            (lead.get("text") or "")[:5000],
-                            lead.get("chat_id"),
-                            lead.get("chat_name", "Unknown"),
-                            lead.get("user_id"),
-                            lead.get("timestamp"),
-                            lead.get("keywords", ""),
-                            lead.get("media_type", "text"),
-                            lead.get("file_id"),
-                            lead.get("opportunity_score", 0),
-                            lead.get("opportunity_type"),
-                            lead.get("priority_tier", "T0"),
-                            lead.get("matched_products", ""),
-                            lead.get("brands", ""),
-                        ),
-                    )
-                    await conn.commit()
-                    rowid = cursor.lastrowid or 1
+                    (
+                        lead_id,
+                        lead.get("message_id"),
+                        platform,
+                        (lead.get("text") or "")[:5000],
+                        lead.get("chat_id"),
+                        lead.get("chat_name", "Unknown"),
+                        lead.get("user_id"),
+                        lead.get("timestamp"),
+                        lead.get("keywords", ""),
+                        lead.get("media_type", "text"),
+                        lead.get("file_id"),
+                        lead.get("opportunity_score", 0),
+                        lead.get("opportunity_type"),
+                        lead.get("priority_tier", "T0"),
+                        lead.get("matched_products", ""),
+                        lead.get("brands", ""),
+                    ),
+                )
+                await conn.commit()
+                rowid = cursor.lastrowid or 1
 
             log_success(
                 f"🎯 [DB:sqlite:save_lead] OK | "
@@ -651,10 +649,9 @@ class SQLiteDatabase(BaseDatabase):
         msg_id = message.get("id")
         platform = message.get("platform", "?")
         try:
-            async with self._write_lock:
-                async with self._get_conn() as conn:
-                    cur1 = await conn.execute(
-                        """
+            async with self._write_lock, self._get_conn() as conn:
+                cur1 = await conn.execute(
+                    """
                         INSERT OR IGNORE INTO messages (
                             id, platform, platform_message_id, text,
                             text_translated, chat_id, chat_name,
@@ -667,43 +664,43 @@ class SQLiteDatabase(BaseDatabase):
                         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
                                   ?,?,?,?,?,?,?,?,?)
                         """,
-                        (
-                            msg_id,
-                            platform,
-                            message.get("platform_message_id"),
-                            (message.get("text") or "")[:5000],
-                            message.get("text_translated"),
-                            message.get("chat_id"),
-                            message.get("chat_name", "Unknown"),
-                            message.get("chat_username"),
-                            message.get("chat_link"),
-                            message.get("chat_type"),
-                            message.get("user_id"),
-                            message.get("sender_name"),
-                            message.get("timestamp"),
-                            message.get("keywords", ""),
-                            message.get("media_type", "text"),
-                            message.get("file_id"),
-                            message.get("local_file_path"),
-                            message.get("caption"),
-                            message.get("reply_to"),
-                            message.get("opportunity_score", 0),
-                            message.get("opportunity_type"),
-                            message.get("priority_tier", "T0"),
-                            message.get("matched_products", ""),
-                            message.get("brands", ""),
-                            json.dumps(
-                                message.get("raw_data", {}),
-                                ensure_ascii=False,
-                            )[:10000],
-                        ),
-                    )
-                    msg_rowid = cur1.lastrowid or 1
+                    (
+                        msg_id,
+                        platform,
+                        message.get("platform_message_id"),
+                        (message.get("text") or "")[:5000],
+                        message.get("text_translated"),
+                        message.get("chat_id"),
+                        message.get("chat_name", "Unknown"),
+                        message.get("chat_username"),
+                        message.get("chat_link"),
+                        message.get("chat_type"),
+                        message.get("user_id"),
+                        message.get("sender_name"),
+                        message.get("timestamp"),
+                        message.get("keywords", ""),
+                        message.get("media_type", "text"),
+                        message.get("file_id"),
+                        message.get("local_file_path"),
+                        message.get("caption"),
+                        message.get("reply_to"),
+                        message.get("opportunity_score", 0),
+                        message.get("opportunity_type"),
+                        message.get("priority_tier", "T0"),
+                        message.get("matched_products", ""),
+                        message.get("brands", ""),
+                        json.dumps(
+                            message.get("raw_data", {}),
+                            ensure_ascii=False,
+                        )[:10000],
+                    ),
+                )
+                msg_rowid = cur1.lastrowid or 1
 
-                    lead_rowid = 0
-                    if lead:
-                        cur2 = await conn.execute(
-                            """
+                lead_rowid = 0
+                if lead:
+                    cur2 = await conn.execute(
+                        """
                             INSERT OR IGNORE INTO leads (
                                 id, message_id, platform, text, chat_id,
                                 chat_name, user_id, timestamp, keywords,
@@ -712,28 +709,28 @@ class SQLiteDatabase(BaseDatabase):
                                 matched_products, brands
                             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                             """,
-                            (
-                                lead.get("id"),
-                                lead.get("message_id"),
-                                lead.get("platform", platform),
-                                (lead.get("text") or "")[:5000],
-                                lead.get("chat_id"),
-                                lead.get("chat_name", "Unknown"),
-                                lead.get("user_id"),
-                                lead.get("timestamp"),
-                                lead.get("keywords", ""),
-                                lead.get("media_type", "text"),
-                                lead.get("file_id"),
-                                lead.get("opportunity_score", 0),
-                                lead.get("opportunity_type"),
-                                lead.get("priority_tier", "T0"),
-                                lead.get("matched_products", ""),
-                                lead.get("brands", ""),
-                            ),
-                        )
-                        lead_rowid = cur2.lastrowid or 1
+                        (
+                            lead.get("id"),
+                            lead.get("message_id"),
+                            lead.get("platform", platform),
+                            (lead.get("text") or "")[:5000],
+                            lead.get("chat_id"),
+                            lead.get("chat_name", "Unknown"),
+                            lead.get("user_id"),
+                            lead.get("timestamp"),
+                            lead.get("keywords", ""),
+                            lead.get("media_type", "text"),
+                            lead.get("file_id"),
+                            lead.get("opportunity_score", 0),
+                            lead.get("opportunity_type"),
+                            lead.get("priority_tier", "T0"),
+                            lead.get("matched_products", ""),
+                            lead.get("brands", ""),
+                        ),
+                    )
+                    lead_rowid = cur2.lastrowid or 1
 
-                    await conn.commit()
+                await conn.commit()
 
             log_info(
                 f"💾 [DB:sqlite:save_both] OK | "
@@ -767,10 +764,8 @@ class SQLiteDatabase(BaseDatabase):
             )
 
     def _on_task_done(self, task: asyncio.Task) -> None:
-        try:
+        with suppress(ValueError):
             self._pending_tasks.remove(task)
-        except ValueError:
-            pass
         if task.cancelled():
             return
         try:
@@ -784,37 +779,35 @@ class SQLiteDatabase(BaseDatabase):
             )
 
     async def mark_important(
-        self, message_id: str, note: str = None
+        self, message_id: str, note: str | None = None
     ):
-        async with self._write_lock:
-            async with self._get_conn() as conn:
-                if note:
-                    await conn.execute(
-                        "UPDATE messages SET is_important = 1, "
-                        "my_note = ? WHERE id = ?",
-                        (note, message_id),
-                    )
-                else:
-                    await conn.execute(
-                        "UPDATE messages SET is_important = 1 "
-                        "WHERE id = ?",
-                        (message_id,),
-                    )
-                await conn.commit()
+        async with self._write_lock, self._get_conn() as conn:
+            if note:
+                await conn.execute(
+                    "UPDATE messages SET is_important = 1, "
+                    "my_note = ? WHERE id = ?",
+                    (note, message_id),
+                )
+            else:
+                await conn.execute(
+                    "UPDATE messages SET is_important = 1 "
+                    "WHERE id = ?",
+                    (message_id,),
+                )
+            await conn.commit()
         log_info(
             f"⭐ [DB:sqlite:mark_important] id={message_id} | "
             f"note={'✅' if note else '—'}"
         )
 
     async def update_lead_score(self, lead_id: str, score: int):
-        async with self._write_lock:
-            async with self._get_conn() as conn:
-                await conn.execute(
-                    "UPDATE leads SET opportunity_score = ? "
-                    "WHERE id = ?",
-                    (score, lead_id),
-                )
-                await conn.commit()
+        async with self._write_lock, self._get_conn() as conn:
+            await conn.execute(
+                "UPDATE leads SET opportunity_score = ? "
+                "WHERE id = ?",
+                (score, lead_id),
+            )
+            await conn.commit()
         log_info(
             f"📊 [DB:sqlite:update_lead_score] "
             f"id={lead_id} score={score}"
@@ -823,32 +816,30 @@ class SQLiteDatabase(BaseDatabase):
     async def update_last_poll(
         self, platform: str, timestamp: datetime
     ):
-        async with self._write_lock:
-            async with self._get_conn() as conn:
-                await conn.execute(
-                    """
+        async with self._write_lock, self._get_conn() as conn:
+            await conn.execute(
+                """
                     INSERT OR REPLACE INTO last_poll
                         (platform, last_poll, updated_at)
                     VALUES (?, ?, CURRENT_TIMESTAMP)
                     """,
-                    (platform, timestamp.isoformat()),
-                )
-                await conn.commit()
+                (platform, timestamp.isoformat()),
+            )
+            await conn.commit()
 
     async def set_chat_offset(
         self, platform: str, chat_id: str, last_message_id
     ):
-        async with self._write_lock:
-            async with self._get_conn() as conn:
-                await conn.execute(
-                    """
+        async with self._write_lock, self._get_conn() as conn:
+            await conn.execute(
+                """
                     INSERT OR REPLACE INTO chat_offsets
                         (platform, chat_id, last_message_id, updated_at)
                     VALUES (?, ?, ?, CURRENT_TIMESTAMP)
                     """,
-                    (platform, str(chat_id), str(last_message_id)),
-                )
-                await conn.commit()
+                (platform, str(chat_id), str(last_message_id)),
+            )
+            await conn.commit()
 
     async def update_daily_stats(self):
         today = datetime.now().strftime("%Y-%m-%d")  # noqa: DTZ005
@@ -932,14 +923,13 @@ class SQLiteDatabase(BaseDatabase):
             datetime.now() - timedelta(days=days)  # noqa: DTZ005
         ).isoformat()
 
-        async with self._write_lock:
-            async with self._get_conn() as conn:
-                cur = await conn.execute(
-                    "DELETE FROM messages WHERE timestamp < ?",
-                    (cutoff,),
-                )
-                await conn.commit()
-                removed = cur.rowcount or 0
+        async with self._write_lock, self._get_conn() as conn:
+            cur = await conn.execute(
+                "DELETE FROM messages WHERE timestamp < ?",
+                (cutoff,),
+            )
+            await conn.commit()
+            removed = cur.rowcount or 0
 
         log_success(
             f"🧹 [DB:sqlite:cleanup] حذف {removed} پیام "
@@ -1192,9 +1182,7 @@ class SQLiteDatabase(BaseDatabase):
         query_stripped = query.strip()
         query_upper = query_stripped.upper()
 
-        is_select = query_upper.startswith("SELECT") or \
-                    query_upper.startswith("PRAGMA") or \
-                    query_upper.startswith("EXPLAIN")
+        is_select = query_upper.startswith(("SELECT", "PRAGMA", "EXPLAIN"))
 
         try:
             async with self._get_conn() as conn:

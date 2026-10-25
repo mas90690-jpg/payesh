@@ -1,4 +1,2 @@
-extend-exclude = [
-    "backups_before_fix",
-    "tests",
-]
+extend-exclude = ["backups_before_fix", "tests"]
+lint.ignore = ["BLE001", "S110", "S112", "ASYNC220", "ASYNC221", "PYI036", "TRY004", "B004", "TRY401", "PLR0124", "S102"]

@@ -35,7 +35,6 @@ from core.kernel.logger import log_info, log_warning
 # 🎯 P0: از data.paths
 from data import paths as data_paths
 
-
 # ═══════════════════════════════════════════════════════════
 # مسیرها (از data.paths)
 # ═══════════════════════════════════════════════════════════
@@ -443,18 +442,14 @@ class BrainCoreMixin:
         for marker in BAD_ANSWER_MARKERS:
             if marker.lower() in low:
                 return False
-        if not re.search(r"[\w\u0600-\u06FF]", a):
-            return False
-        return True
+        return re.search(r"[\w\u0600-\u06FF]", a)
 
     @staticmethod
     def _is_valid_trigger(trigger: str) -> bool:
         if not trigger or not isinstance(trigger, str):
             return False
         t = trigger.strip()
-        if len(t) < MIN_TRIGGER_LEN or len(t) > MAX_TRIGGER_LEN:
-            return False
-        return True
+        return not (len(t) < MIN_TRIGGER_LEN or len(t) > MAX_TRIGGER_LEN)
 
     # ═══════════════════════════════════════════
     # normalize

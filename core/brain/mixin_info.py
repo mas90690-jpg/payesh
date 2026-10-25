@@ -370,7 +370,7 @@ class InfoMixin:
         url = url.strip()
 
         # 🐛 FIX: URL validation ساده
-        if not (url.startswith("http://") or url.startswith("https://")):
+        if not (url.startswith(("http://", "https://"))):
             log_warning(
                 f"⚠️ [BRAIN:web] URL نامعتبر | url={url!r}"
             )
@@ -683,8 +683,8 @@ class InfoMixin:
         """اجرای دستی خواب مغز."""
         try:
             from core.brain.consolidation import (
-                run_once,
                 get_stats,
+                run_once,
             )
             result = await run_once()
             stats = get_stats()

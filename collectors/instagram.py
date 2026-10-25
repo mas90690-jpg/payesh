@@ -13,6 +13,7 @@ Instagram collector — فقط فالوورها.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -284,7 +285,7 @@ class InstagramCollector(BaseCollector):
     # ═══════════════════════════════════════════
     # fetch_messages
     # ═══════════════════════════════════════════
-    async def fetch_messages(self, since: datetime = None) -> list[dict[str, Any]]:
+    async def fetch_messages(self, since: datetime | None = None) -> list[dict[str, Any]]:
         if not self._connected or not self._page:
             return []
 
@@ -379,10 +380,8 @@ class InstagramCollector(BaseCollector):
 
             except Exception as e:
                 log_warning(f"خطا در استوری: {e}")
-                try:
+                with contextlib.suppress(Exception):
                     await self._page.keyboard.press("Escape")
-                except Exception:
-                    pass
 
         log_info(
             f"   ✅ {count} استوری فالوور | "
@@ -479,7 +478,7 @@ class InstagramCollector(BaseCollector):
 
         # 🔧 FIX: رشته از "story:" استفاده می‌کند (نه "post:")
         mid = hashlib.sha256(
-            f"story:{username}:{text[:200]}".encode("utf-8")
+            f"story:{username}:{text[:200]}".encode()
         ).hexdigest()[:16]
         uniq = f"ig_story:{mid}"
 
@@ -624,7 +623,7 @@ class InstagramCollector(BaseCollector):
     async def _process_post(self, username: str, text: str):
         # 🔧 FIX: رشته از "post:" استفاده می‌کند (نه "story:")
         mid = hashlib.sha256(
-            f"post:{username}:{text[:200]}".encode("utf-8")
+            f"post:{username}:{text[:200]}".encode()
         ).hexdigest()[:16]
         uniq = f"ig_post:{mid}"
 
@@ -653,7 +652,7 @@ class InstagramCollector(BaseCollector):
     # ═══════════════════════════════════════════
     # disconnect
     # ═══════════════════════════════════════════
-    async def dump_dom(self, path: str = None) -> str:
+    async def dump_dom(self, path: str | None = None) -> str:
         path = path or os.path.join(
             self._user_data_dir, "instagram_dom_dump.html"
         )

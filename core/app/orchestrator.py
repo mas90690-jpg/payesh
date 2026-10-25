@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import time
 from datetime import datetime, timedelta
@@ -474,14 +475,12 @@ class Orchestrator:
             m = _re.search(r"(\d+)\s*$", line.strip())
             if not m:
                 continue
-            try:
+            with contextlib.suppress(Exception):
                 _sp.run(
                     ["taskkill", "/F", "/PID", m.group(1), "/T"],
                     capture_output=True, timeout=5,
                     check=False,
                 )
-            except Exception:
-                pass
 
     # ═══════════════════════════════════════════
     # sleep_or_stop
@@ -546,10 +545,8 @@ class Orchestrator:
                     f"disconnect timeout "
                     f"{_DISCONNECT_TIMEOUT_S}s — kill chrome"
                 )
-                try:
+                with contextlib.suppress(Exception):
                     self._kill_collector_chrome(collector)
-                except Exception:
-                    pass
             except Exception as e:
                 log_warning(
                     f"⚠️ [ORCH:reconnect:{platform}] "
@@ -891,10 +888,8 @@ class Orchestrator:
         """انتشار گروهی پیام‌ها — با شمارش خطا."""
         emit_errors = 0
         for msg in messages:
-            try:
+            with contextlib.suppress(Exception):
                 msg["platform"] = platform
-            except Exception:
-                pass
             try:
                 await self.event_bus.emit(
                     "message.received", msg

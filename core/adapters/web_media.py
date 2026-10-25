@@ -198,7 +198,7 @@ def _detect_ext_from_bytes(data: bytes) -> str:
 
     # ─── SVG: شروع با `<svg` یا `<?xml` (بعد از whitespace) ───
     head = data[:200].lstrip()
-    if head.startswith(b"<svg") or head.startswith(b"<?xml"):
+    if head.startswith((b"<svg", b"<?xml")):
         # چک دقیق‌تر برای svg
         head_low = data[:1000].lower()
         if b"<svg" in head_low:
@@ -517,8 +517,8 @@ def get_stats() -> dict[str, Any]:
 # __all__
 # ═══════════════════════════════════════════
 __all__ = [
-    "download_dom_image",
     "_detect_ext_from_bytes",
     "_ext_to_mime",
+    "download_dom_image",
     "get_stats",
 ]

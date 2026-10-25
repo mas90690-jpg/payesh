@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import random
@@ -24,7 +25,11 @@ from analyzers.keyword_finder import get_keyword_finder
 from analyzers.target_filter import get_target_groups
 from core.contracts.base_collector import BaseCollector, ConnectionStatus
 from core.kernel.logger import (
-    log_debug, log_error, log_info, log_success, log_warning,
+    log_debug,
+    log_error,
+    log_info,
+    log_success,
+    log_warning,
 )
 
 try:
@@ -229,10 +234,8 @@ class YouTubeCollector(BaseCollector):
                 log_warning(
                     "⚠️ [youtube:connect] context قدیمی — بستن"
                 )
-                try:
+                with contextlib.suppress(Exception):
                     await self._context.close()
-                except Exception:
-                    pass
                 self._context = None
                 self._page = None
 
@@ -447,7 +450,7 @@ class YouTubeCollector(BaseCollector):
     # ═══════════════════════════════════════════════
     async def fetch_messages(
         self,
-        since: datetime = None,
+        since: datetime | None = None,
         force_no_since: bool = False,
     ) -> list[dict[str, Any]]:
         if not self._connected or not self._page:
@@ -524,7 +527,7 @@ class YouTubeCollector(BaseCollector):
     # subscriptions v2
     # ═══════════════════════════════════════════════
     async def _scrape_subscriptions_v2(
-        self, effective_since: datetime = None
+        self, effective_since: datetime | None = None
     ):
         log_info("📺 [youtube] فید subscriptions...")
         try:
@@ -609,7 +612,7 @@ class YouTubeCollector(BaseCollector):
     # استخراج کامل یک ویدیو
     # ═══════════════════════════════════════════════
     async def _extract_and_queue(
-        self, video_id: str, effective_since: datetime = None
+        self, video_id: str, effective_since: datetime | None = None
     ) -> bool:
         try:
             await self._page.goto(
@@ -738,7 +741,7 @@ class YouTubeCollector(BaseCollector):
     # ═══════════════════════════════════════════════
     # dump_dom
     # ═══════════════════════════════════════════════
-    async def dump_dom(self, path: str = None) -> str:
+    async def dump_dom(self, path: str | None = None) -> str:
         path = path or os.path.join(
             self._user_data_dir, "youtube_dom_dump.html"
         )

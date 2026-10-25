@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import re
 
-
 # ═══════════════════════════════════════════
 # Fallback: نگاشت پلتفرم
 # ═══════════════════════════════════════════
@@ -529,7 +528,7 @@ def parse_command(text: str) -> tuple[str | None, str | None]:
             )
 
         # ─── پاک‌سازی: پلتفرم ───
-        for word, _ in _PLATFORM_MAP.items():
+        for word in _PLATFORM_MAP:
             query = re.sub(
                 rf"(?<!\w){re.escape(word)}(?!\w)",
                 "",
@@ -625,12 +624,12 @@ def parse_set_param(text: str) -> tuple[str | None, str | None]:
 # __all__
 # ═══════════════════════════════════════════
 __all__ = [
-    "extract_value",
-    "platform_in",
-    "parse_command",
-    "parse_set_param",
-    "reload_commands",
-    "get_commands_source",
     "_PLATFORM_MAP",
     "_STOP_PLATFORM_WORDS",
+    "extract_value",
+    "get_commands_source",
+    "parse_command",
+    "parse_set_param",
+    "platform_in",
+    "reload_commands",
 ]

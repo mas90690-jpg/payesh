@@ -15,6 +15,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any
 
+
 # ══════════════════════════════════════════════════════════════════════
 #  🎨 ANSI & Console Setup
 # ══════════════════════════════════════════════════════════════════════
@@ -32,7 +33,7 @@ def _init_ansi() -> bool:
         kernel32 = ctypes.windll.kernel32
         handle = kernel32.GetStdHandle(-11)
         mode = ctypes.c_uint32()
-        if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+        if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):  # noqa: SIM102
             if kernel32.SetConsoleMode(handle, mode.value | 0x0004):
                 return True
     except Exception:
@@ -51,6 +52,8 @@ except ImportError:
 # ══════════════════════════════════════════════════════════════════════
 #  📁 Paths & Constants
 # ══════════════════════════════════════════════════════════════════════
+import contextlib
+
 from data import paths as data_paths
 
 ROOT = str(data_paths.PROJECT_ROOT)
@@ -118,10 +121,8 @@ def _pad(s: str, width: int) -> str:
     return s + " " * max(0, width - _visible_len(s))
 
 def _print(msg: str = "", color: str = "") -> None:
-    try:
+    with contextlib.suppress(Exception):
         print(f"{color}{msg}{C.RESET}" if color and _COLORS_OK else msg)
-    except Exception:
-        pass
 
 def _cprint(color: str, msg: str) -> None:
     _print(msg, color)
@@ -208,10 +209,8 @@ def _get_platforms_state() -> dict[str, bool]:
 # ══════════════════════════════════════════════════════════════════════
 def _sqlite_connect(path: str, timeout: float = _SQLITE_TIMEOUT_S) -> sqlite3.Connection:
     conn = sqlite3.connect(path, timeout=timeout)
-    try:
+    with contextlib.suppress(Exception):
         conn.execute("PRAGMA busy_timeout = ?", (int(timeout * 1000),))
-    except Exception:
-        pass
     return conn
 
 def _menu_stats() -> dict[str, int | str]:
@@ -242,10 +241,8 @@ def _write_pid(pid: int) -> None:
         f.write(str(pid))
 
 def _clear_pid() -> None:
-    try:
+    with contextlib.suppress(Exception):
         os.remove(PID_FILE)
-    except Exception:
-        pass
 
 def _is_running() -> bool:
     pid = _read_pid()
@@ -339,8 +336,7 @@ def stop() -> None:
             except psutil.TimeoutExpired:
                 _cprint(C.YELLOW, "  ! Timeout — forcing kill...")
                 for child in p.children(recursive=True):
-                    try: child.kill()
-                    except Exception: pass
+                    with contextlib.suppress(Exception): child.kill()
                 p.kill()
                 _cprint(C.GREEN, "  ✓ Bot killed.")
         else:
@@ -474,7 +470,10 @@ def report() -> None:
     _cprint(C.CYAN, f"  ..) Generating reports (days={days or 'all'}, {label})...")
     date_from = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d") if days and days > 0 else None  # noqa: DTZ005
     try:
-        from core.services.daily_reporter import generate_detailed_report, generate_executive_report
+        from core.services.daily_reporter import (
+            generate_detailed_report,
+            generate_executive_report,
+        )
         exec_path = generate_executive_report(date_from=date_from, date_to=None, platform=platform)
         detail_path = generate_detailed_report(platform=platform, date_from=date_from, limit=200)
         if exec_path or detail_path:
@@ -595,6 +594,7 @@ def cleanup() -> None:
     _cprint(C.CYAN, "  ..) Cleaning up old files...")
     try:
         import asyncio
+
         from core.database import create_database
         from core.services.cleanup_service import CleanupService
         async def _run() -> None:
@@ -700,10 +700,8 @@ def recent_reports() -> None:
             continue
         p = os.path.join(REPORTS_DIR, name)
         if os.path.isfile(p):
-            try:
+            with contextlib.suppress(OSError):
                 files.append((os.path.getmtime(p), name, os.path.getsize(p)))
-            except OSError:
-                pass
     
     files.sort(reverse=True)
     if not files:
@@ -722,8 +720,7 @@ def console_logs() -> None:
     for name in os.listdir(CONSOLE_LOGS_DIR):
         p = os.path.join(CONSOLE_LOGS_DIR, name)
         if os.path.isfile(p) and name.endswith(".log"):
-            try: files.append((os.path.getmtime(p), name, os.path.getsize(p)))
-            except OSError: pass
+            with contextlib.suppress(OSError): files.append((os.path.getmtime(p), name, os.path.getsize(p)))
     files.sort(reverse=True)
     if not files: _cprint(C.GRAY, "  i) No .log files."); return
     
@@ -738,8 +735,7 @@ def console_logs() -> None:
     elif action == "l" and files: _open_path(os.path.join(CONSOLE_LOGS_DIR, files[0][1]))
     elif action == "c" and _confirm("  Clear all logs? [y/N]: "):
         for _, name, _ in files:
-            try: os.remove(os.path.join(CONSOLE_LOGS_DIR, name))
-            except Exception: pass
+            with contextlib.suppress(Exception): os.remove(os.path.join(CONSOLE_LOGS_DIR, name))
         _cprint(C.GREEN, "  ✓ Logs cleared.")
 
 
@@ -811,7 +807,7 @@ def github_status() -> None:
     last = _git(["log", "-1", "--pretty=%h  %s  (%cr)"])[1].strip()
     if last: _cprint(C.WHITE, f"  Last commit: {last}")
     
-    rc, status_out = _git(["status", "--short"])
+    _rc, status_out = _git(["status", "--short"])
     if not status_out.strip(): _cprint(C.GREEN, "\n  ✓ Working tree clean."); return
     lines = status_out.strip().splitlines()
     _cprint(C.YELLOW, f"\n  ! {len(lines)} uncommitted change(s):")

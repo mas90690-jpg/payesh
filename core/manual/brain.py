@@ -46,9 +46,9 @@ except ImportError:
 
 # mixinها
 from core.manual._brain_core import BrainCoreMixin
-from core.manual._brain_rules import BrainRulesMixin
 from core.manual._brain_keywords import BrainKeywordsMixin
 from core.manual._brain_learning import BrainLearningMixin
+from core.manual._brain_rules import BrainRulesMixin
 from core.manual._brain_settings import BrainSettingsMixin
 
 

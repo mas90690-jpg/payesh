@@ -26,7 +26,6 @@ from core.database.postgres import PostgresDatabase
 from core.database.sqlite import SQLiteDatabase
 from core.kernel.logger import log_info, log_warning
 
-
 # ═══════════════════════════════════════════
 # ثابت‌ها
 # ═══════════════════════════════════════════

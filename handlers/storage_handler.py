@@ -21,9 +21,7 @@ from config import (
 )
 from core.contracts.base_handler import BaseHandler
 from core.kernel.logger import log_error, log_info, log_success, log_warning
-
 from data.loader import load_json
-
 
 _LOG_PREVIEW_LEN = 100
 _SLOW_HANDLE_MS = 3000

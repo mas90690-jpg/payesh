@@ -18,6 +18,7 @@
   - ✅ تنظیمات از .env
 """
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -29,7 +30,11 @@ from analyzers.keyword_finder import get_keyword_finder
 from analyzers.target_filter import get_target_groups
 from core.contracts.base_collector import BaseCollector, ConnectionStatus
 from core.kernel.logger import (
-    log_debug, log_error, log_info, log_success, log_warning,
+    log_debug,
+    log_error,
+    log_info,
+    log_success,
+    log_warning,
 )
 
 try:
@@ -170,23 +175,20 @@ def _is_invalid_text(text: str) -> bool:
     if not text or not text.strip():
         return True
     stripped = text.strip()
-    for pattern in _INVALID_TEXT_PATTERNS:
-        if re.match(pattern, stripped):
-            return True
-    return False
+    return any(re.match(pattern, stripped) for pattern in _INVALID_TEXT_PATTERNS)
 
 
 class BaleCollector(BaseCollector):
     def __init__(
         self,
-        phone: str = None,
-        password: str = None,
+        phone: str | None = None,
+        password: str | None = None,
         headless: bool = True,
-        poll_seconds: int = None,
-        max_chats: int = None,
-        chat_open_delay: float = None,
-        messages_per_chat: int = None,
-        backfill_scrolls: int = None,
+        poll_seconds: int | None = None,
+        max_chats: int | None = None,
+        chat_open_delay: float | None = None,
+        messages_per_chat: int | None = None,
+        backfill_scrolls: int | None = None,
         **kwargs,
     ):
         super().__init__()
@@ -331,9 +333,7 @@ class BaleCollector(BaseCollector):
         n = str(name).strip()
         if not n:
             return False
-        if n.isdigit() and len(n) > 6:
-            return False
-        return True
+        return not (n.isdigit() and len(n) > 6)
 
     def _load_private_chats(self):
         self._private_chat_names = []
@@ -462,10 +462,8 @@ class BaleCollector(BaseCollector):
                 return True
 
             if self._context:
-                try:
+                with contextlib.suppress(Exception):
                     await self._context.close()
-                except Exception:
-                    pass
                 self._context = None
                 self._page = None
 
@@ -528,8 +526,8 @@ class BaleCollector(BaseCollector):
                 pass
 
     def _force_kill_chrome(self):
-        import subprocess
         import re as _re
+        import subprocess
         try:
             out = subprocess.run(
                 ["wmic", "process", "where", "name='chrome.exe'",
@@ -550,14 +548,12 @@ class BaleCollector(BaseCollector):
             m = _re.search(r"(\d+)\s*$", line.strip())
             if not m:
                 continue
-            try:
+            with contextlib.suppress(Exception):
                 subprocess.run(
                     ["taskkill", "/F", "/PID", m.group(1), "/T"],
                     capture_output=True, timeout=5,
                     check=False,
                 )
-            except Exception:
-                pass
 
     async def _launch_context(self, use_headless: bool):
         from config import CHROME_PATH
@@ -834,7 +830,7 @@ class BaleCollector(BaseCollector):
     def _is_admin_chat(self, chat_name: str, peer_id: str) -> bool:
         if peer_id and peer_id in self._admin_user_ids:
             return True
-        if self._admin_chat_name and chat_name:
+        if self._admin_chat_name and chat_name:  # noqa: SIM102
             if chat_name.strip() == self._admin_chat_name:
                 return True
         return False
@@ -847,10 +843,7 @@ class BaleCollector(BaseCollector):
             return False
         if n in SYSTEM_FOLDER_NAMES:
             return True
-        for prefix in SYSTEM_PREFIXES:
-            if n.startswith(prefix):
-                return True
-        return False
+        return any(n.startswith(prefix) for prefix in SYSTEM_PREFIXES)
 
     # ═══════════════════════════════════════════════════
     # DOM helpers
@@ -870,10 +863,8 @@ class BaleCollector(BaseCollector):
     # ═══════════════════════════════════════════════════
     async def _collect_all_chats(self) -> list[dict]:
         for _ in range(50):
-            try:
+            with contextlib.suppress(Exception):
                 await self._page.mouse.wheel(0, -3000)
-            except Exception:
-                pass
             await asyncio.sleep(0.1)
 
         chats: list[dict] = []
@@ -922,10 +913,8 @@ class BaleCollector(BaseCollector):
                 except Exception:
                     continue
 
-            try:
+            with contextlib.suppress(Exception):
                 await self._page.mouse.wheel(0, 2500)
-            except Exception:
-                pass
             await asyncio.sleep(0.7)
 
             cur = len(chats)
@@ -944,10 +933,8 @@ class BaleCollector(BaseCollector):
     # کلیک روی چت
     # ═══════════════════════════════════════════════════
     async def _click_item(self, item) -> bool:
-        try:
+        with contextlib.suppress(Exception):
             await item.scroll_into_view_if_needed(timeout=2000)
-        except Exception:
-            pass
         await asyncio.sleep(0.2)
         try:
             await item.click(timeout=5000, force=True)
@@ -972,22 +959,20 @@ class BaleCollector(BaseCollector):
             try:
                 if target_pid:
                     pid = await self._extract_peer_id_from_item(it)
-                    if pid == target_pid:
+                    if pid == target_pid:  # noqa: SIM102
                         if await self._click_item(it):
                             return True
                 if target_name:
                     name = await self._extract_item_title(it)
-                    if name and name.strip() == target_name:
+                    if name and name.strip() == target_name:  # noqa: SIM102
                         if await self._click_item(it):
                             return True
             except Exception:
                 continue
 
         for _ in range(50):
-            try:
+            with contextlib.suppress(Exception):
                 await self._page.mouse.wheel(0, -3000)
-            except Exception:
-                pass
             await asyncio.sleep(0.12)
 
         for _ in range(120):
@@ -996,20 +981,18 @@ class BaleCollector(BaseCollector):
                 try:
                     if target_pid:
                         pid = await self._extract_peer_id_from_item(it)
-                        if pid == target_pid:
+                        if pid == target_pid:  # noqa: SIM102
                             if await self._click_item(it):
                                 return True
                     if target_name:
                         name = await self._extract_item_title(it)
-                        if name and name.strip() == target_name:
+                        if name and name.strip() == target_name:  # noqa: SIM102
                             if await self._click_item(it):
                                 return True
                 except Exception:
                     continue
-            try:
+            with contextlib.suppress(Exception):
                 await self._page.mouse.wheel(0, 1800)
-            except Exception:
-                pass
             await asyncio.sleep(0.35)
 
         return False
@@ -1017,7 +1000,7 @@ class BaleCollector(BaseCollector):
     # ═══════════════════════════════════════════════════
     # fetch_messages
     # ═══════════════════════════════════════════════════
-    async def fetch_messages(self, since: datetime = None):
+    async def fetch_messages(self, since: datetime | None = None):
         if not self._connected or not self._page:
             return []
 
@@ -1123,7 +1106,7 @@ class BaleCollector(BaseCollector):
     # ═══════════════════════════════════════════════════
     # اسکرپ همه چت‌ها
     # ═══════════════════════════════════════════════════
-    async def _scrape_all_chats(self, effective_since: datetime = None):
+    async def _scrape_all_chats(self, effective_since: datetime | None = None):
         try:
             url = (self._page.url or "").lower()
             if "/search" in url:
@@ -1139,10 +1122,8 @@ class BaleCollector(BaseCollector):
 
         if not chats:
             log_warning("⚠️ هیچ چتی پیدا نشد")
-            try:
+            with contextlib.suppress(Exception):
                 await self.dump_dom()
-            except Exception:
-                pass
             return
 
         is_first = not self._first_run_done
@@ -1236,10 +1217,8 @@ class BaleCollector(BaseCollector):
 
                 self._last_scrape_stats["processed"] += 1
 
-                try:
+                with contextlib.suppress(Exception):
                     await self._page.mouse.wheel(0, -200)
-                except Exception:
-                    pass
 
             except Exception as e:
                 self._last_scrape_stats["failed"] += 1
@@ -1264,9 +1243,9 @@ class BaleCollector(BaseCollector):
     # ═══════════════════════════════════════════════════
     async def _scrape_current_chat(
         self,
-        chat_name: str = None,
-        peer_id: str = None,
-        effective_since: datetime = None,
+        chat_name: str | None = None,
+        peer_id: str | None = None,
+        effective_since: datetime | None = None,
     ) -> int:
         page = self._page
 
@@ -1303,14 +1282,12 @@ class BaleCollector(BaseCollector):
 
         selector_csv = ", ".join(MSG_SELECTORS)
         if selector_csv:
-            try:
+            with contextlib.suppress(Exception):
                 await page.wait_for_selector(
                     selector_csv,
                     timeout=_WAIT_FOR_MSG_MS,
                     state="attached",
                 )
-            except Exception:
-                pass
 
         messages = []
         for sel in MSG_SELECTORS:
@@ -1374,7 +1351,7 @@ class BaleCollector(BaseCollector):
                     skipped_short += 1
                     continue
 
-                if effective_since and msg_timestamp:
+                if effective_since and msg_timestamp:  # noqa: SIM102
                     if msg_timestamp < effective_since:
                         skipped_old += 1
                         continue
@@ -1383,15 +1360,15 @@ class BaleCollector(BaseCollector):
                 # پس chat_id رو هم داخل hash می‌بریم
                 if sid:
                     mid = hashlib.sha256(
-                        f"{chat_id}:{sid}".encode("utf-8")
+                        f"{chat_id}:{sid}".encode()
                     ).hexdigest()[:32]
                 elif date_ms:
                     mid = hashlib.sha256(
-                        f"{chat_id}:{date_ms}".encode("utf-8")
+                        f"{chat_id}:{date_ms}".encode()
                     ).hexdigest()[:32]
                 else:
                     mid = hashlib.sha256(
-                        f"{chat_id}:{text[:200]}".encode("utf-8")
+                        f"{chat_id}:{text[:200]}".encode()
                     ).hexdigest()[:32]
 
                 if mid in _seen_in_this_chat:
@@ -1508,7 +1485,7 @@ class BaleCollector(BaseCollector):
         )
         return False
 
-    async def dump_dom(self, path: str = None) -> str:
+    async def dump_dom(self, path: str | None = None) -> str:
         path = path or os.path.join(
             self._user_data_dir, "bale_dom_dump.html"
         )
@@ -1528,10 +1505,8 @@ class BaleCollector(BaseCollector):
             return ""
 
     async def disconnect(self) -> None:
-        try:
+        with contextlib.suppress(Exception):
             self._save_private_chats()
-        except Exception:
-            pass
 
         try:
             if self._page:

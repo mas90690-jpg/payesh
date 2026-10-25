@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import threading
 import time
@@ -704,10 +705,8 @@ class SystemMonitor:
         """درخواست توقف."""
         self._monitoring = False
         if self._stop_event is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._stop_event.set()
-            except Exception:
-                pass
         log_info(
             f"🛑 [SYSMON:stop] درخواست توقف | "
             f"metrics={len(self.metrics_history)} "
@@ -901,8 +900,8 @@ class PerformanceMonitor:
 # __all__
 # ═══════════════════════════════════════════
 __all__ = [
-    "SystemMonitor",
-    "PerformanceMonitor",
-    "Metric",
     "Alert",
+    "Metric",
+    "PerformanceMonitor",
+    "SystemMonitor",
 ]

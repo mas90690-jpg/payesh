@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """تست سریع سلامت پایه"""
 import sys
 from pathlib import Path

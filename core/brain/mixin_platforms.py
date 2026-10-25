@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib
 import time
 from typing import Any
@@ -23,7 +24,6 @@ from core.kernel.logger import (
     log_success,
     log_warning,
 )
-
 
 # ═══════════════════════════════════════════
 # نگاشت پلتفرم → کلاس
@@ -47,7 +47,7 @@ _PLATFORM_MAP: dict[str, tuple[str, str]] = {
 class PlatformManager:
     """مدیریت کلکتورهای در حال اجرا — singleton."""
 
-    _instance: "PlatformManager | None" = None
+    _instance: PlatformManager | None = None
     _lock = asyncio.Lock()
 
     def __init__(self):
@@ -56,7 +56,7 @@ class PlatformManager:
         log_info("🔧 [PLATFORM:manager] آماده")
 
     @classmethod
-    async def get(cls) -> "PlatformManager":
+    async def get(cls) -> PlatformManager:
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
@@ -87,10 +87,8 @@ class PlatformManager:
         """بستن همه."""
         async with self._lock:
             for p, c in list(self._active.items()):
-                try:
+                with contextlib.suppress(Exception):
                     await c.disconnect()
-                except Exception:
-                    pass
             self._active.clear()
 
 
@@ -132,7 +130,7 @@ class PlatformMixin:
         active = await pm.list_active()
 
         lines = ["📋 پلتفرم‌های موجود:"]
-        for p in _PLATFORM_MAP.keys():
+        for p in _PLATFORM_MAP:
             status = "🟢 فعال" if p in active else "⚪ غیرفعال"
             lines.append(f"   • {p}: {status}")
 
@@ -512,13 +510,11 @@ class PlatformMixin:
             t_fetch = time.monotonic() - t0
 
             # ─── ۳) disconnect ───
-            try:
+            with contextlib.suppress(Exception):
                 await asyncio.wait_for(
                     collector.disconnect(),
                     timeout=30.0,
                 )
-            except Exception:
-                pass
 
             t_total = time.monotonic() - t0
 
@@ -543,10 +539,8 @@ class PlatformMixin:
             return f"❌ {platform}: {type(e).__name__}: {e}"
 
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 await collector.disconnect()
-            except Exception:
-                pass
 
     # ═══════════════════════════════════════════
     # 🆕 ریشه‌یابی — چرا پلتفرم وصل نشد؟
@@ -578,8 +572,8 @@ class PlatformMixin:
             "youtube": "storage/sessions/youtube_web",
             "rubika": "storage/sessions/rubika_session",
         }
-        from pathlib import Path
         import time as _time
+        from pathlib import Path
 
         session_path = session_dirs.get(platform)
         if session_path:
@@ -681,8 +675,9 @@ class PlatformMixin:
 
         # ─── ۵) مرورگر ───
         try:
-            from config import CHROME_PATH
             import os as _os
+
+            from config import CHROME_PATH
             if CHROME_PATH and _os.path.exists(CHROME_PATH):
                 report.append("  🌐 مرورگر: ✅ Chrome موجود")
             else:
@@ -848,12 +843,10 @@ class PlatformMixin:
 
             t_fetch = time.monotonic() - t0
 
-            try:
+            with contextlib.suppress(Exception):
                 await asyncio.wait_for(
                     collector.disconnect(), timeout=30
                 )
-            except Exception:
-                pass
 
             t_total = time.monotonic() - t0
 
@@ -867,10 +860,8 @@ class PlatformMixin:
         except Exception as e:
             return f"❌ {platform}: {type(e).__name__}: {e}"
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 await collector.disconnect()
-            except Exception:
-                pass
 
     async def _status_as_user(self, platform: str) -> str:
         """وضعیت یک پلتفرم."""
@@ -890,7 +881,7 @@ class PlatformMixin:
         active = await pm.list_active()
 
         lines = ["📋 پلتفرم‌ها:"]
-        for p in _PLATFORM_MAP.keys():
+        for p in _PLATFORM_MAP:
             if p in active:
                 lines.append(f"  🟢 {p} — فعال")
             else:
@@ -917,7 +908,9 @@ class PlatformMixin:
                 forward | pin | delete_message
         """
         from collectors.controller import (
-            get_controller, list_platforms, list_actions,
+            get_controller,
+            list_actions,
+            list_platforms,
         )
 
         platform = str(platform or "").strip().lower()
@@ -1007,7 +1000,7 @@ class PlatformMixin:
 # __all__
 # ═══════════════════════════════════════════
 __all__ = [
-    "PlatformMixin",
-    "PlatformManager",
     "_PLATFORM_MAP",
+    "PlatformManager",
+    "PlatformMixin",
 ]

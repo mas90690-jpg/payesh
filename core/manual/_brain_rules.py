@@ -21,12 +21,10 @@ from datetime import datetime
 from difflib import SequenceMatcher
 
 from core.kernel.logger import log_warning
-
 from core.manual._brain_core import (
     FUZZY_THRESHOLD,
     SLOW_ACTION_MS,
 )
-
 
 # ═══════════════════════════════════════════════════════════
 # dispatch table برای _call_builtin
@@ -77,11 +75,10 @@ class BrainRulesMixin:
                 if isinstance(trigger, str):
                     if self._normalize(trigger) in low:
                         score = len(trigger)
-                elif isinstance(trigger, list):
-                    if all(
-                        self._normalize(w) in low for w in trigger
-                    ):
-                        score = sum(len(w) for w in trigger)
+                elif isinstance(trigger, list) and all(
+                    self._normalize(w) in low for w in trigger
+                ):
+                    score = sum(len(w) for w in trigger)
                 if score > best_score:
                     best_score = score
                     best_rule = rule
@@ -421,14 +418,14 @@ class BrainRulesMixin:
         lines = [
             "📊 خلاصهٔ سیستم:",
             f"   • کل سرنخ‌ها: {s['leads_total']}",
-            f"   • امروز: {s['leads_today']} | "
-            f"دیروز: {s['leads_yesterday']}",
-            f"   • ۷ روز: {s['leads_last_7d']} | "
-            f"۳۰ روز: {s['leads_last_30d']}",
-            f"   • داغ: {s['hot_total']} "
-            f"(امروز: {s['hot_today']})",
-            f"   • کلیدواژه‌ها: {s['keyword_count']} | "
-            f"سفارشی: {s['custom_kw_count']}",
+            (f"   • امروز: {s['leads_today']} | "
+            f"دیروز: {s['leads_yesterday']}"),
+            (f"   • ۷ روز: {s['leads_last_7d']} | "
+            f"۳۰ روز: {s['leads_last_30d']}"),
+            (f"   • داغ: {s['hot_total']} "
+            f"(امروز: {s['hot_today']})"),
+            (f"   • کلیدواژه‌ها: {s['keyword_count']} | "
+            f"سفارشی: {s['custom_kw_count']}"),
             f"   • گروه هدف: {s['target_group_count']}",
             f"   • خطاهای اخیر: {s['errors_recent']}",
         ]

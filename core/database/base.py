@@ -51,7 +51,7 @@ class _QueryResult:
         چون در `sqlite.py` و `postgres.py` به dict تبدیل می‌شوند.
     """
 
-    __slots__ = ("_rows", "_i")
+    __slots__ = ("_i", "_rows")
 
     def __init__(self, rows: list[RowType] | None = None):
         self._rows: list[RowType] = list(rows) if rows else []
@@ -282,7 +282,7 @@ class BaseDatabase(ABC):
 # ═══════════════════════════════════════════
 __all__ = [
     "BaseDatabase",
-    "_QueryResult",
-    "RowType",
     "ParamsType",
+    "RowType",
+    "_QueryResult",
 ]

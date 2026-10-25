@@ -15,6 +15,7 @@
   - 🎯 تنظیمات از .env
 """
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -28,7 +29,11 @@ from analyzers.target_filter import get_target_groups
 from core.adapters.web_media import download_dom_image
 from core.contracts.base_collector import BaseCollector, ConnectionStatus
 from core.kernel.logger import (
-    log_debug, log_error, log_info, log_success, log_warning,
+    log_debug,
+    log_error,
+    log_info,
+    log_success,
+    log_warning,
 )
 
 try:
@@ -124,10 +129,7 @@ def _is_invalid_text(text: str) -> bool:
     if not text or not text.strip():
         return True
     stripped = text.strip()
-    for pattern in _INVALID_TEXT_PATTERNS:
-        if re.match(pattern, stripped):
-            return True
-    return False
+    return any(re.match(pattern, stripped) for pattern in _INVALID_TEXT_PATTERNS)
 
 
 def _clean_text(text: str) -> str:
@@ -182,14 +184,14 @@ def _clean_text(text: str) -> str:
 class EitaaCollector(BaseCollector):
     def __init__(
         self,
-        phone: str = None,
-        password: str = None,
+        phone: str | None = None,
+        password: str | None = None,
         headless: bool = True,
-        poll_seconds: int = None,
-        max_chats: int = None,
-        chat_open_delay: float = None,
-        messages_per_chat: int = None,
-        backfill_scrolls: int = None,
+        poll_seconds: int | None = None,
+        max_chats: int | None = None,
+        chat_open_delay: float | None = None,
+        messages_per_chat: int | None = None,
+        backfill_scrolls: int | None = None,
         **kwargs,
     ):
         super().__init__()
@@ -464,7 +466,7 @@ class EitaaCollector(BaseCollector):
     # ═══════════════════════════════════════════════
     # تأخیر متغیر
     # ═══════════════════════════════════════════════
-    async def _human_delay(self, min_s: float = None, max_s: float = None):
+    async def _human_delay(self, min_s: float | None = None, max_s: float | None = None):
         min_s = min_s or _DELAY_MIN
         max_s = max_s or _DELAY_MAX
         await asyncio.sleep(random.uniform(min_s, max_s))
@@ -536,10 +538,7 @@ class EitaaCollector(BaseCollector):
             return False
         if n in _SYSTEM_NAMES:
             return True
-        for prefix in _SYSTEM_PREFIXES:
-            if n.startswith(prefix):
-                return True
-        return False
+        return any(n.startswith(prefix) for prefix in _SYSTEM_PREFIXES)
 
     # ═══════════════════════════════════════════════
     # جمع‌آوری چت‌ها
@@ -547,10 +546,8 @@ class EitaaCollector(BaseCollector):
     async def _collect_chats(self) -> list[dict]:
         # ۱) برگرد به بالای لیست
         for _ in range(50):
-            try:
+            with contextlib.suppress(Exception):
                 await self._page.mouse.wheel(0, -3000)
-            except Exception:
-                pass
             await asyncio.sleep(0.1)
 
         chats = []
@@ -585,10 +582,8 @@ class EitaaCollector(BaseCollector):
                 except Exception:
                     continue
 
-            try:
+            with contextlib.suppress(Exception):
                 await self._page.mouse.wheel(0, 2500)
-            except Exception:
-                pass
             await self._human_delay(0.3, 0.7)
 
             cur = len(chats)
@@ -606,7 +601,7 @@ class EitaaCollector(BaseCollector):
     # ═══════════════════════════════════════════════
     # fetch_messages
     # ═══════════════════════════════════════════════
-    async def fetch_messages(self, since: datetime = None) -> list[dict[str, Any]]:
+    async def fetch_messages(self, since: datetime | None = None) -> list[dict[str, Any]]:
         if not self._connected or not self._page:
             return []
 
@@ -685,7 +680,7 @@ class EitaaCollector(BaseCollector):
     # ═══════════════════════════════════════════════
     # اسکرپ یک چت
     # ═══════════════════════════════════════════════
-    async def _scrape_chat(self, chat: dict, idx: int, effective_since: datetime = None):
+    async def _scrape_chat(self, chat: dict, idx: int, effective_since: datetime | None = None):
         peer_id = chat["peer_id"]
         name = chat["name"]
 
@@ -709,14 +704,12 @@ class EitaaCollector(BaseCollector):
             self._last_scrape_stats["failed"] += 1
             return
 
-        try:
+        with contextlib.suppress(Exception):
             await self._page.wait_for_selector(
                 ".bubbles .bubble",
                 timeout=_WAIT_FOR_MSG_MS,
                 state="attached",
             )
-        except Exception:
-            pass
 
         await self._human_delay(
             _CHAT_OPEN_DELAY_MIN, _CHAT_OPEN_DELAY_MAX
@@ -741,10 +734,8 @@ class EitaaCollector(BaseCollector):
                 loc = self._page.locator(sel).first
                 cnt = await loc.count()
                 if cnt > 0:
-                    try:
+                    with contextlib.suppress(Exception):
                         await loc.scroll_into_view_if_needed(timeout=2000)
-                    except Exception:
-                        pass
                     await loc.click(timeout=3000, force=True)
                     return True
             except Exception as e:
@@ -758,18 +749,14 @@ class EitaaCollector(BaseCollector):
                         if peer_id:
                             pid = await self._extract_peer_id(it)
                             if pid == peer_id:
-                                try:
+                                with contextlib.suppress(Exception):
                                     await it.scroll_into_view_if_needed(timeout=1000)
-                                except Exception:
-                                    pass
                                 await it.click(timeout=3000, force=True)
                                 return True
                         n = await self._extract_title(it)
                         if n and n.strip() == name:
-                            try:
+                            with contextlib.suppress(Exception):
                                 await it.scroll_into_view_if_needed(timeout=1000)
-                            except Exception:
-                                pass
                             await it.click(timeout=3000, force=True)
                             return True
                     except Exception:
@@ -807,7 +794,7 @@ class EitaaCollector(BaseCollector):
         self,
         name: str,
         peer_id: str,
-        effective_since: datetime = None,
+        effective_since: datetime | None = None,
     ) -> int:
         page = self._page
         chat_id = peer_id if peer_id else name
@@ -915,7 +902,7 @@ class EitaaCollector(BaseCollector):
                     continue
 
                 # ─── ⑦ since filter ───
-                if effective_since and msg_timestamp:
+                if effective_since and msg_timestamp:  # noqa: SIM102
                     if msg_timestamp < effective_since:
                         skipped_old += 1
                         continue
@@ -923,16 +910,16 @@ class EitaaCollector(BaseCollector):
                 # ─── ⑧ id پایدار ───
                 if mid:
                     mid_final = hashlib.sha256(
-                        f"{chat_id}:{mid}".encode("utf-8")
+                        f"{chat_id}:{mid}".encode()
                     ).hexdigest()[:32]
                 elif date_ms:
                     mid_final = hashlib.sha256(
-                        f"{chat_id}:{date_ms}".encode("utf-8")
+                        f"{chat_id}:{date_ms}".encode()
                     ).hexdigest()[:32]
                     skipped_nomid += 1
                 else:
                     mid_final = hashlib.sha256(
-                        f"{chat_id}:{text[:200]}".encode("utf-8")
+                        f"{chat_id}:{text[:200]}".encode()
                     ).hexdigest()[:32]
                     skipped_nomid += 1
 
@@ -1034,7 +1021,7 @@ class EitaaCollector(BaseCollector):
     async def send_message(self, chat_id, chat_type, text: str) -> bool:
         return False
 
-    async def dump_dom(self, path: str = None) -> str:
+    async def dump_dom(self, path: str | None = None) -> str:
         path = path or os.path.join(self._user_data_dir, "eitaa_dom.html")
         try:
             if not self._page:

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 from datetime import datetime
@@ -178,10 +179,8 @@ class ReportsMixin:
             )
         except Exception as e:
             if tmp_path and os.path.exists(tmp_path):
-                try:
+                with contextlib.suppress(Exception):
                     os.remove(tmp_path)
-                except Exception:
-                    pass
             log_error(
                 f"❌ [BRAIN:setting:set] "
                 f"{type(e).__name__}: {e}"
@@ -569,7 +568,7 @@ class ReportsMixin:
             f"کش: {self.cache.stats()['entries']}"
         )
 
-    def analyze_logs(self, category: str = None) -> str:
+    def analyze_logs(self, category: str | None = None) -> str:
         """تحلیل لاگها — دستهبندی خطاها بر اساس نوع."""
         try:
             logs_text = self._get_recent_logs(limit=200)

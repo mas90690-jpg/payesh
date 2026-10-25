@@ -525,74 +525,74 @@ def get_stats() -> dict[str, Any]:
 # __all__ — همهٔ ثابت‌های public
 # ═══════════════════════════════════════════════════════════
 __all__ = [
-    # ─── paths ───
-    "BRAIN_DIR",
-    "MEMORY_DIR",
-    "CACHE_DIR",
-    "BACKUP_DIR",
-    "HOOKS_DIR",
-    "PROJECT_BASE",
-    "STORAGE_DIR",
-    "DB_DIR",
-    "BACKUPS_DIR",
-    "LOGS_DIR",
-    # ─── limits ───
-    "MAX_FILE_SIZE_BYTES",
-    "MAX_CONTENT_LENGTH",
-    "MAX_AGENT_STEPS",
-    "MAX_CONTEXT_TOKENS",
-    "CACHE_TTL_DAYS",
-    "LOG_TAIL_BYTES",
-    "CACHE_SAVE_INTERVAL_S",
-    "MAX_SHORT_TERM",
-    # ─── chunk reading ───
-    "CHUNK_SIZE",
-    "CHUNK_AUTO",
-    "CHUNK_MAX_PER_FILE",
-    "CHUNK_AUTO_THRESHOLD",
-    # ─── persistent memory ───
-    "PERSISTENT_MEMORY_ENABLED",
-    "PERSISTENT_DB_PATH",
-    "PERSISTENT_MAX_ROWS",
-    "PERSISTENT_REMEMBER_CONVERSATIONS",
-    # ─── semantic ───
-    "DISABLE_SEMANTIC",
-    "SEMANTIC_MAX_RESULTS",
-    # ─── timeouts ───
-    "DEFAULT_TIMEOUT_S",
-    "PY_EXEC_TIMEOUT_S",
-    "TESTS_TIMEOUT_S",
-    "PYTEST_COVERAGE_TIMEOUT_S",
-    "BANDIT_TIMEOUT_S",
     # ─── agent ───
     "AGENT_API_TIMEOUT_S",
     "AGENT_MAX_TOKENS",
     "AGENT_TEMPERATURE",
-    # ─── think ───
-    "THINK_TIMEOUT_S",
-    "THINK_MAX_TOKENS",
-    "THINK_TEMPERATURE",
-    # ─── context ───
-    "CONTEXT_RECENT",
-    "CONTEXT_API_N",
-    "CONTEXT_CHROMA_N",
-    # ─── pending ───
-    "MAX_PENDING_TASKS",
-    "COMPRESS_THRESHOLD",
-    # ─── model ───
-    "DEFAULT_MODEL",
-    "DEFAULT_PROVIDER",
-    "DEFAULT_BASE_URL",
-    # ─── slow thresholds ───
-    "SLOW_STEP_MS",
-    "SLOW_TOOL_MS",
-    "SLOW_THINK_MS",
-    "SLOW_ACTION_MS",
-    "LOG_PREVIEW_LEN",
     # ─── config exports ───
     "AI",
     "AI_ENABLED",
+    "BACKUPS_DIR",
+    "BACKUP_DIR",
+    "BANDIT_TIMEOUT_S",
+    # ─── paths ───
+    "BRAIN_DIR",
+    "CACHE_DIR",
+    "CACHE_SAVE_INTERVAL_S",
+    "CACHE_TTL_DAYS",
+    "CHUNK_AUTO",
+    "CHUNK_AUTO_THRESHOLD",
+    "CHUNK_MAX_PER_FILE",
+    # ─── chunk reading ───
+    "CHUNK_SIZE",
+    "COMPRESS_THRESHOLD",
+    "CONTEXT_API_N",
+    "CONTEXT_CHROMA_N",
+    # ─── context ───
+    "CONTEXT_RECENT",
+    "DB_DIR",
+    "DEFAULT_BASE_URL",
+    # ─── model ───
+    "DEFAULT_MODEL",
+    "DEFAULT_PROVIDER",
+    # ─── timeouts ───
+    "DEFAULT_TIMEOUT_S",
+    # ─── semantic ───
+    "DISABLE_SEMANTIC",
+    "HOOKS_DIR",
+    "LOGS_DIR",
+    "LOG_PREVIEW_LEN",
+    "LOG_TAIL_BYTES",
+    "MAX_AGENT_STEPS",
+    "MAX_CONTENT_LENGTH",
+    "MAX_CONTEXT_TOKENS",
+    # ─── limits ───
+    "MAX_FILE_SIZE_BYTES",
+    # ─── pending ───
+    "MAX_PENDING_TASKS",
+    "MAX_SHORT_TERM",
+    "MEMORY_DIR",
+    "PERSISTENT_DB_PATH",
+    "PERSISTENT_MAX_ROWS",
+    # ─── persistent memory ───
+    "PERSISTENT_MEMORY_ENABLED",
+    "PERSISTENT_REMEMBER_CONVERSATIONS",
     "PLUGINS_CONFIG",
+    "PROJECT_BASE",
+    "PYTEST_COVERAGE_TIMEOUT_S",
+    "PY_EXEC_TIMEOUT_S",
+    "SEMANTIC_MAX_RESULTS",
+    "SLOW_ACTION_MS",
+    # ─── slow thresholds ───
+    "SLOW_STEP_MS",
+    "SLOW_THINK_MS",
+    "SLOW_TOOL_MS",
+    "STORAGE_DIR",
+    "TESTS_TIMEOUT_S",
+    "THINK_MAX_TOKENS",
+    "THINK_TEMPERATURE",
+    # ─── think ───
+    "THINK_TIMEOUT_S",
     # ─── debug ───
     "get_stats",
 ]

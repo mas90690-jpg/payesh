@@ -40,6 +40,7 @@ import threading
 from contextvars import ContextVar
 from typing import Any
 
+from typing_extensions import Self
 
 # ═══════════════════════════════════════════
 # state (per event-loop)
@@ -154,7 +155,7 @@ class _BrowserLockProxy:
     # ═══════════════════════════════════════════
     def acquire(
         self, timeout: float | None = None
-    ) -> "_BrowserLockProxy":
+    ) -> _BrowserLockProxy:
         """🎯 برگرداندن proxy با timeout مشخص.
 
         استفاده:
@@ -172,7 +173,7 @@ class _BrowserLockProxy:
     # ═══════════════════════════════════════════
     # context manager
     # ═══════════════════════════════════════════
-    async def __aenter__(self) -> "_BrowserLockProxy":
+    async def __aenter__(self) -> Self:
         lock = get_browser_lock()
 
         if self._timeout is not None:
@@ -236,9 +237,9 @@ BROWSER_LOCK = _BrowserLockProxy()
 # ═══════════════════════════════════════════
 __all__ = [
     "BROWSER_LOCK",
-    "get_browser_lock",
-    "reset_browser_lock",
-    "is_locked",
-    "get_stats",
     "_BrowserLockProxy",
+    "get_browser_lock",
+    "get_stats",
+    "is_locked",
+    "reset_browser_lock",
 ]

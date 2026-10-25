@@ -13,7 +13,7 @@ from core.contracts.base_handler import (
 __all__ = [
     "BaseAnalyzer",
     "BaseCollector",
-    "ConnectionStatus",
     "BaseHandler",
+    "ConnectionStatus",
     "HandlerPriority",
 ]

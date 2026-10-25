@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -184,10 +185,8 @@ class PostgresDatabase(BaseDatabase):
             )
 
     def _on_task_done(self, task: asyncio.Task) -> None:
-        try:
+        with contextlib.suppress(ValueError):
             self._pending_tasks.remove(task)
-        except ValueError:
-            pass
         if task.cancelled():
             return
         try:
@@ -335,20 +334,20 @@ class PostgresDatabase(BaseDatabase):
 
             # ─── indexes ───
             indexes = [
-                "CREATE INDEX IF NOT EXISTS idx_messages_timestamp "
-                "ON messages(timestamp)",
-                "CREATE INDEX IF NOT EXISTS idx_messages_keywords "
-                "ON messages(keywords)",
-                "CREATE INDEX IF NOT EXISTS idx_messages_platform "
-                "ON messages(platform)",
-                "CREATE INDEX IF NOT EXISTS idx_messages_chat "
-                "ON messages(chat_name, timestamp)",
-                "CREATE INDEX IF NOT EXISTS idx_leads_score "
-                "ON leads(opportunity_score DESC)",
-                "CREATE INDEX IF NOT EXISTS idx_leads_timestamp "
-                "ON leads(timestamp)",
-                "CREATE INDEX IF NOT EXISTS idx_daily_stats_date "
-                "ON daily_stats(date)",
+                ("CREATE INDEX IF NOT EXISTS idx_messages_timestamp "
+                "ON messages(timestamp)"),
+                ("CREATE INDEX IF NOT EXISTS idx_messages_keywords "
+                "ON messages(keywords)"),
+                ("CREATE INDEX IF NOT EXISTS idx_messages_platform "
+                "ON messages(platform)"),
+                ("CREATE INDEX IF NOT EXISTS idx_messages_chat "
+                "ON messages(chat_name, timestamp)"),
+                ("CREATE INDEX IF NOT EXISTS idx_leads_score "
+                "ON leads(opportunity_score DESC)"),
+                ("CREATE INDEX IF NOT EXISTS idx_leads_timestamp "
+                "ON leads(timestamp)"),
+                ("CREATE INDEX IF NOT EXISTS idx_daily_stats_date "
+                "ON daily_stats(date)"),
             ]
             for idx in indexes:
                 try:
@@ -796,10 +795,8 @@ class PostgresDatabase(BaseDatabase):
                     f"⏰ [DB:pg:backup] timeout "
                     f"({_PG_DUMP_TIMEOUT_S}s)"
                 )
-                try:
+                with contextlib.suppress(Exception):
                     proc.kill()
-                except Exception:
-                    pass
                 return False
 
             ok = proc.returncode == 0
@@ -1066,10 +1063,7 @@ class PostgresDatabase(BaseDatabase):
 
         # 🐛 FIX: SELECT-like → fetch
         is_read = (
-            query_upper.startswith("SELECT")
-            or query_upper.startswith("WITH")
-            or query_upper.startswith("EXPLAIN")
-            or query_upper.startswith("SHOW")
+            query_upper.startswith(("SELECT", "WITH", "EXPLAIN", "SHOW"))
         )
 
         try:
@@ -1149,10 +1143,8 @@ class PostgresDatabase(BaseDatabase):
                     "⏰ [DB:pg:close] pool timeout — "
                     "terminate"
                 )
-                try:
+                with contextlib.suppress(Exception):
                     self._pool.terminate()
-                except Exception:
-                    pass
             except Exception as e:
                 log_warning(
                     f"⚠️ [DB:pg:close] pool | "

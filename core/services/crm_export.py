@@ -26,6 +26,7 @@ XLSX (اگر openpyxl).
 """
 from __future__ import annotations
 
+import contextlib
 import csv
 import json
 import os
@@ -89,7 +90,8 @@ try:
     DB_PATH: str = str(_data_paths.DB_FILE)
     REPORTS_DIR: str = str(_data_paths.REPORTS_DIR)
 except Exception:
-    from config import DB_DIR, REPORTS_DIR as _CFG_REPORTS
+    from config import DB_DIR
+    from config import REPORTS_DIR as _CFG_REPORTS
     DB_PATH = os.path.join(str(DB_DIR), "messages.db")
     REPORTS_DIR = str(_CFG_REPORTS)
 
@@ -332,13 +334,11 @@ def _sanitize_filename(s: str) -> str:
 def _sqlite_connect(path: str) -> sqlite3.Connection:
     """اتصال SQLite با timeout."""
     conn = sqlite3.connect(path, timeout=_SQL_TIMEOUT_S)
-    try:
+    with contextlib.suppress(Exception):
         conn.execute(
             "PRAGMA busy_timeout = ?",
             (int(_SQL_TIMEOUT_S * 1000),),
         )
-    except Exception:
-        pass
     return conn
 
 
@@ -380,8 +380,7 @@ def _rows(
             f"پیش‌فرض 0"
         )
         days = 0
-    if days < 0:
-        days = 0
+    days = max(days, 0)
 
     # ─── platform نرمال ───
     if platform:
@@ -511,7 +510,7 @@ def _compute_platforms_in_order(
     """🎯 لیست پلتفرم‌ها به ترتیب ثابت + ناشناخته‌ها در انتها."""
     known = list(PLATFORM_ORDER)
     unknown = sorted(
-        p for p in by_platform.keys()
+        p for p in by_platform
         if p not in PLATFORM_ORDER
     )
     return known + unknown
@@ -551,18 +550,16 @@ def _atomic_write_text_with_encoding(
     try:
         parent = os.path.dirname(path)
         if parent:
-            try:
+            with contextlib.suppress(Exception):
                 os.makedirs(parent, exist_ok=True)
-            except Exception:
-                pass
 
         # ─── باز کردن فایل ───
         if newline is not None:
-            f = open(
+            f = open(  # noqa: SIM115
                 tmp, "w", newline=newline, encoding=encoding
             )
         else:
-            f = open(tmp, "w", encoding=encoding)
+            f = open(tmp, "w", encoding=encoding)  # noqa: SIM115
 
         try:
             write_fn(f)
@@ -671,7 +668,9 @@ def _style_sheet(ws) -> None:
     """استایل sheet — امن روی sheet خالی."""
     try:
         from openpyxl.styles import (
-            Alignment, Font, PatternFill,
+            Alignment,
+            Font,
+            PatternFill,
         )
 
         ws.sheet_view.rightToLeft = True
@@ -1150,14 +1149,14 @@ def _cli() -> int:
 # __all__
 # ═══════════════════════════════════════════
 __all__ = [
-    "export_crm",
     "CRM_HEADERS",
     "DB_PATH",
     "REPORTS_DIR",
+    "_FALLBACK_CRM_HEADERS",
+    "export_crm",
+    "get_headers_source",
     "get_stats",
     "reload_crm_headers",
-    "get_headers_source",
-    "_FALLBACK_CRM_HEADERS",
 ]
 
 

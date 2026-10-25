@@ -20,10 +20,13 @@
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from datetime import datetime
 from typing import Any
+
+from typing_extensions import Self
 
 from core.kernel.logger import log_info, log_warning
 
@@ -326,10 +329,8 @@ class AdminMemory:
         exists = os.path.exists(self.path)
         size_bytes = 0
         if exists:
-            try:
+            with contextlib.suppress(Exception):
                 size_bytes = os.path.getsize(self.path)
-            except Exception:
-                pass
 
         return {
             "path": self.path,
@@ -351,7 +352,7 @@ class AdminMemory:
     # ═══════════════════════════════════════════
     # __enter__ / __exit__ (compat)
     # ═══════════════════════════════════════════
-    def __enter__(self) -> "AdminMemory":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:

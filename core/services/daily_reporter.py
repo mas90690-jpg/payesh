@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import csv
 import json
 import os
@@ -82,7 +83,8 @@ try:
     REPORTS_DIR: str = str(_data_paths.REPORTS_DIR)
     _CACHE_FILE: str = str(_data_paths.REPORT_CACHE)
 except Exception:
-    from config import DB_DIR, REPORTS_DIR as _CFG_REPORTS
+    from config import DB_DIR
+    from config import REPORTS_DIR as _CFG_REPORTS
     DB_PATH = os.path.join(str(DB_DIR), "messages.db")
     REPORTS_DIR = str(_CFG_REPORTS)
     _CACHE_FILE = os.path.join(
@@ -94,10 +96,8 @@ except Exception:
 for _d in (REPORTS_DIR, os.path.dirname(DB_PATH),
            os.path.dirname(_CACHE_FILE)):
     if _d:
-        try:
+        with contextlib.suppress(Exception):
             os.makedirs(_d, exist_ok=True)
-        except Exception:
-            pass
 
 
 # ═══════════════════════════════════════════
@@ -455,13 +455,11 @@ def _get_cache_state(
 def _sqlite_connect(path: str) -> sqlite3.Connection:
     """اتصال SQLite با timeout."""
     conn = sqlite3.connect(path, timeout=_SQL_TIMEOUT_S)
-    try:
+    with contextlib.suppress(Exception):
         conn.execute(
             "PRAGMA busy_timeout = ?",
             (int(_SQL_TIMEOUT_S * 1000),),
         )
-    except Exception:
-        pass
     return conn
 
 
@@ -927,14 +925,11 @@ class DailyReporter:
                 )
 
                 f.write("🔸 تفکیک بر اساس پلتفرم:\n")
-                for plat, cnt in sorted(
+                f.writelines(f"   • {platform_label(plat)}: "
+                        f"{cnt} سرنخ\n" for plat, cnt in sorted(
                     platform_stats,
                     key=lambda x: platform_rank(x[0]),
-                ):
-                    f.write(
-                        f"   • {platform_label(plat)}: "
-                        f"{cnt} سرنخ\n"
-                    )
+                ))
                 f.write("\n")
 
                 f.write("🔸 پرسرنخ‌ترین گروه‌ها:\n")
@@ -1939,7 +1934,7 @@ def generate_detailed_report(
     )
 
 
-def search_lead(message_id: str, platform: str = None):
+def search_lead(message_id: str, platform: str | None = None):
     """جستجوی سرنخ با شناسه پیام."""
     reporter = DailyReporter()
     return reporter.search_lead_by_message_id(
@@ -1979,23 +1974,23 @@ def generate_weekly_report():
 # __all__
 # ═══════════════════════════════════════════
 __all__ = [
-    "DailyReporter",
-    "PLATFORM_ORDER",
     "PLATFORM_LABELS",
+    "PLATFORM_ORDER",
+    "REPORT_HEADERS",
+    "DailyReporter",
+    "dedup_rows",
+    "generate_daily_report",
+    "generate_detailed_report",
+    "generate_executive_report",
+    "generate_weekly_report",
+    "get_headers_source",
+    "group_by_platform",
     "platform_label",
     "platform_rank",
-    "group_by_platform",
     "platform_summary_line",
-    "dedup_rows",
-    "start_daily_reporter",
-    "generate_executive_report",
-    "generate_detailed_report",
-    "generate_daily_report",
-    "generate_weekly_report",
-    "search_lead",
-    "REPORT_HEADERS",
     "reload_report_headers",
-    "get_headers_source",
+    "search_lead",
+    "start_daily_reporter",
 ]
 
 

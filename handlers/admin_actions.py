@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import sqlite3
@@ -23,7 +24,6 @@ from typing import Any
 
 # 🎯 P0: استفاده از config برای top-level params
 from config import PLATFORMS_ORDER
-
 from core.adapters.command_parser import (
     extract_value,
     parse_set_param,
@@ -37,7 +37,6 @@ from data.loader import load_json, load_md
 
 # 🎯 ترجمهٔ پلتفرم
 from handlers._ai_utils import fa_platform
-
 
 # ═══════════════════════════════════════════
 # ثابت‌ها (فقط env-based — بدون دیتا)
@@ -538,10 +537,8 @@ class AdminActions:
             return empty
         finally:
             if conn is not None:
-                try:
+                with contextlib.suppress(Exception):
                     conn.close()
-                except Exception:
-                    pass
 
     def status(self) -> str:
         """آمار کلی — با اسم پلتفرم فارسی."""
@@ -580,10 +577,8 @@ class AdminActions:
             return f"خطا در خواندن آمار: {e}"
         finally:
             if conn is not None:
-                try:
+                with contextlib.suppress(Exception):
                     conn.close()
-                except Exception:
-                    pass
 
     async def health(self) -> str:
         """سلامت کامل — با اسم پلتفرم فارسی."""
@@ -658,10 +653,8 @@ class AdminActions:
             return f"خطا در خواندن سرنخ: {e}"
         finally:
             if conn is not None:
-                try:
+                with contextlib.suppress(Exception):
                     conn.close()
-                except Exception:
-                    pass
 
         if not row:
             return "هنوز هیچ سرنخی ثبت نشده."
@@ -669,8 +662,7 @@ class AdminActions:
         label = "اولین" if which == "first" else "آخرین"
         try:
             brand_info = (
-                row["brands"]
-                if "brands" in row.keys() else ""
+                row.get("brands", "")
             )
         except Exception:
             brand_info = ""
@@ -1043,8 +1035,8 @@ class AdminActions:
 
         # 🎯 signal مستقل — بدون import از main
         try:
-            import signal as _sig
             import os as _os
+            import signal as _sig
 
             log_info("🔁 [ADMIN:restart] shutdown تمیز...")
             _os.kill(_os.getpid(), _sig.SIGINT)
@@ -1105,14 +1097,10 @@ class AdminActions:
             except Exception:
                 pass
 
-            try:
+            with contextlib.suppress(Exception):
                 sys.stdout.flush()
-            except Exception:
-                pass
-            try:
+            with contextlib.suppress(Exception):
                 sys.stderr.flush()
-            except Exception:
-                pass
 
             os._exit(0)
         else:

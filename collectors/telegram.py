@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -22,7 +23,11 @@ from analyzers.keyword_finder import get_keyword_finder
 from analyzers.target_filter import get_target_groups
 from core.contracts.base_collector import BaseCollector, ConnectionStatus
 from core.kernel.logger import (
-    log_debug, log_error, log_info, log_success, log_warning,
+    log_debug,
+    log_error,
+    log_info,
+    log_success,
+    log_warning,
 )
 
 try:
@@ -84,16 +89,13 @@ def _is_system_name(name: str) -> bool:
     n_lower = n.lower()
     if "saved" in n_lower or "draft" in n_lower:
         return True
-    for prefix in _SYSTEM_PREFIXES:
-        if n.startswith(prefix):
-            return True
-    return False
+    return any(n.startswith(prefix) for prefix in _SYSTEM_PREFIXES)
 
 
 class TelegramWebCollector(BaseCollector):
     def __init__(
         self,
-        phone: str = None,
+        phone: str | None = None,
         headless: bool = True,
         poll_seconds: int = 180,
         max_chats: int = 0,
@@ -253,10 +255,8 @@ class TelegramWebCollector(BaseCollector):
                 log_warning(
                     "⚠️ [telegram:connect] context قدیمی — بستن"
                 )
-                try:
+                with contextlib.suppress(Exception):
                     await self._context.close()
-                except Exception:
-                    pass
                 self._context = None
                 self._page = None
 
@@ -407,7 +407,7 @@ class TelegramWebCollector(BaseCollector):
 
     async def fetch_messages(
         self,
-        since: datetime = None,
+        since: datetime | None = None,
         force_no_since: bool = False,
     ) -> list[dict[str, Any]]:
         if not self._connected or not self._page:
@@ -647,7 +647,7 @@ class TelegramWebCollector(BaseCollector):
         return ""
 
     async def _scrape_all_chats(
-        self, effective_since: datetime = None
+        self, effective_since: datetime | None = None
     ):
         try:
             url = (self._page.url or "").lower()
@@ -662,10 +662,8 @@ class TelegramWebCollector(BaseCollector):
 
         # اسکرول اولیه
         for _ in range(5):
-            try:
+            with contextlib.suppress(Exception):
                 await self._page.mouse.wheel(0, 1500)
-            except Exception:
-                pass
             await asyncio.sleep(0.5)
 
         # صبر برای لود کامل چت‌ها
@@ -685,10 +683,8 @@ class TelegramWebCollector(BaseCollector):
         chat_items = await self._find_chat_items()
         if not chat_items:
             log_warning("⚠️ هیچ چتی در لیست تلگرام پیدا نشد")
-            try:
+            with contextlib.suppress(Exception):
                 await self.dump_dom()
-            except Exception:
-                pass
             return
 
         self._last_scrape_stats["total_chats"] = len(chat_items)
@@ -787,10 +783,8 @@ class TelegramWebCollector(BaseCollector):
                     self._last_scrape_stats["failed"] += 1
                     continue
 
-                try:
+                with contextlib.suppress(Exception):
                     await self._page.mouse.wheel(0, -200)
-                except Exception:
-                    pass
 
             except Exception as e:
                 self._last_scrape_stats["failed"] += 1
@@ -809,7 +803,7 @@ class TelegramWebCollector(BaseCollector):
         self,
         chat_name: str,
         peer_id: str,
-        effective_since: datetime = None,
+        effective_since: datetime | None = None,
     ) -> int:
         page = self._page
         chat_id = peer_id or chat_name
@@ -820,14 +814,12 @@ class TelegramWebCollector(BaseCollector):
         if self._needs_backfill:
             await self._backfill_scroll()
 
-        try:
+        with contextlib.suppress(Exception):
             await page.wait_for_selector(
                 MSG_SELECTOR,
                 timeout=5000,
                 state="attached",
             )
-        except Exception:
-            pass
 
         messages = await page.query_selector_all(MSG_SELECTOR)
         if not messages:
@@ -877,7 +869,7 @@ class TelegramWebCollector(BaseCollector):
                     except (ValueError, OSError):
                         pass
 
-                if effective_since and msg_timestamp:
+                if effective_since and msg_timestamp:  # noqa: SIM102
                     if msg_timestamp < effective_since:
                         skipped_old += 1
                         continue
@@ -891,7 +883,7 @@ class TelegramWebCollector(BaseCollector):
                 self._last_scrape_stats["messages_found"] += 1
 
                 mid = hashlib.sha256(
-                    f"{chat_id}:{mid_raw}".encode("utf-8")
+                    f"{chat_id}:{mid_raw}".encode()
                 ).hexdigest()[:32]
 
                 if mid in _seen_in_this_chat:
@@ -899,7 +891,7 @@ class TelegramWebCollector(BaseCollector):
                     continue
                 _seen_in_this_chat.add(mid)
 
-                if chat_type != "private":
+                if chat_type != "private":  # noqa: SIM102
                     if not self._kw.has_match(text):
                         skipped_kw += 1
                         self._last_scrape_stats[
@@ -991,7 +983,7 @@ class TelegramWebCollector(BaseCollector):
         )
         return False
 
-    async def dump_dom(self, path: str = None) -> str:
+    async def dump_dom(self, path: str | None = None) -> str:
         path = path or os.path.join(
             self._user_data_dir, "telegram_dom_dump.html"
         )

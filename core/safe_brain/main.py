@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -870,14 +871,13 @@ class SafeBrain:
             # ═══════════════════════════════════════════
             # 🐛 FIX: چک بودجه بدون هدر دادن
             # ═══════════════════════════════════════════
-            if "deepseek" in provider_order:
-                if not self._has_api_budget():
-                    log_warning(
-                        "⚠️ [SAFEBRAIN:_try_ai] "
-                        "محدودیت API DeepSeek — "
-                        "AI صدا زده نشد"
-                    )
-                    return None
+            if "deepseek" in provider_order and not self._has_api_budget():
+                log_warning(
+                    "⚠️ [SAFEBRAIN:_try_ai] "
+                    "محدودیت API DeepSeek — "
+                    "AI صدا زده نشد"
+                )
+                return None
 
             # ─── context از حافظه‌های محلی ───
             context = self.global_memory.get_context(
@@ -1228,10 +1228,8 @@ class SafeBrain:
 
             # 🆕 flush PersistentMemory (no-op ولی مفید)
             if self.persistent_memory is not None:
-                try:
+                with contextlib.suppress(Exception):
                     self.persistent_memory.close()
-                except Exception:
-                    pass
 
             log_info(
                 "💾 [SAFEBRAIN:flush] همه ذخیره شدند"
@@ -1407,10 +1405,8 @@ def reset_safe_brain() -> None:
     global _shared_safe_brain
     with _shared_lock:
         if _shared_safe_brain is not None:
-            try:
+            with contextlib.suppress(Exception):
                 _shared_safe_brain.close()
-            except Exception:
-                pass
             log_info("🗑️ [SAFEBRAIN:singleton] reset شد")
         _shared_safe_brain = None
 

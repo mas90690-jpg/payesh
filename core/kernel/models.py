@@ -154,7 +154,7 @@ class Message:
     @classmethod
     def from_dict(
         cls, data: dict[str, Any] | None
-    ) -> "Message":
+    ) -> Message:
         """بازسازی از dict — None-safe."""
         if not isinstance(data, dict):
             return cls()
@@ -216,7 +216,7 @@ class AnalyzedMessage(Message):
     @classmethod
     def from_dict(
         cls, data: dict[str, Any] | None
-    ) -> "AnalyzedMessage":
+    ) -> AnalyzedMessage:
         """بازسازی از dict — None-safe."""
         if not isinstance(data, dict):
             return cls()
@@ -379,7 +379,7 @@ class Lead:
     @classmethod
     def from_dict(
         cls, data: dict[str, Any] | None
-    ) -> "Lead":
+    ) -> Lead:
         """بازسازی از dict (چکیده از دیتابیس)."""
         if not isinstance(data, dict):
             return cls()
@@ -449,7 +449,7 @@ class Lead:
     @classmethod
     def from_lead_dict(
         cls, data: dict[str, Any] | None
-    ) -> "Lead":
+    ) -> Lead:
         """🎯 سازگاری با `storage_handler._save_lead`.
 
         کلیدهای پشتیبانی‌شده:
@@ -541,8 +541,8 @@ class Lead:
 # __all__
 # ═══════════════════════════════════════════
 __all__ = [
-    "Message",
     "AnalyzedMessage",
     "Lead",
     "LeadStatus",
+    "Message",
 ]

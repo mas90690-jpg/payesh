@@ -320,7 +320,7 @@ class KeywordFinder(BaseAnalyzer):
             kws = data.get("keywords")
             if isinstance(kws, dict):
                 fmt = "dict_with_meta"
-                for k in kws.keys():
+                for k in kws:
                     if isinstance(k, str) and k.strip():
                         out.append(k.strip())
             elif isinstance(kws, list):
@@ -356,12 +356,7 @@ class KeywordFinder(BaseAnalyzer):
         if re.match(r"^\d{4}[-/]\d{2}[-/]\d{2}", s):
             return False
         # hex/uuid
-        if re.fullmatch(
-            r"[0-9a-fA-F]{8}(-?[0-9a-fA-F]{4}){3}-?[0-9a-fA-F]{12}",
-            s,
-        ):
-            return False
-        return True
+        return not re.fullmatch(r"[0-9a-fA-F]{8}(-?[0-9a-fA-F]{4}){3}-?[0-9a-fA-F]{12}", s)
 
     @staticmethod
     def _extract_strings_from_json(path: str) -> list[str]:

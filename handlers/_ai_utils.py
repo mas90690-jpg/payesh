@@ -13,7 +13,6 @@ from typing import Any
 
 from data.loader import load_json
 
-
 # ═══════════════════════════════════════════════════════════
 # cache (برای جلوگیری از لود مکرر)
 # ═══════════════════════════════════════════════════════════
@@ -110,11 +109,7 @@ def is_valid_ai_answer(ans: Any) -> bool:
             return False
 
     # ─── چک marker ───
-    for marker in bad_markers:
-        if marker and marker in s:
-            return False
-
-    return True
+    return all(not (marker and marker in s) for marker in bad_markers)
 
 
 # ═══════════════════════════════════════════════════════════

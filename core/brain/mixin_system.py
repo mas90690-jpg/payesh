@@ -8,8 +8,10 @@
   - ✅ حفظ همهٔ FIXهای نسخهٔ ۱.
 """
 from __future__ import annotations
+
 import ast
 import asyncio
+import contextlib
 import os
 import platform
 import shlex
@@ -441,7 +443,7 @@ class SystemMixin:
 
     # ─── Backup / execute_python / analyze_code ───
     async def _backup_project(
-        self, destination: str = None
+        self, destination: str | None = None
     ) -> str:
         if self.read_only:
             return "⛔ حالت فقط‌خواندنی"
@@ -536,10 +538,8 @@ class SystemMixin:
             )
             return f"❌ خطا: {e}"
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 os.unlink(tmp)
-            except Exception:
-                pass
 
     async def _analyze_code(self, path: str) -> str:
         p = self._safepath(path)
@@ -753,10 +753,10 @@ class SystemMixin:
             lines = [
                 "📋 **گزارش درست کردن f-string**",
                 "━━━━━━━━━━━━━━━",
-                f"🔹 حالت: "
-                f"{'🔍 فقط نمایش (dry-run)' if dry_run else '✅ اعمال شد'}",
-                f"🔹 فایل‌های بررسی‌شده: "
-                f"{result.get('files_checked', 0)}",
+                (f"🔹 حالت: "
+                f"{'🔍 فقط نمایش (dry-run)' if dry_run else '✅ اعمال شد'}"),
+                (f"🔹 فایل‌های بررسی‌شده: "
+                f"{result.get('files_checked', 0)}"),
                 f"🔹 فایل‌های تغییر یافته: {files_fixed}",
                 "",
             ]

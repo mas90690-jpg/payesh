@@ -189,7 +189,7 @@ def _deep_default() -> dict[str, Any]:
 class AccessManager:
     """Singleton مدیریت دسترسی."""
 
-    _instance: "AccessManager | None" = None
+    _instance: AccessManager | None = None
     _lock = threading.Lock()
 
     def __new__(cls):
@@ -518,9 +518,8 @@ class AccessManager:
             return True, ""
         for pat in r:
             p = str(pat)
-            if p.endswith("*"):
-                if key_u.startswith(p[:-1].upper()):
-                    return True, ""
+            if p.endswith("*") and key_u.startswith(p[:-1].upper()):
+                return True, ""
         return False, f"خواندن {key} مجاز نیست."
 
     def can_write_setting(self, key: str) -> tuple[bool, str]:
@@ -555,9 +554,8 @@ class AccessManager:
         if key_u in w:
             return True, ""
         for pat in w:
-            if pat.endswith("*"):
-                if key_u.startswith(pat[:-1]):
-                    return True, ""
+            if pat.endswith("*") and key_u.startswith(pat[:-1]):
+                return True, ""
         return False, f"نوشتن {key} مجاز نیست."
 
     def is_setting_read_allowed(self, key: str) -> bool:
@@ -808,9 +806,9 @@ def reset_access_manager() -> None:
 # __all__
 # ═══════════════════════════════════════════
 __all__ = [
+    "ACCESS_FILE",
+    "_BANNED_SQL_KEYWORDS",
     "AccessManager",
     "get_access_manager",
     "reset_access_manager",
-    "ACCESS_FILE",
-    "_BANNED_SQL_KEYWORDS",
 ]

@@ -20,7 +20,10 @@ main.py — نقطهٔ ورود ربات پایش سرنخ.
   - ✅ حفظ همهٔ FIXهای نسخهٔ ۶.
 """
 from __future__ import annotations
-import sys, os
+
+import os
+import sys
+
 if sys.platform == "win32":
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -140,6 +143,8 @@ except Exception as e:
 # ═══════════════════════════════════════════
 # imports اصلی
 # ═══════════════════════════════════════════
+import contextlib
+
 from core.app.orchestrator import Orchestrator
 from core.app.plugin_loader import PluginLoader
 from core.database.factory import create_database
@@ -212,9 +217,9 @@ def _signal_handler(signum=None, frame=None) -> None:
 
     def _fallback_kill_chrome():
         threading.Event().wait(30.0)
-        import subprocess
-        import re as _re
         import os as _os
+        import re as _re
+        import subprocess
         try:
             out = subprocess.run(
                 ["wmic", "process", "where", "name='chrome.exe'",
@@ -248,32 +253,26 @@ def _signal_handler(signum=None, frame=None) -> None:
             except Exception:
                 pass
         if killed:
-            try:
+            with contextlib.suppress(Exception):
                 _safe_log_warning(
                     f"🧹 [MAIN:fallback] {killed} پروسه chrome "
                     f"بعد از timeout کشته شد"
                 )
-            except Exception:
-                pass
 
-    try:
+    with contextlib.suppress(Exception):
         threading.Thread(
             target=_fallback_kill_chrome,
             daemon=True,
             name="chrome_fallback_killer",
         ).start()
-    except Exception:
-        pass
 
 def _safe_log_warning(msg: str) -> None:
     """لاگ warning با fallback به stderr."""
     try:
         log_warning(msg)
     except Exception:
-        try:
+        with contextlib.suppress(Exception):
             print(msg, file=sys.stderr)
-        except Exception:
-            pass
 
 
 def _safe_log_error(msg: str) -> None:
@@ -281,10 +280,8 @@ def _safe_log_error(msg: str) -> None:
     try:
         log_error(msg)
     except Exception:
-        try:
+        with contextlib.suppress(Exception):
             print(msg, file=sys.stderr)
-        except Exception:
-            pass
 
 
 def _extract_sys_value(
@@ -528,8 +525,8 @@ async def main() -> None:
         # حالا: api_key از config.AI (منبع یکتا) خوانده می‌شود
         # و صریحاً به get_safe_brain پاس داده می‌شود.
         # ═══════════════════════════════════════════
-        from core.safe_brain import get_safe_brain
         from config import AI as _AI_CFG_MAIN
+        from core.safe_brain import get_safe_brain
 
         t = time.monotonic()
 
@@ -816,10 +813,8 @@ def _run() -> None:
                     )
             except Exception:
                 pass
-            try:
+            with contextlib.suppress(Exception):
                 loop.close()
-            except Exception:
-                pass
             _reset_shutdown_event()
             
     else:
@@ -859,10 +854,8 @@ def _run() -> None:
                     )
             except Exception:
                 pass
-            try:
+            with contextlib.suppress(Exception):
                 loop.close()
-            except Exception:
-                pass
             _reset_shutdown_event()
 
 

@@ -358,18 +358,17 @@ class AIAssistant:
             return True
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"{self._ollama_url}/api/tags",
-                    timeout=aiohttp.ClientTimeout(
-                        total=_AI_PING_TIMEOUT_S
-                    ),
-                ) as resp:
-                    if resp.status == 200:
-                        log_info(
-                            "✅ [AI:available] Ollama فعال"
-                        )
-                        return True
+            async with aiohttp.ClientSession() as session, session.get(
+                f"{self._ollama_url}/api/tags",
+                timeout=aiohttp.ClientTimeout(
+                    total=_AI_PING_TIMEOUT_S
+                ),
+            ) as resp:
+                if resp.status == 200:
+                    log_info(
+                        "✅ [AI:available] Ollama فعال"
+                    )
+                    return True
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -632,15 +631,9 @@ class AIAssistant:
                     ["deepseek"] if self._deepseek_key else []
                 )
             elif p == "ollama":
-                if self._deepseek_key:
-                    result = ["ollama", "deepseek"]
-                else:
-                    result = ["ollama"]
+                result = ["ollama", "deepseek"] if self._deepseek_key else ["ollama"]
             else:  # auto
-                if self._deepseek_key:
-                    result = ["deepseek", "ollama"]
-                else:
-                    result = ["ollama"]
+                result = ["deepseek", "ollama"] if self._deepseek_key else ["ollama"]
 
             self._provider_cache = result
             return list(result)
@@ -666,31 +659,30 @@ class AIAssistant:
             payload["format"] = "json"
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"{self._ollama_url}/api/chat",
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(
-                        total=self._timeout
-                    ),
-                ) as resp:
-                    if resp.status != 200:
-                        try:
-                            body = (await resp.text())[
-                                :_LOG_PREVIEW_LEN
-                            ]
-                        except Exception:
-                            body = ""
-                        log_warning(
-                            f"⚠️ [AI:ollama] "
-                            f"status={resp.status} | "
-                            f"body={body!r}"
-                        )
-                        return None
-                    data = await resp.json()
-                    return (
-                        data.get("message") or {}
-                    ).get("content")
+            async with aiohttp.ClientSession() as session, session.post(
+                f"{self._ollama_url}/api/chat",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(
+                    total=self._timeout
+                ),
+            ) as resp:
+                if resp.status != 200:
+                    try:
+                        body = (await resp.text())[
+                            :_LOG_PREVIEW_LEN
+                        ]
+                    except Exception:
+                        body = ""
+                    log_warning(
+                        f"⚠️ [AI:ollama] "
+                        f"status={resp.status} | "
+                        f"body={body!r}"
+                    )
+                    return None
+                data = await resp.json()
+                return (
+                    data.get("message") or {}
+                ).get("content")
         except asyncio.CancelledError:
             raise
         except aiohttp.ClientConnectorError as e:
@@ -736,7 +728,7 @@ class AIAssistant:
         last_error = "unknown"
         for attempt in range(_DEEPSEEK_MAX_RETRY + 1):
             try:
-                async with aiohttp.ClientSession() as session:
+                async with aiohttp.ClientSession() as session:  # noqa: SIM117
                     async with session.post(
                         self._deepseek_url,
                         json=payload,
@@ -987,10 +979,10 @@ def reset_ai_assistant() -> None:
 # __all__
 # ═══════════════════════════════════════════
 __all__ = [
-    "AIAssistant",
-    "get_ai_assistant",
-    "reset_ai_assistant",
     "PERSONA",
     "_ALLOWED_ACTIONS",
     "_FALLBACK_PREFIX",
+    "AIAssistant",
+    "get_ai_assistant",
+    "reset_ai_assistant",
 ]

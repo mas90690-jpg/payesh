@@ -19,6 +19,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 
 # ═══════════════════════════════════════════
 # Health Check
@@ -32,14 +33,12 @@ try:
     )
 except Exception as e:
     import sys
-    try:
+    with contextlib.suppress(Exception):
         print(
             f"⚠️ [OPS:init] import health_check | "
             f"{type(e).__name__}: {e}",
             file=sys.stderr,
         )
-    except Exception:
-        pass
     HealthChecker = None  # type: ignore
     HealthCheckResult = None  # type: ignore
     HealthStatus = None  # type: ignore
@@ -58,14 +57,12 @@ try:
     )
 except Exception as e:
     import sys
-    try:
+    with contextlib.suppress(Exception):
         print(
             f"⚠️ [OPS:init] import monitor | "
             f"{type(e).__name__}: {e}",
             file=sys.stderr,
         )
-    except Exception:
-        pass
     Alert = None  # type: ignore
     Metric = None  # type: ignore
     PerformanceMonitor = None  # type: ignore
@@ -83,14 +80,12 @@ try:
     )
 except Exception as e:
     import sys
-    try:
+    with contextlib.suppress(Exception):
         print(
             f"⚠️ [OPS:init] import obs_server | "
             f"{type(e).__name__}: {e}",
             file=sys.stderr,
         )
-    except Exception:
-        pass
     render_prometheus = None  # type: ignore
     server_info = None  # type: ignore
     start_obs_server = None  # type: ignore
@@ -106,14 +101,12 @@ try:
     )
 except Exception as e:
     import sys
-    try:
+    with contextlib.suppress(Exception):
         print(
             f"⚠️ [OPS:init] import self_monitor | "
             f"{type(e).__name__}: {e}",
             file=sys.stderr,
         )
-    except Exception:
-        pass
     SelfMonitor = None  # type: ignore
     start_self_monitor = None  # type: ignore
 
@@ -122,21 +115,21 @@ except Exception as e:
 # __all__
 # ═══════════════════════════════════════════
 __all__ = [
+    "Alert",
+    "HealthCheckResult",
     # Health Check
     "HealthChecker",
     "HealthStatus",
-    "HealthCheckResult",
-    "run_health_check",
-    # Monitor
-    "SystemMonitor",
-    "PerformanceMonitor",
     "Metric",
-    "Alert",
-    # OBS Server
-    "start_obs_server",
-    "render_prometheus",
-    "server_info",
+    "PerformanceMonitor",
     # Self-Monitor
     "SelfMonitor",
+    # Monitor
+    "SystemMonitor",
+    "render_prometheus",
+    "run_health_check",
+    "server_info",
+    # OBS Server
+    "start_obs_server",
     "start_self_monitor",
 ]

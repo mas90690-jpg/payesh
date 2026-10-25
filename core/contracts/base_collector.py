@@ -33,6 +33,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
+from typing_extensions import Self
+
 from core.kernel.logger import log_error, log_info, log_warning
 
 
@@ -364,7 +366,7 @@ class BaseCollector(ABC):
     # ═══════════════════════════════════════════
     # context manager
     # ═══════════════════════════════════════════
-    async def __aenter__(self) -> BaseCollector:
+    async def __aenter__(self) -> Self:
         """ورود به context manager — اتصال خودکار."""
         name = self._safe_platform_name()
         log_info(f"▶️ [COLLECTOR:enter] {name} | connect...")

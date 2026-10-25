@@ -405,13 +405,13 @@ def __getattr__(name: str) -> Any:
 # __all__
 # ═══════════════════════════════════════════
 __all__ = [
+    "_SenderFunc",
+    "clear_registry",
+    "get_registered_platforms",
+    "get_sender",
+    "get_stats",
+    "is_registered",
+    "notify_admins",
     "register_sender",
     "unregister_sender",
-    "get_sender",
-    "is_registered",
-    "get_registered_platforms",
-    "clear_registry",
-    "notify_admins",
-    "get_stats",
-    "_SenderFunc",
 ]

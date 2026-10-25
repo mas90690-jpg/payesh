@@ -30,6 +30,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import copy
 import json
 import locale
@@ -135,14 +136,10 @@ class PersianBrainHandler:
             # ─── Windows-specific ───
             if platform.system() == "Windows":
                 # 🐛 FIX: `color` و `chcp` جدا در try/except
-                try:
+                with contextlib.suppress(Exception):
                     os.system("color")
-                except Exception:
-                    pass
-                try:
+                with contextlib.suppress(Exception):
                     os.system("chcp 65001 > nul 2>&1")
-                except Exception:
-                    pass
 
             # ─── env vars ───
             os.environ["PYTHONIOENCODING"] = "utf-8"
@@ -186,7 +183,7 @@ class PersianBrainHandler:
 # ═══════════════════════════════════════════
 # Helpers
 # ═══════════════════════════════════════════
-def human_bytes(n: int | float) -> str:
+def human_bytes(n: float) -> str:
     """تبدیل بایت به فرمت خوانا.
 
     🐛 FIX: n منفی امن است.
@@ -504,12 +501,12 @@ _SAFE_PREAMBLE: str = SAFE_PREAMBLE
 # __all__
 # ═══════════════════════════════════════════
 __all__ = [
+    "SAFE_PREAMBLE",
+    "_SAFE_PREAMBLE",
     "PersianBrainHandler",
+    "_invalidate_access_cache",
+    "_load_access",
     "human_bytes",
     "safe_path",
     "sanitize_console_output",
-    "_load_access",
-    "_invalidate_access_cache",
-    "SAFE_PREAMBLE",
-    "_SAFE_PREAMBLE",
 ]

@@ -12,7 +12,6 @@ from typing import Any
 from core.kernel.logger import log_info, log_warning
 from data import paths as data_paths
 
-
 # ═══════════════════════════════════════════
 # cache
 # ═══════════════════════════════════════════
@@ -111,7 +110,7 @@ def clear_cache() -> None:
 
 
 __all__ = [
+    "clear_cache",
     "load_json",
     "load_md",
-    "clear_cache",
 ]

@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 # ══════════════════════════════════════════════════════════
@@ -163,50 +164,91 @@ def ensure_runtime_dirs() -> None:
         PYCACHE_DIR,
     )
     for d in dirs:
-        try:
+        with contextlib.suppress(Exception):
             d.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass
 
 
 __all__ = [
-    # پایه
-    "DATA_DIR", "PROJECT_ROOT", "STORAGE_DIR",
-    # محصولات
-    "PRODUCTS_PY", "PRODUCTS_EN_PY",
+    "ACCESS_CONTROL",
+    "ACTIONS",
+    "AI_MEMORY",
+    "AI_MODE_PROMPTS",
+    "AI_PERSONA",
+    "BACKUPS_DIR",
+    "BOT_KNOWLEDGE",
+    "BOT_PID",
+    "BRAIN_BACKUP_DIR",
+    "BRAIN_CACHE_DIR",
+    # brain
+    "BRAIN_DIR",
+    "BRAIN_HOOKS_DIR",
+    "BRAIN_MEMORY_DIR",
+    "BRAIN_PLANS",
+    "CANDIDATE_RULES",
+    "COMMANDS",
     # configs — موجود
     "CONFIGS_DIR",
-    "ACCESS_CONTROL", "RULES", "QUERIES", "SETTINGS",
-    "SYNONYMS", "TEMPLATES",
+    "CRM_HEADERS",
+    # پایه
+    "DATA_DIR",
+    "DB_DIR",
+    "DB_FILE",
+    "DOMAIN",
     # configs — جدید
-    "ERRORS", "REPORT_HEADERS", "CRM_HEADERS",
-    "ACTIONS", "DOMAIN", "EVENTS", "MARKERS",
-    "MESSAGES", "TIERS", "COMMANDS",
-    # schemas
-    "SCHEMAS_DIR", "RULE_SCHEMA", "SETTINGS_SCHEMA",
-    # prompts
-    "PROMPTS_DIR", "PERSONA", "SYSTEM", "BOT_KNOWLEDGE",
-    # sources
-    "SOURCES_DIR", "GLOSSARY", "LINKEDIN_SEARCHES",
-    "WEB_SOURCES", "TARGET_GROUPS",
-    # runtime
-    "RUNTIME_DIR", "KEYWORDS_CUSTOM", "CANDIDATE_RULES",
-    "LEARNED_RULES", "RULE_STATS", "UNKNOWN_QUESTIONS", "MY_FORMULAS",
+    "ERRORS",
+    "EVENTS",
+    "FORMULA_AUDIT",
+    "GLOSSARY",
+    "KEYWORDS_CUSTOM",
+    "LEARNED_PATTERNS",
+    "LEARNED_RULES",
+    "LINKEDIN_SEARCHES",
     # storage
-    "LOGS_DIR", "LOG_FILE", "DB_DIR", "DB_FILE", "REPORT_CACHE",
-    "SESSIONS_DIR", "MEDIA_DIR", "REPORTS_DIR", "BACKUPS_DIR",
-    "BOT_PID", "REQUESTS_FILE", "AI_MEMORY", "OFFSET_DIR", "FORMULA_AUDIT",
-    # brain
-    "BRAIN_DIR", "BRAIN_MEMORY_DIR", "BRAIN_CACHE_DIR",
-    "BRAIN_BACKUP_DIR", "BRAIN_HOOKS_DIR",
-    "LEARNED_PATTERNS", "BRAIN_PLANS",
-    # safe_brain
-    "SAFE_BRAIN_DIR", "SAFE_BRAIN_MEMORY_DIR", "SAFE_BRAIN_CACHE_DIR",
+    "LOGS_DIR",
+    "LOG_FILE",
+    "MARKERS",
+    "MEDIA_DIR",
+    "MESSAGES",
+    "MY_FORMULAS",
+    "OFFSET_DIR",
+    "PERSONA",
+    "PRODUCTS_EN_PY",
+    # محصولات
+    "PRODUCTS_PY",
+    "PROJECT_ROOT",
+    # prompts
+    "PROMPTS_DIR",
     # pycache
     "PYCACHE_DIR",
+    "QUERIES",
+    "REPORTS_DIR",
+    "REPORT_CACHE",
+    "REPORT_HEADERS",
+    "REQUESTS_FILE",
+    "RULES",
+    "RULE_SCHEMA",
+    "RULE_STATS",
+    # runtime
+    "RUNTIME_DIR",
+    "SAFE_BRAIN_CACHE_DIR",
+    # safe_brain
+    "SAFE_BRAIN_DIR",
+    "SAFE_BRAIN_MEMORY_DIR",
+    # schemas
+    "SCHEMAS_DIR",
+    "SESSIONS_DIR",
+    "SETTINGS",
+    "SETTINGS_SCHEMA",
+    # sources
+    "SOURCES_DIR",
+    "STORAGE_DIR",
+    "SYNONYMS",
+    "SYSTEM",
+    "TARGET_GROUPS",
+    "TEMPLATES",
+    "TIERS",
+    "UNKNOWN_QUESTIONS",
+    "WEB_SOURCES",
     # helpers
     "ensure_runtime_dirs",
-    
-    "AI_PERSONA",
-    "AI_MODE_PROMPTS",
 ]

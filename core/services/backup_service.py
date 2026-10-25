@@ -37,6 +37,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -244,10 +245,8 @@ def _atomic_write_text(
     try:
         parent = os.path.dirname(path)
         if parent:
-            try:
+            with contextlib.suppress(Exception):
                 os.makedirs(parent, exist_ok=True)
-            except Exception:
-                pass
 
         with open(tmp, "w", encoding=encoding) as f:
             f.write(content)
@@ -552,10 +551,8 @@ class BackupService:
             return False
         finally:
             if conn is not None:
-                try:
+                with contextlib.suppress(Exception):
                     conn.close()
-                except Exception:
-                    pass
 
     def _get_db_size(self) -> int:
         return (
@@ -714,12 +711,10 @@ class BackupService:
                 f"❌ [BACKUP:daily] "
                 f"{type(e).__name__}: {e}"
             )
-            try:
+            with contextlib.suppress(Exception):
                 shutil.rmtree(
                     backup_folder, ignore_errors=True
                 )
-            except Exception:
-                pass
             return None
 
     # ═══════════════════════════════════════════
@@ -842,12 +837,10 @@ class BackupService:
                 f"❌ [BACKUP:full] "
                 f"{type(e).__name__}: {e}"
             )
-            try:
+            with contextlib.suppress(Exception):
                 shutil.rmtree(
                     backup_folder, ignore_errors=True
                 )
-            except Exception:
-                pass
             return None
 
     # ═══════════════════════════════════════════
@@ -1135,10 +1128,8 @@ class BackupService:
         """توقف حلقه."""
         self._running = False
         if self._stop_event is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._stop_event.set()
-            except Exception:
-                pass
         log_info("🛑 [BACKUP:stop] درخواست توقف")
 
     # ═══════════════════════════════════════════
@@ -1167,20 +1158,16 @@ class BackupService:
         # شمارش فایل‌های بکاپ
         daily_count = 0
         full_count = 0
-        try:
+        with contextlib.suppress(Exception):
             daily_count = len([
                 f for f in os.listdir(self.daily_dir)
                 if f.endswith(".zip")
             ])
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             full_count = len([
                 f for f in os.listdir(self.full_dir)
                 if f.endswith(".zip")
             ])
-        except Exception:
-            pass
 
         return {
             "running": self._running,
@@ -1249,16 +1236,16 @@ async def start_backup_service() -> BackupService:
 # __all__
 # ═══════════════════════════════════════════
 __all__ = [
-    "BackupService",
-    "start_backup_service",
-    "DB_PATH",
     "BACKUP_DIR",
-    "DAILY_BACKUP_HOURS",
-    "KEEP_DAILY_BACKUPS",
-    "KEEP_FULL_BACKUPS",
-    "FULL_BACKUP_DAYS",
-    "POKE_INTERVAL_SECONDS",
     "BACKUP_TYPE_DAILY",
     "BACKUP_TYPE_FULL",
+    "DAILY_BACKUP_HOURS",
+    "DB_PATH",
+    "FULL_BACKUP_DAYS",
+    "KEEP_DAILY_BACKUPS",
+    "KEEP_FULL_BACKUPS",
+    "POKE_INTERVAL_SECONDS",
+    "BackupService",
     "_is_sensitive_filename",
+    "start_backup_service",
 ]

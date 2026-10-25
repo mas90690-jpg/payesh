@@ -22,7 +22,7 @@ from data import paths as data_paths
 class MemoryStore:
     """حافظهٔ SQLite با Bitemporal + FTS + Relations."""
 
-    _instance: "MemoryStore | None" = None
+    _instance: MemoryStore | None = None
     _lock = threading.RLock()
 
     def __new__(cls, db_path: str | None = None):
@@ -288,10 +288,9 @@ class MemoryStore:
     # ═══════════════════════════════════════════
     def forget(self, days: int = 30, min_importance: float = 0.2):
         """فراموشی — رکوردهای کم‌اهمیت که مدتی استفاده نشدن."""
-        with self._write_lock:
-            with sqlite3.connect(self.db_path) as conn:
-                cur = conn.execute(
-                    """UPDATE memory_items
+        with self._write_lock, sqlite3.connect(self.db_path) as conn:
+            cur = conn.execute(
+                """UPDATE memory_items
                     SET valid_to = CURRENT_TIMESTAMP
                     WHERE valid_to IS NULL
                       AND importance < ?
@@ -299,13 +298,13 @@ class MemoryStore:
                           last_accessed IS NULL
                           OR julianday('now') - julianday(last_accessed) > ?
                       )""",
-                    (min_importance, days),
-                )
-                conn.commit()
-                n = cur.rowcount
-                if n:
-                    log_info(f"🧹 [MEMORY:forget] {n} رکورد فراموش شد")
-                return n
+                (min_importance, days),
+            )
+            conn.commit()
+            n = cur.rowcount
+            if n:
+                log_info(f"🧹 [MEMORY:forget] {n} رکورد فراموش شد")
+            return n
 
     # ═══════════════════════════════════════════
     # Stats

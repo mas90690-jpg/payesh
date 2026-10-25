@@ -188,8 +188,8 @@ class HealthCheckResult:
 
         lines = [
             f'health_status{{component="{comp}"}} {status_val}',
-            f'health_response_time{{component="{comp}"}} '
-            f"{self.response_time}",
+            (f'health_response_time{{component="{comp}"}} '
+            f"{self.response_time}"),
         ]
         return "\n".join(lines)
 
@@ -776,42 +776,22 @@ class HealthChecker:
 
             async with aiohttp.ClientSession(
                 timeout=client_timeout
-            ) as session:
-                async with session.get(url) as response:
-                    response_ms = (
-                        time.monotonic() - t_start
-                    ) * 1000
+            ) as session, session.get(url) as response:
+                response_ms = (
+                    time.monotonic() - t_start
+                ) * 1000
 
-                    if response.status == 200:
-                        log_success(
-                            f"✅ [HEALTH:api:{name}] 200 | "
-                            f"{response_ms:.0f}ms"
-                        )
-                        return HealthCheckResult(
-                            component=f"api_{name}",
-                            status=HealthStatus.HEALTHY,
-                            message=(
-                                f"API پاسخ می‌دهد "
-                                f"({response.status})"
-                            ),
-                            response_time=response_ms / 1000,
-                            details={
-                                "status_code": response.status,
-                                "url": url,
-                            },
-                        )
-
-                    log_warning(
-                        f"⚠️ [HEALTH:api:{name}] "
-                        f"status={response.status} | "
+                if response.status == 200:
+                    log_success(
+                        f"✅ [HEALTH:api:{name}] 200 | "
                         f"{response_ms:.0f}ms"
                     )
                     return HealthCheckResult(
                         component=f"api_{name}",
-                        status=HealthStatus.DEGRADED,
+                        status=HealthStatus.HEALTHY,
                         message=(
-                            f"API پاسخ می‌دهد اما "
-                            f"status {response.status}"
+                            f"API پاسخ می‌دهد "
+                            f"({response.status})"
                         ),
                         response_time=response_ms / 1000,
                         details={
@@ -819,6 +799,25 @@ class HealthChecker:
                             "url": url,
                         },
                     )
+
+                log_warning(
+                    f"⚠️ [HEALTH:api:{name}] "
+                    f"status={response.status} | "
+                    f"{response_ms:.0f}ms"
+                )
+                return HealthCheckResult(
+                    component=f"api_{name}",
+                    status=HealthStatus.DEGRADED,
+                    message=(
+                        f"API پاسخ می‌دهد اما "
+                        f"status {response.status}"
+                    ),
+                    response_time=response_ms / 1000,
+                    details={
+                        "status_code": response.status,
+                        "url": url,
+                    },
+                )
 
         except TimeoutError:
             response_ms = (
@@ -987,8 +986,8 @@ async def run_health_check(
 # __all__
 # ═══════════════════════════════════════════
 __all__ = [
+    "HealthCheckResult",
     "HealthChecker",
     "HealthStatus",
-    "HealthCheckResult",
     "run_health_check",
 ]

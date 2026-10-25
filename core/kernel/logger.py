@@ -38,10 +38,11 @@ import sys
 import threading
 import time
 import traceback
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
+
 
 # ═══════════════════════════════════════════
 # helpers
@@ -316,7 +317,7 @@ class ConsoleFormatter(logging.Formatter):
 class Logger:
     """Singleton wrapper around a stdlib logger named 'srooyesh'."""
 
-    _instance: "Logger | None" = None
+    _instance: Logger | None = None
     _lock = threading.Lock()
 
     def __new__(cls):
@@ -457,8 +458,7 @@ class Logger:
             
             if max_mb <= 0:
                 max_mb = 10.0
-            if backups < 0:
-                backups = 0
+            backups = max(backups, 0)
 
             fname = "app.jsonl" if as_json else "app.log"
             file_path = os.path.join(self.log_dir, fname)
@@ -552,7 +552,7 @@ class Logger:
                 exc_info=exc_info,
             )
         except Exception as e:
-            try:
+            with suppress(Exception):
                 print(
                     f"❌ [LOGGER:emit-fail] "
                     f"{type(e).__name__}: {e} | "
@@ -560,8 +560,6 @@ class Logger:
                     f"msg={message[:200]!r}",
                     file=sys.stderr,
                 )
-            except Exception:
-                pass
 
     # ═══════════════════════════════════════════
     # convenience
@@ -618,10 +616,7 @@ class Logger:
         context: dict | None = None,
     ) -> None:
         """🎯 پشتیبانی از LogLevel enum یا نام string."""
-        if isinstance(level, LogLevel):
-            name = level.name
-        else:
-            name = str(level).upper()
+        name = level.name if isinstance(level, LogLevel) else str(level).upper()
 
         if name not in _LEVEL_NO:
             name = "INFO"
@@ -688,27 +683,21 @@ class Logger:
             try:
                 h.flush()
             except Exception as e:
-                try:
+                with suppress(Exception):
                     print(
                         f"⚠️ [LOGGER:flush] "
                         f"{type(h).__name__} | "
                         f"{type(e).__name__}: {e}",
                         file=sys.stderr,
                     )
-                except Exception:
-                    pass
 
     def close(self) -> None:
         """🎯 بستن همهٔ handlerها — برای تست/restart."""
         for h in list(self._logger.handlers):
-            try:
+            with suppress(Exception):
                 h.close()
-            except Exception:
-                pass
-            try:
+            with suppress(Exception):
                 self._logger.removeHandler(h)
-            except Exception:
-                pass
 
     def __repr__(self) -> str:
         return (
@@ -740,10 +729,8 @@ def reset_logger() -> None:
     global _logger
     with _logger_lock:
         if _logger is not None:
-            try:
+            with suppress(Exception):
                 _logger.close()
-            except Exception:
-                pass
         _logger = None
 
 
@@ -805,19 +792,19 @@ def log_duration(
 # __all__
 # ═══════════════════════════════════════════
 __all__ = [
-    "Logger",
+    "SUCCESS_LEVEL",
+    "ConsoleFormatter",
+    "JsonFormatter",
     "LogLevel",
+    "Logger",
     "get_logger",
-    "reset_logger",
+    "log_critical",
+    "log_debug",
+    "log_duration",
+    "log_error",
+    "log_exception",
     "log_info",
     "log_success",
-    "log_error",
     "log_warning",
-    "log_debug",
-    "log_exception",
-    "log_critical",
-    "log_duration",
-    "JsonFormatter",
-    "ConsoleFormatter",
-    "SUCCESS_LEVEL",
+    "reset_logger",
 ]

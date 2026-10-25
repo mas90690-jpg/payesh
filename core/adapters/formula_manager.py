@@ -88,6 +88,8 @@ def _env_int(
 ROOT = Path(__file__).parent.parent.parent
 STORAGE_DIR = ROOT / "storage"
 
+import contextlib
+
 from data import paths as data_paths
 
 FORMULAS_FILE: Path = data_paths.MY_FORMULAS
@@ -95,10 +97,8 @@ AUDIT_FILE: Path = data_paths.FORMULA_AUDIT
 BACKUP_DIR: Path = STORAGE_DIR / "backups" / "formulas"
 
 for _d in (AUDIT_FILE.parent, BACKUP_DIR, FORMULAS_FILE.parent):
-    try:
+    with contextlib.suppress(Exception):
         _d.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        pass
 
 
 # ═══════════════════════════════════════════
@@ -381,7 +381,7 @@ class FormulaManager:
             r"\b(?:FROM|INTO|UPDATE)\s+"
             r"([a-zA-Z_][a-zA-Z0-9_]*)",
             sql,
-            re.I,
+            re.IGNORECASE,
         )
         if m:
             tbl = m.group(1).lower()
@@ -607,10 +607,8 @@ class FormulaManager:
         elapsed_ms = (time.monotonic() - t0) * 1000
 
         # 🐛 FIX: audit برای read هم
-        try:
+        with contextlib.suppress(Exception):
             self._audit(name, sql, len(rows))
-        except Exception:
-            pass
 
         if not rows:
             log_info(
@@ -622,7 +620,7 @@ class FormulaManager:
         # ─── تک‌مقداری ───
         if len(rows) == 1 and len(rows[0]) == 1:
             try:
-                val = list(rows[0])[0]
+                val = next(iter(rows[0]))
             except Exception:
                 val = "?"
             log_info(
@@ -786,14 +784,10 @@ class FormulaManager:
             )
             # 🐛 FIX: rollback امن (c ممکن است None باشد)
             if c is not None:
-                try:
+                with contextlib.suppress(Exception):
                     c.rollback()
-                except Exception:
-                    pass
-                try:
+                with contextlib.suppress(Exception):
                     c.close()
-                except Exception:
-                    pass
             return f"❌ خطا (rollback): {e}"
 
         elapsed_ms = (time.monotonic() - t0) * 1000
@@ -829,13 +823,13 @@ class FormulaManager:
                 p = re.sub(
                     r"^\s*DELETE\s+FROM\s+",
                     "SELECT COUNT(*) FROM ",
-                    sql, count=1, flags=re.I,
+                    sql, count=1, flags=re.IGNORECASE,
                 )
                 p = re.sub(
-                    r"\s+ORDER BY.*$", "", p, flags=re.I
+                    r"\s+ORDER BY.*$", "", p, flags=re.IGNORECASE
                 )
                 p = re.sub(
-                    r"\s+LIMIT.*$", "", p, flags=re.I
+                    r"\s+LIMIT.*$", "", p, flags=re.IGNORECASE
                 )
                 c = sqlite3.connect(self.db_path)
                 try:
@@ -851,7 +845,7 @@ class FormulaManager:
                         f"SELECT COUNT(*) FROM {m.group(1)} "
                         f"{m.group(2) or ''}"
                     ),
-                    sql, count=1, flags=re.I | re.S,
+                    sql, count=1, flags=re.IGNORECASE | re.DOTALL,
                 )
                 c = sqlite3.connect(self.db_path)
                 try:
@@ -920,16 +914,15 @@ class FormulaManager:
                 "sql": sql[:500],
                 "rows": count,
             }
-            with self._lock:
-                with open(
-                    AUDIT_FILE, "a", encoding="utf-8"
-                ) as f:
-                    f.write(
-                        json.dumps(
-                            entry, ensure_ascii=False
-                        )
-                        + "\n"
+            with self._lock, open(
+                AUDIT_FILE, "a", encoding="utf-8"
+            ) as f:
+                f.write(
+                    json.dumps(
+                        entry, ensure_ascii=False
                     )
+                    + "\n"
+                )
         except Exception as e:
             log_warning(
                 f"⚠️ [FORMULA:audit] "
@@ -1015,10 +1008,10 @@ def reset_formula_manager() -> None:
 # __all__
 # ═══════════════════════════════════════════
 __all__ = [
+    "AUDIT_FILE",
+    "BACKUP_DIR",
+    "FORMULAS_FILE",
     "FormulaManager",
     "get_formula_manager",
     "reset_formula_manager",
-    "FORMULAS_FILE",
-    "AUDIT_FILE",
-    "BACKUP_DIR",
 ]

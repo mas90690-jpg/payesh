@@ -46,7 +46,6 @@ from core.kernel.logger import log_info, log_success, log_warning
 # 🎯 P0: مسیرها از data.paths
 from data import paths as data_paths
 
-
 # ═══════════════════════════════════════════════════════════
 # ثابت‌ها
 # ═══════════════════════════════════════════════════════════
@@ -269,10 +268,7 @@ class TargetGroups:
             (chat_name or "") + " " + (chat_username or "")
         ).lower()
 
-        for t in targets:
-            if t in hay:
-                return True
-        return False
+        return any(t in hay for t in targets)
 
     # ═══════════════════════════════════════════
     # ابزار عیب‌یابی

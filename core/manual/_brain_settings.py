@@ -20,7 +20,6 @@ import re
 
 from config import PLATFORMS_ORDER
 from core.kernel.logger import log_error, log_success, log_warning
-
 from core.manual._brain_core import PLATFORM_FA, ROOT
 
 

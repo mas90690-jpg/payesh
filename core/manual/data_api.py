@@ -27,6 +27,7 @@ API دسترسی کامل به داده — برای استفادهٔ هوش د�
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sqlite3
@@ -167,10 +168,8 @@ class DataAPI:
             return []
         finally:
             if c is not None:
-                try:
+                with contextlib.suppress(Exception):
                     c.close()
-                except Exception:
-                    pass
 
     def scalar(self, query: str, params: tuple = ()) -> Any:
         """یک مقدار تک (اولین ستون اولین ردیف) — 0 اگر نبود."""
@@ -178,7 +177,7 @@ class DataAPI:
         if not rows:
             return 0
         try:
-            return list(rows[0].values())[0]
+            return next(iter(rows[0].values()))
         except Exception:
             return 0
 

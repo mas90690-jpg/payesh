@@ -21,7 +21,6 @@
 """
 from __future__ import annotations
 
-
 # ═══════════════════════════════════════════
 # version
 # ═══════════════════════════════════════════
@@ -31,30 +30,31 @@ __version__ = "2.0.0"
 # ═══════════════════════════════════════════
 # constants (مسیرها + امنیت)
 # ═══════════════════════════════════════════
+import contextlib
+
 from core.safe_brain.constants import (
-    # مسیرها
-    SAFE_BRAIN_DIR,
-    SAFE_MEMORY_DIR,
-    SAFE_CACHE_DIR,
-    # اکشن‌ها
-    SAFE_ACTIONS,
-    SAFE_ACTIONS_HANDLED_LOCALLY,
-    is_safe_action,
-    is_locally_handled,
     # امنیت
     BLOCKED_PATTERNS_REGEX,
     BLOCKED_SUBSTRINGS,
     # تنظیمات
     MAX_API_CALLS_PER_HOUR,
+    # اکشن‌ها
+    SAFE_ACTIONS,
+    SAFE_ACTIONS_HANDLED_LOCALLY,
+    # مسیرها
+    SAFE_BRAIN_DIR,
+    SAFE_CACHE_DIR,
+    SAFE_MEMORY_DIR,
+    _invalidate_kw_cache,
     # kw cache
     _read_custom_kw_dict,
     _write_custom_kw_dict,
-    _invalidate_kw_cache,
-    reset_kw_cache,
     # debug
     get_stats,
+    is_locally_handled,
+    is_safe_action,
+    reset_kw_cache,
 )
-
 
 # ═══════════════════════════════════════════
 # main (SafeBrain)
@@ -68,14 +68,12 @@ try:
 except Exception as e:
     # ⚠️ نمی‌توانیم از log_error استفاده کنیم — circular
     import sys
-    try:
+    with contextlib.suppress(Exception):
         print(
             f"⚠️ [SAFEBRAIN:init] import main ناموفق | "
             f"{type(e).__name__}: {e}",
             file=sys.stderr,
         )
-    except Exception:
-        pass
 
     # ─── fallback placeholders ───
     SafeBrain = None  # type: ignore
@@ -93,14 +91,12 @@ try:
     )
 except Exception as e:
     import sys
-    try:
+    with contextlib.suppress(Exception):
         print(
             f"⚠️ [SAFEBRAIN:init] import storage ناموفق | "
             f"{type(e).__name__}: {e}",
             file=sys.stderr,
         )
-    except Exception:
-        pass
 
     SafeCache = None  # type: ignore
     SafeMemory = None  # type: ignore
@@ -110,34 +106,34 @@ except Exception as e:
 # __all__
 # ═══════════════════════════════════════════
 __all__ = [
-    # version
-    "__version__",
-    # main
-    "SafeBrain",
-    "get_safe_brain",
-    "reset_safe_brain",
-    # storage
-    "SafeMemory",
-    "SafeCache",
-    # actions
-    "SAFE_ACTIONS",
-    "SAFE_ACTIONS_HANDLED_LOCALLY",
-    "is_safe_action",
-    "is_locally_handled",
     # security
     "BLOCKED_PATTERNS_REGEX",
     "BLOCKED_SUBSTRINGS",
     # config
     "MAX_API_CALLS_PER_HOUR",
+    # actions
+    "SAFE_ACTIONS",
+    "SAFE_ACTIONS_HANDLED_LOCALLY",
     # paths
     "SAFE_BRAIN_DIR",
-    "SAFE_MEMORY_DIR",
     "SAFE_CACHE_DIR",
+    "SAFE_MEMORY_DIR",
+    # main
+    "SafeBrain",
+    "SafeCache",
+    # storage
+    "SafeMemory",
+    # version
+    "__version__",
+    "_invalidate_kw_cache",
     # kw cache
     "_read_custom_kw_dict",
     "_write_custom_kw_dict",
-    "_invalidate_kw_cache",
-    "reset_kw_cache",
+    "get_safe_brain",
     # debug
     "get_stats",
+    "is_locally_handled",
+    "is_safe_action",
+    "reset_kw_cache",
+    "reset_safe_brain",
 ]

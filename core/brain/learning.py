@@ -13,17 +13,18 @@
   - ✅ حفظ همهٔ رفتار نسخهٔ ۲.
 """
 from __future__ import annotations
-import threading
+
 import asyncio
 import json
 import os
 import re
+import threading
 import time
-from core.adapters.memory_store import MemoryStore
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from core.adapters.memory_store import MemoryStore
 from core.kernel.logger import (
     log_error,
     log_info,
@@ -108,7 +109,7 @@ def _clean_read_output(text: str) -> str:
     """حذف هدر تزئینی _read_all از ابتدای خروجی."""
     if not text:
         return text
-    first, sep, rest = text.partition("\n")
+    first, _sep, rest = text.partition("\n")
     if "BRAIN:file:read" in first or first.startswith("📄"):
         return rest
     return text
@@ -555,12 +556,7 @@ class SelfHealer:
             content = await self.agent._read_all(file_path)
             content = _clean_read_output(content)
             if (
-                not content
-                or content.startswith("⛔")
-                or content.startswith("⚠️ فایل")
-                or content.startswith("⚠️ '")
-                or content.startswith("❌")
-                or content.startswith("⚠️ فایل بزرگتر")
+                not content or content.startswith(("⛔", "⚠️ فایل", "⚠️ '", "❌", "⚠️ فایل بزرگتر"))
             ):
                 return (
                     f"❌ فایل {file_path} قابل خواندن نیست: "
@@ -655,12 +651,7 @@ class TestGenerator:
        
 
         if (
-            not content
-            or content.startswith("⛔")
-            or content.startswith("⚠️ فایل")
-            or content.startswith("⚠️ '")
-            or content.startswith("❌")
-            or content.startswith("⚠️ فایل بزرگتر")
+            not content or content.startswith(("⛔", "⚠️ فایل", "⚠️ '", "❌", "⚠️ فایل بزرگتر"))
         ):
             return (
                 f"❌ فایل {file_path} قابل خواندن نیست: "
@@ -866,12 +857,7 @@ class CodeReviewer:
         content = await self.agent._read_all(file_path)
         content = _clean_read_output(content)
         if (
-            not content
-            or content.startswith("⛔")
-            or content.startswith("⚠️ فایل")
-            or content.startswith("⚠️ '")
-            or content.startswith("❌")
-            or content.startswith("⚠️ فایل بزرگتر")
+            not content or content.startswith(("⛔", "⚠️ فایل", "⚠️ '", "❌", "⚠️ فایل بزرگتر"))
         ):
             return (
                 f"❌ فایل {file_path} قابل خواندن نیست: "

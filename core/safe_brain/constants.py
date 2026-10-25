@@ -33,6 +33,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import threading
@@ -107,10 +108,8 @@ def _ensure_safe_brain_dirs() -> None:
         SAFE_MEMORY_DIR,
         SAFE_CACHE_DIR,
     ):
-        try:
+        with contextlib.suppress(Exception):
             d.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass
 
 
 _ensure_safe_brain_dirs()
@@ -444,12 +443,10 @@ def _write_custom_kw_dict(
         }
 
         # 🎯 امن: mkdir
-        try:
+        with contextlib.suppress(Exception):
             path.parent.mkdir(
                 parents=True, exist_ok=True
             )
-        except Exception:
-            pass
 
         # 🎯 write + fsync
         with open(str(tmp), "w", encoding="utf-8") as f:
@@ -525,26 +522,26 @@ def get_stats() -> dict[str, Any]:
 # __all__
 # ════════════════════════════════════════════
 __all__ = [
-    # مسیرها
-    "SAFE_BRAIN_DIR",
-    "SAFE_MEMORY_DIR",
-    "SAFE_CACHE_DIR",
-    # اکشن‌ها
-    "SAFE_ACTIONS",
-    "SAFE_ACTIONS_HANDLED_LOCALLY",
-    "is_safe_action",
-    "is_locally_handled",
     # امنیت
     "BLOCKED_PATTERNS_REGEX",
     "BLOCKED_SUBSTRINGS",
     # تنظیمات
     "MAX_API_CALLS_PER_HOUR",
+    # اکشن‌ها
+    "SAFE_ACTIONS",
+    "SAFE_ACTIONS_HANDLED_LOCALLY",
+    # مسیرها
+    "SAFE_BRAIN_DIR",
+    "SAFE_CACHE_DIR",
+    "SAFE_MEMORY_DIR",
+    "_invalidate_kw_cache",
     # kw cache
     "_normalize_tier",
     "_read_custom_kw_dict",
     "_write_custom_kw_dict",
-    "_invalidate_kw_cache",
-    "reset_kw_cache",
     # debug
     "get_stats",
+    "is_locally_handled",
+    "is_safe_action",
+    "reset_kw_cache",
 ]

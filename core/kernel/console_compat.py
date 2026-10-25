@@ -30,11 +30,11 @@ crash نشود.
 """
 from __future__ import annotations
 
+import contextlib
 import io
 import os
 import sys
 from typing import Any
-
 
 # ═══════════════════════════════════════════
 # ثابت‌ها
@@ -69,10 +69,8 @@ def _safe_stderr_write(msg: str) -> None:
             continue
         try:
             stream.write(msg_with_newline)
-            try:
+            with contextlib.suppress(Exception):
                 stream.flush()
-            except Exception:
-                pass
             return
         except Exception:
             continue
@@ -305,10 +303,10 @@ def get_status() -> dict[str, Any]:
 # __all__
 # ═══════════════════════════════════════════
 __all__ = [
+    "get_status",
+    "is_patched",
     "patch_console",
     "restore_console",
-    "is_patched",
-    "get_status",
 ]
 
 

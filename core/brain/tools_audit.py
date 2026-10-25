@@ -555,8 +555,9 @@ def fix_fstrings(
             if not dry_run:
                 # بکاپ
                 try:
-                    from core.brain.constants import BACKUP_DIR
                     from datetime import datetime as _dt
+
+                    from core.brain.constants import BACKUP_DIR
                     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
                     ts = _dt.now().strftime("%Y%m%d_%H%M%S_%f")  # noqa: DTZ005
                     backup = BACKUP_DIR / f"{fpath.stem}_{ts}.py"
@@ -799,12 +800,12 @@ def get_stats() -> dict[str, Any]:
 # __all__
 # ═══════════════════════════════════════════════════════════
 __all__ = [
+    "AUDIT_TOOLS",
     "audit_code",
     "audit_file",
     "fix_fstrings",
     "format_audit_report",
-    "AUDIT_TOOLS",
+    "get_stats",
     "get_tool_count",
     "get_tool_names",
-    "get_stats",
 ]
