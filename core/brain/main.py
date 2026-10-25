@@ -365,7 +365,7 @@ def _build_tool_map() -> dict[str, Any]:
     Returns:
         dict {tool_name: method}.
     """
-    tool_map: dict[str, Any] = {}
+    TOOL_MAP: dict[str, Any] = {}  # noqa: RUF012 — ClassVar نشکست (باگ _build_tool_map)
     missing: list[str] = []
 
     for tool_name, method_name in _TOOL_METHODS.items():

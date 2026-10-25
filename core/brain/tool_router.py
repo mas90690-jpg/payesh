@@ -1,10 +1,13 @@
 """ToolRouter — انتخاب هوشمند ابزار."""
 from __future__ import annotations
+
+from typing import ClassVar
+
 from core.kernel.logger import log_info
 
 
 class ToolRouter:
-    ROUTES = {
+    ROUTES: ClassVar[dict[str, list[str]]] = {
         "وضعیت": ["brain_status", "system_dashboard"],
         "آمار": ["brain_status", "system_dashboard"],
         "خواب": ["consolidation_run"],

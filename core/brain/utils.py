@@ -39,7 +39,7 @@ import re
 import sys
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from core.brain.constants import (
     PROJECT_BASE,
@@ -87,7 +87,7 @@ _SANITIZE_MAX_LEN = _env_int(
 class PersianBrainHandler:
     """تنظیم محیط فارسی برای subprocess و console."""
 
-    REVERSE_MAP: dict[str, str] = {
+    REVERSE_MAP: ClassVar[dict[str, str]] = {
         "ي": "ی",
         "ك": "ک",
         "ة": "ه",
