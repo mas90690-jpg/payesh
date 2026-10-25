@@ -1311,7 +1311,6 @@ class BaleCollector(BaseCollector):
                 pass
 
         messages = []
-        used_sel = None
         for sel in MSG_SELECTORS:
             try:
                 messages = await asyncio.wait_for(
