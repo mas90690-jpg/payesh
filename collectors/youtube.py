@@ -1,22 +1,15 @@
 # collectors/youtube.py
 """
-کلکتور یوتیوب (YouTube) — کاربر عادی روی youtube.com
+کلکتور یوتیوب (YouTube) — نسخهٔ ۳.۱ (نهایی — فوق دقیق)
 
-نسخهٔ ۲ (این نسخه):
-  - 🎯 استراتژی جدید (تست‌شده و موفق):
-      ۱. رفتن به subscriptions
-      ۲. استخراج video_idها (بدون کلیک اشتباه)
-      ۳. فیلتر تکراری با seen_ids
-      ۴. برای هر ویدیو: goto صفحه + استخراج از window.ytInitialPlayerResponse
-      ۵. ذخیره با لینک مستقیم + کلیدواژه
-  - ✅ description کامل از player response (نه fetch، نه کلیک CC)
-  - ✅ ضدتکراری قوی با video_id
-  - ✅ لینک ویدیو + لینک کانال
-  - ✅ فیلتر کلیدواژه روی title+description+channel
-  - ✅ BROWSER_LOCK استاندارد پروژه
-  - ✅ _page_lock برای fetch
-  - ✅ _launch_context + _is_logged_in (استاندارد پروژه)
-  - ✅ dump_dom
+تغییرات نسخهٔ ۳.۱:
+  - 🎯 FIX: force_no_since برای تست بدون فیلتر تاریخ
+  - ✅ first_run_done + last_run_at
+  - ✅ since واقعی (publish_date)
+  - ✅ _last_scrape_stats تفکیکی
+  - ✅ viewport 1920x1080
+  - ✅ اسکرول هوشمندتر
+  - ✅ لاگ کامل و شفاف
 """
 from __future__ import annotations
 
@@ -24,6 +17,7 @@ import asyncio
 import json
 import os
 import random
+import re
 from datetime import datetime
 from typing import Any
 
@@ -48,7 +42,6 @@ _MAX_SEEN = 100000
 YOUTUBE_HOME = "https://www.youtube.com/"
 YOUTUBE_SUBSCRIPTIONS = "https://www.youtube.com/feed/subscriptions"
 
-# ─── سلکتورها ───
 LOGIN_MARKERS = [
     'a[href*="accounts.google.com/ServiceLogin"]',
     'yt-formatted-string:has-text("Sign in")',
@@ -56,10 +49,9 @@ LOGIN_MARKERS = [
 ]
 
 LOGGEDIN_MARKERS = [
-    "img#avatar-btn",
-    'button[aria-label*="Account" i]',
-    'a[href*="/feed/subscriptions"]',
     "ytd-topbar-menu-button-renderer #avatar-btn",
+    "button[aria-label*='Account' i]",
+    "a[href*='/feed/subscriptions']",
     "ytd-mini-guide-entry-renderer",
 ]
 
@@ -75,8 +67,8 @@ class YouTubeCollector(BaseCollector):
         headless: bool = False,
         poll_seconds: int = 1800,
         max_videos: int = 20,
-        scroll_rounds: int = 3,
-        delay_between: float = 3.0,
+        scroll_rounds: int = 8,
+        delay_between: float = 2.5,
         **kwargs,
     ):
         super().__init__()
@@ -95,6 +87,7 @@ class YouTubeCollector(BaseCollector):
         self._kw = get_keyword_finder()
         self._targets = get_target_groups()
         self._page_lock = asyncio.Lock()
+        self._last_scrape_stats: dict[str, int] = {}
 
         if not hasattr(YouTubeCollector, "_connect_lock"):
             YouTubeCollector._connect_lock = asyncio.Lock()
@@ -113,6 +106,20 @@ class YouTubeCollector(BaseCollector):
         os.makedirs(os.path.dirname(self._seen_path), exist_ok=True)
         self._load_seen()
 
+        # ─── state (first_run + last_run_at) ───
+        self._state_path = os.path.join(
+            STORAGE_DIR, "offset", "youtube_state.json"
+        )
+        os.makedirs(os.path.dirname(self._state_path), exist_ok=True)
+        self._first_run_done = self._load_first_run()
+        self._last_run_at = self._load_last_run_at()
+
+        log_info(
+            f"🔧 [youtube:init] mpc={self._max_videos} | "
+            f"bf={self._scroll_rounds} | "
+            f"delay={self._delay_between}"
+        )
+
     # ═══════════════════════════════════════════════
     # خواص
     # ═══════════════════════════════════════════════
@@ -126,11 +133,53 @@ class YouTubeCollector(BaseCollector):
 
     @property
     def supports_history(self) -> bool:
-        return False
+        return True
 
     @property
     def supports_websocket(self) -> bool:
         return False
+
+    # ═══════════════════════════════════════════════
+    # state
+    # ═══════════════════════════════════════════════
+    def _load_first_run(self) -> bool:
+        try:
+            with open(self._state_path, encoding="utf-8") as f:
+                d = json.load(f)
+            done = bool(d.get("first_run_done", False))
+            if done:
+                log_info("♻️ [youtube:state] بار اول انجام شده")
+            else:
+                log_info("🆕 [youtube:state] بار اول — تاریخچه کامل")
+            return done
+        except Exception:
+            log_info("🆕 [youtube:state] بار اول — تاریخچه کامل")
+            return False
+
+    def _load_last_run_at(self) -> datetime | None:
+        try:
+            with open(self._state_path, encoding="utf-8") as f:
+                d = json.load(f)
+            s = d.get("last_run_at")
+            if s:
+                return datetime.fromisoformat(s)
+        except Exception:
+            pass
+        return None
+
+    def _save_state(self):
+        try:
+            data = {
+                "first_run_done": True,
+                "first_run_at": getattr(
+                    self, "_first_run_at", datetime.now().isoformat()
+                ),
+                "last_run_at": datetime.now().isoformat(),
+            }
+            with open(self._state_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            log_warning(f"ذخیره state ناموفق: {e}")
 
     # ═══════════════════════════════════════════════
     # ضدتکراری
@@ -215,18 +264,7 @@ class YouTubeCollector(BaseCollector):
                     timeout=60000,
                 )
 
-                await asyncio.sleep(3)
-                print("=" * 60)
-                print("URL:", self._page.url)
-                print("TITLE:", await self._page.title())
-                await self._page.screenshot(
-                    path="youtube_debug.png", full_page=True
-                )
-                print("Screenshot saved: youtube_debug.png")
-                print("=" * 60)
-
                 for i in range(20):
-
                     await asyncio.sleep(2)
                     if await self._is_logged_in():
                         self._connected = True
@@ -252,7 +290,6 @@ class YouTubeCollector(BaseCollector):
                 return False
 
     async def _apply_stealth(self):
-        """حذف نشانه‌های webdriver — نسخه قوی."""
         try:
             await self._context.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', {
@@ -274,29 +311,10 @@ class YouTubeCollector(BaseCollector):
                     csi: function() {},
                     app: {}
                 };
-                const originalQuery = window.navigator.permissions.query;
-                window.navigator.permissions.query = (params) => (
-                    params.name === 'notifications'
-                        ? Promise.resolve({state: Notification.permission})
-                        : originalQuery(params)
-                );
-                Object.defineProperty(navigator, 'hardwareConcurrency', {
-                    get: () => 8
-                });
-                Object.defineProperty(navigator, 'deviceMemory', {
-                    get: () => 8
-                });
-                const getParameter = WebGLRenderingContext.prototype.getParameter;
-                WebGLRenderingContext.prototype.getParameter = function(p) {
-                    if (p === 37445) return 'Intel Inc.';
-                    if (p === 37446) return 'Intel Iris OpenGL Engine';
-                    return getParameter.call(this, p);
-                };
             """)
-            log_debug("🛡️ [youtube] stealth قوی تزریق شد")
         except Exception as e:
             log_warning(f"stealth: {e}")
-            
+
     async def _launch_context(self, use_headless: bool):
         from config import CHROME_PATH
 
@@ -320,7 +338,7 @@ class YouTubeCollector(BaseCollector):
         launch_options: dict[str, Any] = {
             "user_data_dir": self._user_data_dir,
             "headless": use_headless,
-            "viewport": {"width": 1366, "height": 900},
+            "viewport": {"width": 1920, "height": 1080},
             "user_agent": ua,
             "args": base_args,
             "locale": "en-US",
@@ -382,7 +400,6 @@ class YouTubeCollector(BaseCollector):
             pass
 
     async def _is_logged_in(self) -> bool:
-        """چک لاگین — دقیقاً مثل بقیه پلتفرم‌ها."""
         try:
             for sel in LOGIN_MARKERS:
                 try:
@@ -399,19 +416,6 @@ class YouTubeCollector(BaseCollector):
                         return True
                 except Exception:
                     continue
-
-            try:
-                el = await self._page.query_selector(
-                    "ytd-rich-grid-renderer, ytd-video-renderer"
-                )
-                if el:
-                    av = await self._page.query_selector(
-                        "img#avatar-btn"
-                    )
-                    if av:
-                        return True
-            except Exception:
-                pass
 
             return False
         except Exception:
@@ -439,17 +443,53 @@ class YouTubeCollector(BaseCollector):
             await self._human_delay(0.15, 0.4)
 
     # ═══════════════════════════════════════════════
-    # fetch_messages (نسخه جدید)
+    # fetch_messages (نسخهٔ ۳.۱ — با force_no_since)
     # ═══════════════════════════════════════════════
     async def fetch_messages(
-        self, since: datetime = None
+        self,
+        since: datetime = None,
+        force_no_since: bool = False,
     ) -> list[dict[str, Any]]:
         if not self._connected or not self._page:
             return []
 
+        # ─── تعیین since نهایی ───
+        effective_since = since
+        if force_no_since:
+            effective_since = None
+            log_info(
+                "🎯 [youtube:since] غیرفعال (force_no_since=True)"
+            )
+        elif effective_since is None and self._last_run_at:
+            effective_since = self._last_run_at
+            log_info(
+                f"♻️ [youtube:since] از last_run_at: "
+                f"{self._last_run_at.isoformat()}"
+            )
+        elif since:
+            log_info(
+                f"🎯 [youtube:since] از پارامتر since: "
+                f"{since.isoformat()}"
+            )
+
+        # ─── ریست آمار ───
+        self._last_scrape_stats = {
+            "total_in_feed": 0,
+            "new_videos": 0,
+            "processed": 0,
+            "skipped_seen": 0,
+            "skipped_no_kw": 0,
+            "skipped_old": 0,
+            "skipped_invalid": 0,
+            "stored": 0,
+            "failed": 0,
+        }
+
         async with self._page_lock:
             try:
-                await self._scrape_subscriptions_v2()
+                await self._scrape_subscriptions_v2(
+                    effective_since=effective_since
+                )
             except Exception as e:
                 log_warning(f"subscriptions: {e}")
 
@@ -457,21 +497,35 @@ class YouTubeCollector(BaseCollector):
         self._messages_queue.clear()
         self._save_seen()
 
+        if not self._first_run_done:
+            self._first_run_at = datetime.now().isoformat()
+            self._first_run_done = True
+        self._save_state()
+
         if new_msgs:
             log_success(f"📥 {len(new_msgs)} ویدیو از یوتیوب")
+
+        stats = self._last_scrape_stats
+        log_info(
+            f"📊 [youtube:stats] total={stats['total_in_feed']} | "
+            f"new={stats['new_videos']} | "
+            f"processed={stats['processed']} | "
+            f"stored={stats['stored']} | "
+            f"seen={stats['skipped_seen']} | "
+            f"old={stats['skipped_old']} | "
+            f"no-kw={stats['skipped_no_kw']} | "
+            f"invalid={stats['skipped_invalid']} | "
+            f"failed={stats['failed']}"
+        )
+
         return new_msgs
 
     # ═══════════════════════════════════════════════
-    # subscriptions v2 (روش تست‌شده)
+    # subscriptions v2
     # ═══════════════════════════════════════════════
-    async def _scrape_subscriptions_v2(self):
-        """
-        روش جدید:
-          ۱. goto subscriptions
-          ۲. اسکرول برای لود
-          ۳. استخراج video_idها از DOM
-          ۴. برای هر ویدیو: goto + player response
-        """
+    async def _scrape_subscriptions_v2(
+        self, effective_since: datetime = None
+    ):
         log_info("📺 [youtube] فید subscriptions...")
         try:
             await self._page.goto(
@@ -485,11 +539,10 @@ class YouTubeCollector(BaseCollector):
 
         await asyncio.sleep(6)
 
-        for _ in range(5):
+        for _ in range(self._scroll_rounds):
             await self._human_scroll(2000)
             await asyncio.sleep(1.5)
 
-        # استخراج video_idها
         all_ids = await self._page.evaluate("""
             () => {
                 const out = [];
@@ -517,13 +570,20 @@ class YouTubeCollector(BaseCollector):
             log_warning("⚠️ هیچ video_id در subscriptions نیست")
             return
 
+        self._last_scrape_stats["total_in_feed"] = len(all_ids)
         log_info(f"   📋 {len(all_ids)} video_id در فید")
 
-        # فیلتر تکراری
-        new_ids = [v for v in all_ids if v not in self._seen_ids]
+        new_ids = []
+        for v in all_ids:
+            if v in self._seen_ids:
+                self._last_scrape_stats["skipped_seen"] += 1
+            else:
+                new_ids.append(v)
+
+        self._last_scrape_stats["new_videos"] = len(new_ids)
         log_info(
             f"   🆕 {len(new_ids)} جدید | "
-            f"⏭️ {len(all_ids) - len(new_ids)} دیده‌شده"
+            f"⏭️ {self._last_scrape_stats['skipped_seen']} دیده‌شده"
         )
 
         if not new_ids:
@@ -532,21 +592,25 @@ class YouTubeCollector(BaseCollector):
         to_process = new_ids[: self._max_videos]
         log_info(f"   🎬 پردازش {len(to_process)} ویدیو")
 
-        count = 0
         for vid in to_process:
-            if await self._extract_and_queue(vid):
-                count += 1
+            if await self._extract_and_queue(
+                vid, effective_since=effective_since
+            ):
+                self._last_scrape_stats["stored"] += 1
+            self._last_scrape_stats["processed"] += 1
             await asyncio.sleep(self._delay_between)
 
-        log_info(f"   ✅ subscriptions: {count} ویدیو جدید")
+        log_info(
+            f"   ✅ subscriptions: "
+            f"{self._last_scrape_stats['stored']} ویدیو جدید"
+        )
 
     # ═══════════════════════════════════════════════
     # استخراج کامل یک ویدیو
     # ═══════════════════════════════════════════════
-    async def _extract_and_queue(self, video_id: str) -> bool:
-        """
-        رفتن به صفحه ویدیو و استخراج کامل از player response.
-        """
+    async def _extract_and_queue(
+        self, video_id: str, effective_since: datetime = None
+    ) -> bool:
         try:
             await self._page.goto(
                 f"https://www.youtube.com/watch?v={video_id}",
@@ -568,6 +632,8 @@ class YouTubeCollector(BaseCollector):
                         channel: vd.author || '',
                         channel_url: md?.ownerProfileUrl || '',
                         view_count: vd.viewCount || '',
+                        publish_date: md?.publishDate || '',
+                        upload_date: md?.uploadDate || '',
                         lang: vd.defaultAudioLanguage
                               || vd.defaultLanguage || '',
                     };
@@ -576,7 +642,30 @@ class YouTubeCollector(BaseCollector):
 
             if not data or not data.get("title"):
                 log_debug(f"   ⚠️ {video_id}: داده کافی نیست")
+                self._last_scrape_stats["skipped_invalid"] += 1
                 return False
+
+            # ─── since filter ───
+            if effective_since:
+                pub = (
+                    data.get("publish_date")
+                    or data.get("upload_date")
+                    or ""
+                )
+                if pub:
+                    try:
+                        pub_dt = datetime.fromisoformat(
+                            pub.replace("Z", "+00:00")
+                        )
+                        if pub_dt.replace(tzinfo=None) < effective_since:
+                            self._last_scrape_stats["skipped_old"] += 1
+                            log_debug(
+                                f"   ⏭️ قدیمی: {data['title'][:50]} "
+                                f"({pub})"
+                            )
+                            return False
+                    except Exception:
+                        pass
 
             desc = data.get("description", "") or data["title"]
             full_text = (
@@ -585,12 +674,13 @@ class YouTubeCollector(BaseCollector):
                 f"{data['channel']}"
             )
 
-            # فیلتر کلیدواژه
+            # ─── فیلتر کلیدواژه ───
             if not self._kw.has_match(full_text):
                 log_debug(
                     f"   ⏭️ بدون کلیدواژه: "
                     f"{data['title'][:50]}"
                 )
+                self._last_scrape_stats["skipped_no_kw"] += 1
                 self._seen_ids.add(video_id)
                 return False
 
@@ -616,7 +706,6 @@ class YouTubeCollector(BaseCollector):
                 "file_id": None,
                 "local_file_path": None,
                 "reply_to": None,
-                # فیلدهای اضافی
                 "video_url": video_url,
                 "channel_url": channel_url,
                 "view_count": data.get("view_count", ""),
@@ -626,13 +715,13 @@ class YouTubeCollector(BaseCollector):
 
             log_info(
                 f"   📩 {data['title'][:60]} | "
-                f"کانال: {channel} | "
-                f"کلیدواژه ✅"
+                f"کانال: {channel} | ✅"
             )
             return True
 
         except Exception as e:
             log_debug(f"   ❌ {video_id}: {type(e).__name__}: {e}")
+            self._last_scrape_stats["failed"] += 1
             return False
 
     # ═══════════════════════════════════════════════

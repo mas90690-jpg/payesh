@@ -1,43 +1,6 @@
 # tests/test_bale_full.py
 """
-تست کامل کلکتور بله — Pipeline end-to-end.
-
-Pipeline:
-  Collector → EventBus → StorageHandler → DB (isolated)
-
-نسخهٔ ۴.۰ (سازگار با هر دو روش DOM و API):
-  - 🎯 NEW: تشخیص خودکار نوع collector:
-      • DOM-based (نسخهٔ قبلی با Playwright)
-      • API-based (نسخهٔ جدید با aiobale-py)
-  - 🎯 NEW: پشتیبانی از fetch_messages(since=...) برای گرفتن تاریخچه
-      در نسخهٔ API — چون بدون since، فقط پیام‌های زنده برمی‌گردد.
-  - 🎯 NEW: مرحله ۶ حالا check_health() را اگر _is_logged_in نبود، صدا می‌زند.
-  - 🎯 NEW: dump_dom در نسخهٔ API خالی برمی‌گرداند → skip (نه warn/fail).
-  - 🎯 NEW: آرگومان --since-days برای کنترل بازهٔ تاریخچه.
-  - 🐛 FIX: مرحله ۱۰ فقط پیام‌های کلیدواژه‌دار را چک می‌کند (v3.1).
-  - ⏭️  skip منطقی اگر هیچ پیام کلیدواژه‌داری نبود.
-
-مراحل:
-  ۱) env و config
-  ۲) نشست
-  ۳) ساخت pipeline
-  ۴) ساخت collector + تشخیص نوع
-  ۵) connect
-  ۶) is_logged_in / check_health
-  ۷) fetch_messages (با since در نسخهٔ API)
-  ۸) ساختار پیام‌ها
-  ۹) feed pipeline (ذخیره در DB)
-  ۱۰) چک DB (فقط کلیدواژه‌دارها)
-  ۱۱) چک lead (آمار کلی)
-  ۱۲) dump_dom (skip در نسخهٔ API)
-  ۱۳) disconnect
-  ۱۴) آمار نهایی pipeline
-
-اجرا:
-  python tests/test_bale_full.py
-  python tests/test_bale_full.py --headless
-  python tests/test_bale_full.py --max-chats 5
-  python tests/test_bale_full.py --since-days 30
+تست کامل و فوق‌دقیق بله (Bale) — نسخهٔ ۶.۰ (Comprehensive)
 """
 from __future__ import annotations
 
@@ -47,6 +10,7 @@ import os
 import sys
 import time
 from datetime import datetime, timedelta
+from typing import Any
 
 sys.path.insert(
     0,
@@ -60,454 +24,451 @@ from tests.helpers import (
 from tests.pipeline_helpers import TestPipeline
 
 
-# ═════════════════════════════════════════════════════════
-# تشخیص نوع collector
-# ═════════════════════════════════════════════════════════
-def _is_api_based(collector) -> bool:
-    """
-    آیا collector از API (aiobale) استفاده می‌کند یا DOM (Playwright)؟
+# ═══════════════════════════════════════════════════════════
+# ثابت‌ها
+# ═══════════════════════════════════════════════════════════
+SYSTEM_CHAT_NAMES = {
+    "فضای شخصی", "پیش‌نویس", "شما", "تصویر", "پیام",
+    "ذخیره‌شده", "ذخیره شده", "پیام‌های ذخیره‌شده",
+    "بایگانی", "آرشیو",
+    "Saved Messages", "Drafts", "You", "Images", "Messages",
+    "Archive", "Archived",
+    "بله", "Bale", "Bale Messenger", "پیام‌های بله",
+    "Bale Team", "تیم بله", "پشتیبانی بله",
+    "فایل", "فایل‌ها", "Files",
+    "استیکر", "استیکرها", "Stickers",
+    "گیف", "GIFs", "ویدیو", "Videos", "ویس", "Voice",
+    "عکس", "Photos", "لینک", "Links",
+    "مخاطبین", "مخاطبین من", "Contacts",
+    "پوشه‌ها", "Folders", "گروه‌ها", "Groups",
+    "کانال‌ها", "Channels", "فایل‌های من",
+    "کانال ایجاد شد", "گروه ایجاد شد",
+    "Channel created", "Group created",
+    "آلبوم", "Albums",
+}
 
-    معیار: وجود attribute `_client` که فقط در نسخهٔ API ساخته می‌شود.
-    (در نسخهٔ DOM، `_page` و `_context` وجود دارند ولی `_client` نه.)
-    """
-    return hasattr(collector, "_client")
+SYSTEM_PREFIXES = (
+    "کانال ایجاد", "گروه ایجاد", "Channel created",
+    "Group created", "کانال جدید", "گروه جدید",
+)
+
+VALID_CHAT_TYPES = {"private", "group", "channel"}
+VALID_MEDIA_TYPES = {
+    "text", "photo", "video", "voice", "audio",
+    "document", "sticker", "file", "gif",
+}
+
+REQUIRED_MSG_FIELDS = [
+    "id", "platform", "text", "chat_id", "chat_name",
+    "chat_type", "chat_username", "chat_link",
+    "user_id", "sender_name", "timestamp",
+    "media_type", "file_id", "local_file_path", "reply_to",
+]
+
+MAX_FETCH_SECONDS = 400
 
 
-# ═════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════
+# helpers
+# ═══════════════════════════════════════════════════════════
+def _is_api_based(collector: Any) -> bool:
+    has_page = hasattr(collector, "_page") and collector._page is not None
+    has_client = (
+        hasattr(collector, "_client")
+        and collector._client is not None
+    )
+    return has_client and not has_page
+
+
+def _is_system_chat(chat_name: str) -> bool:
+    if not chat_name:
+        return False
+    n = chat_name.strip()
+    if not n:
+        return False
+    if n in SYSTEM_CHAT_NAMES:
+        return True
+    for prefix in SYSTEM_PREFIXES:
+        if n.startswith(prefix):
+            return True
+    return False
+
+
+def _is_valid_text(text: str) -> bool:
+    if not text:
+        return False
+    stripped = text.strip()
+    if not stripped:
+        return False
+    if len(stripped) < 1:
+        return False
+    return True
+
+
+# ═══════════════════════════════════════════════════════════
 # main
-# ═════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════
 async def main(
     headless: bool = False,
     max_chats: int = 0,
     since_days: int = 7,
 ):
-    banner("تست کامل بله (Bale) — Pipeline end-to-end")
+    banner("تست دقیق بله (Bale) — نسخهٔ ۶.۰ (فوق‌العاده دقیق)")
     report = TestReport("bale")
 
     # ═══════════════════════════════════════════════════
-    # ۰) چک پیش‌نیاز: aiobale (اگر API-based است)
+    # A) پیش‌نیازها
     # ═══════════════════════════════════════════════════
-    section("مرحله ۰: چک پیش‌نیاز aiobale")
+    section("A) پیش‌نیازها")
     try:
         import aiobale  # noqa: F401
-        report.add(
-            "aiobale.import", "ok",
-            f"version={getattr(aiobale, '__version__', '?')}",
-        )
+        report.add("A1.aiobale", "ok", f"version={getattr(aiobale, '__version__', '?')}")
     except ImportError:
-        report.add(
-            "aiobale.import", "warn",
-            "aiobale نصب نیست — اگر collector از API استفاده کند، "
-            "مرحلهٔ ساخت collector با خطا مواجه می‌شود",
-        )
+        report.add("A1.aiobale", "info", "aiobale نصب نیست (DOM)")
 
-    # ═══════════════════════════════════════════════════
-    # ۱) env
-    # ═══════════════════════════════════════════════════
-    section("مرحله ۱: بررسی env و config")
     env_info = check_env("bale")
-
-    report.add(
-        "env.enabled",
-        "ok" if env_info["enabled"] else "skip",
-        f"BALE_ENABLED={env_info['enabled']}",
-    )
-    if not env_info["enabled"]:
-        print(
-            f"{C.INFO}⏭️ بله غیرفعال (skip) — "
-            f"برای اجرا: BALE_ENABLED=true{C.END}"
-        )
+    enabled = env_info["enabled"]
+    report.add("A2.env.enabled", "ok" if enabled else "skip", f"BALE_ENABLED={enabled}")
+    if not enabled:
+        print(f"\n{C.INFO}⏭️ بله غیرفعال — تست متوقف شد{C.END}")
         report.print_summary()
         report.save()
         return True
 
-    report.add(
-        "env.phone",
-        "ok" if env_info["phone"] else "fail",
-        f"BALE_PHONE={env_info['phone'][:6]}...",
-    )
-    report.add(
-        "env.session_path",
-        "ok" if env_info["session_path"] else "fail",
-        env_info["session_path"],
-    )
+    phone = env_info.get("phone", "")
+    report.add("A3.env.phone", "ok" if phone else "fail", f"phone={phone[:6]}..." if phone else "خالی")
+
+    session_path = env_info.get("session_path", "")
+    report.add("A4.env.session_path", "ok" if session_path else "fail", session_path or "خالی")
+
+    session_exists = check_session_exists(session_path) if session_path else False
+    report.add("A5.session.exists", "ok" if session_exists else "warn", f"exists={session_exists}")
 
     # ═══════════════════════════════════════════════════
-    # ۲) نشست
+    # B) ساخت pipeline
     # ═══════════════════════════════════════════════════
-    section("مرحله ۲: بررسی نشست")
-    session_exists = check_session_exists(env_info["session_path"])
-    report.add(
-        "session.exists",
-        "ok" if session_exists else "warn",
-        f"exists={session_exists}",
-    )
-
-    # ═══════════════════════════════════════════════════
-    # ۳) pipeline
-    # ═══════════════════════════════════════════════════
-    section("مرحله ۳: ساخت pipeline end-to-end")
-    pipeline = TestPipeline(
-        keywords_only=False,
-        require_t1=False,
-        allowed_tiers=("T1", "T2", "T3"),
-    )
-    await pipeline.start()
-    report.add(
-        "pipeline.init", "ok",
-        f"db={os.path.basename(pipeline._db_path)}",
-    )
-
-    # ═══════════════════════════════════════════════════
-    # ۴) ساخت collector
-    # ═══════════════════════════════════════════════════
-    section("مرحله ۴: ساخت collector")
+    section("B) ساخت pipeline")
+    pipeline: TestPipeline | None = None
     try:
-        from collectors.bale import BaleCollector
-
-        # سازگاری با هر دو نسخه: kwargs اضافی با **kwargs پذیرفته می‌شوند
-        collector = BaleCollector(
-            phone=env_info.get("phone") or None,
-            headless=headless,
-            poll_seconds=999,
-            max_chats=max_chats,
-            messages_per_chat=50,
-            backfill_scrolls=0,
+        pipeline = TestPipeline(
+            keywords_only=False,
+            require_t1=False,
+            allowed_tiers=("T1", "T2", "T3"),
         )
-        is_api = _is_api_based(collector)
-
-        report.add(
-            "collector.init", "ok",
-            f"platform={collector.platform_name} | "
-            f"mode={'API' if is_api else 'DOM'}",
-        )
+        await pipeline.start()
+        report.add("B1.pipeline.init", "ok", f"db={os.path.basename(pipeline._db_path or '?')}")
+        report.add("B2.pipeline.db", "ok", "DB تست ساخته شد")
     except Exception as e:
-        report.add("collector.init", "fail", str(e))
-        await pipeline.stop()
+        report.add("B1.pipeline.init", "fail", f"{type(e).__name__}: {e}")
         report.print_summary()
         report.save()
         return False
 
     # ═══════════════════════════════════════════════════
-    # ۵) connect
+    # C) ساخت کالکتور (از .env)
     # ═══════════════════════════════════════════════════
-    section("مرحله ۵: connect()")
-    t0 = time.monotonic()
+    section("C) ساخت کالکتور")
+    collector = None
+    is_api = False
     try:
-        ok = await collector.connect()
-        elapsed = (time.monotonic() - t0) * 1000
-        report.add(
-            "connect",
-            "ok" if ok else "fail",
-            f"ok={ok} | mode={'API' if is_api else 'DOM'} | "
-            f"{elapsed:.0f}ms",
-            elapsed,
+        from collectors.bale import BaleCollector
+
+        mpc = int(os.getenv("BALE_MESSAGES_PER_CHAT", "500"))
+        bf = int(os.getenv("BALE_BACKFILL_SCROLLS", "10"))
+        delay = float(os.getenv("BALE_CHAT_DELAY", "1.5"))
+
+        collector = BaleCollector(
+            phone=phone or None,
+            headless=headless,
+            poll_seconds=999,
+            max_chats=max_chats,
+            messages_per_chat=mpc,
+            backfill_scrolls=bf,
+            chat_open_delay=delay,
         )
-        if not ok:
-            print(f"\n{C.WARN}⚠️ اتصال بله شکست خورد.{C.END}")
-            if is_api:
-                print("   راه‌حل: در اولین اجرا، شماره و کد پیامکی "
-                      "را وارد کن")
-            else:
-                print("   راه‌حل: python login.py → گزینهٔ ۲")
-            await safe_disconnect(collector, report)
-            await pipeline.stop()
-            report.print_summary()
-            report.save()
-            return False
+        is_api = _is_api_based(collector)
+        report.add("C1.collector.init", "ok", f"mode={'API' if is_api else 'DOM'} | mpc={mpc} | bf={bf} | delay={delay}")
     except Exception as e:
-        report.add("connect", "fail", f"{type(e).__name__}: {e}")
+        report.add("C1.collector.init", "fail", f"{type(e).__name__}: {e}")
+        await pipeline.stop()
+        report.print_summary()
+        report.save()
+        return False
+
+    pname = getattr(collector, "platform_name", None)
+    report.add("C2.platform_name", "ok" if pname == "bale" else "fail", f"platform_name={pname}")
+
+    poll = getattr(collector, "poll_interval_seconds", None)
+    report.add("C3.poll_interval", "ok" if isinstance(poll, (int, float)) else "warn", f"poll={poll}")
+
+    # ═══════════════════════════════════════════════════
+    # D) اتصال
+    # ═══════════════════════════════════════════════════
+    section("D) اتصال")
+    t0 = time.monotonic()
+    connect_ok = False
+    try:
+        connect_ok = await collector.connect()
+        elapsed = (time.monotonic() - t0) * 1000
+        report.add("D1.connect", "ok" if connect_ok else "fail", f"ok={connect_ok} | mode={'API' if is_api else 'DOM'} | {elapsed:.0f}ms", elapsed)
+    except Exception as e:
+        report.add("D1.connect", "fail", f"{type(e).__name__}: {e}")
+
+    if not connect_ok:
+        print(f"\n{C.FAIL}❌ اتصال بله برقرار نشد{C.END}")
         await safe_disconnect(collector, report)
         await pipeline.stop()
         report.print_summary()
         report.save()
         return False
 
-    # ═══════════════════════════════════════════════════
-    # ۶) is_logged_in / check_health
-    # ═══════════════════════════════════════════════════
-    section("مرحله ۶: چک لاگین")
+    logged_in = False
     try:
-        if is_api:
-            # نسخهٔ API: check_health
-            logged = await collector.check_health()
-            report.add(
-                "is_logged_in",
-                "ok" if logged else "fail",
-                "check_health=True | mode=API",
-            )
+        if is_api and hasattr(collector, "check_health"):
+            logged_in = await collector.check_health()
+            report.add("D2.is_logged_in", "ok" if logged_in else "fail", f"check_health={logged_in} | mode=API")
         else:
-            # نسخهٔ DOM: _is_logged_in
-            logged = await collector._is_logged_in()
-            url = ""
-            try:
-                url = collector._page.url[:80]
-            except Exception:
-                url = "—"
-            report.add(
-                "is_logged_in",
-                "ok" if logged else "fail",
-                f"logged={logged} | url={url} | mode=DOM",
-            )
+            logged_in = await collector._is_logged_in()
+            report.add("D2.is_logged_in", "ok" if logged_in else "fail", f"logged_in={logged_in} | mode=DOM")
     except Exception as e:
-        report.add("is_logged_in", "warn",
-                   f"{type(e).__name__}: {e}")
+        report.add("D2.is_logged_in", "fail", f"{type(e).__name__}: {e}")
+
+    try:
+        health = await collector.check_health()
+        report.add("D3.check_health", "ok" if health else "warn", f"health={health}")
+    except Exception as e:
+        report.add("D3.check_health", "warn", f"{type(e).__name__}: {e}")
+
+    try:
+        url = ""
+        if hasattr(collector, "_page") and collector._page:
+            url = collector._page.url or ""
+        if url:
+            in_bale = "bale.ai" in url.lower()
+            report.add("D4.page_url", "ok" if in_bale else "warn", f"url={url[:80]}")
+        else:
+            report.add("D4.page_url", "info", "URL در دسترس نیست (mode=API)")
+    except Exception as e:
+        report.add("D4.page_url", "warn", f"{type(e).__name__}: {e}")
 
     # ═══════════════════════════════════════════════════
-    # ۷) fetch_messages
+    # E) fetch_messages
     # ═══════════════════════════════════════════════════
-    section(f"مرحله ۷: fetch_messages (since={since_days} روز)")
-
-    if since_days > 0:
-        since_dt = datetime.now() - timedelta(days=since_days)
-    else:
-        since_dt = None
+    section(f"E) fetch_messages (since={since_days} روز)")
+    since_dt = (
+        datetime.now() - timedelta(days=since_days)
+        if since_days > 0 else None
+    )
 
     msgs: list = []
+    fetch_elapsed = 0.0
     try:
         t0 = time.monotonic()
-
-        # تلاش اول: با since (برای نسخهٔ API که تاریخچه می‌خواهد)
         try:
             msgs = await collector.fetch_messages(since=since_dt)
         except TypeError:
-            # نسخهٔ DOM ممکن است since را نپذیرد
             msgs = await collector.fetch_messages()
-
-        elapsed = (time.monotonic() - t0) * 1000
-        report.add(
-            "fetch_messages",
-            "ok" if msgs is not None else "fail",
-            f"count={len(msgs)} | since={since_dt} | "
-            f"{elapsed:.0f}ms",
-            elapsed,
-        )
+        fetch_elapsed = time.monotonic() - t0
+        report.add("E1.fetch", "ok" if isinstance(msgs, list) else "fail", f"count={len(msgs) if msgs else 0} | {fetch_elapsed:.0f}s", fetch_elapsed * 1000)
     except Exception as e:
-        report.add(
-            "fetch_messages", "fail",
-            f"{type(e).__name__}: {e}",
-        )
+        report.add("E1.fetch", "fail", f"{type(e).__name__}: {e}")
         msgs = []
 
-    # ═══════════════════════════════════════════════════
-    # ۸) ساختار پیام‌ها
-    # ═══════════════════════════════════════════════════
-    section("مرحله ۸: بررسی ساختار پیام‌ها")
     if msgs:
-        sample = msgs[0]
-        required_keys = [
-            "id", "platform", "text", "chat_id", "chat_name",
-            "chat_type", "timestamp", "media_type",
-        ]
-        missing = [k for k in required_keys if k not in sample]
-        report.add(
-            "msg.structure",
-            "ok" if not missing else "warn",
-            f"missing={missing}",
-        )
-
-        print(f"\n  📩 {min(5, len(msgs))} پیام scrape‌شده:")
-        for m in msgs[:5]:
-            txt = (m.get("text") or "")[:60].replace("\n", " ")
-            print(
-                f"     [{m.get('chat_name', '?')[:25]}] "
-                f"id={m.get('id', '?')[:20]} | {txt}"
-            )
-
-        platforms = {m.get("platform") for m in msgs}
-        chats = {m.get("chat_name") for m in msgs}
-        report.add(
-            "msg.stats", "ok",
-            f"platforms={platforms} | chats={len(chats)}",
-        )
+        report.add("E2.fetch.count", "ok", f"{len(msgs)} پیام گرفته شد")
     else:
-        report.add(
-            "msg.structure", "warn",
-            "هیچ پیامی fetch نشد "
-            "(شاید since خیلی کوتاه است یا نشست تازه است)",
-        )
+        report.add("E2.fetch.count", "warn", "هیچ پیامی گرفته نشد (شاید نشست تازه است)")
+
+    if fetch_elapsed > MAX_FETCH_SECONDS:
+        report.add("E3.fetch.timeout", "warn", f"{fetch_elapsed:.0f}s > {MAX_FETCH_SECONDS}s")
+    else:
+        report.add("E3.fetch.timeout", "ok", f"{fetch_elapsed:.0f}s ≤ {MAX_FETCH_SECONDS}s")
+
+    if msgs and since_dt:
+        too_old = [m for m in msgs if isinstance(m.get("timestamp"), datetime) and m["timestamp"] < since_dt]
+        if too_old:
+            report.add("E4.since.honored", "warn", f"{len(too_old)} پیام قدیمی‌تر از {since_dt.strftime('%Y-%m-%d')}")
+        else:
+            report.add("E4.since.honored", "ok", f"همه {len(msgs)} پیام جدیدتر از since")
+    else:
+        report.add("E4.since.honored", "skip", "پیامی نیست یا since داده نشد")
+
+    stats = getattr(collector, "_last_scrape_stats", None)
+    if isinstance(stats, dict):
+        report.add("E5.scrape.stats", "ok", f"total={stats.get('total_chats', '?')} | processed={stats.get('processed', '?')} | system={stats.get('skipped_system', '?')} | failed={stats.get('failed', '?')}")
+    else:
+        report.add("E5.scrape.stats", "warn", "کالکتور _last_scrape_stats نمی‌دهد")
 
     # ═══════════════════════════════════════════════════
-    # ۹) feed pipeline
+    # F) ساختار پیام
     # ═══════════════════════════════════════════════════
-    section("مرحله ۹: عبور از pipeline (ذخیره در DB)")
+    section("F) ساختار پیام")
+    if not msgs:
+        report.add("F.structure", "skip", "پیامی برای بررسی نیست")
+    else:
+        sample = msgs[0]
+
+        missing_fields = [f for f in REQUIRED_MSG_FIELDS if f not in sample]
+        report.add("F1.msg.fields", "ok" if not missing_fields else "fail", f"missing={missing_fields}" if missing_fields else f"همه {len(REQUIRED_MSG_FIELDS)} فیلد موجود")
+
+        all_bale = all(m.get("platform") == "bale" for m in msgs)
+        report.add("F2.msg.platform", "ok" if all_bale else "fail", f"همه پیام‌ها platform=bale: {all_bale}")
+
+        ids = [str(m.get("id", "")) for m in msgs]
+        unique_ids = set(ids)
+        dup_count = len(ids) - len(unique_ids)
+        report.add("F3.msg.id_unique", "ok" if dup_count == 0 else "fail", f"{dup_count} id تکراری از {len(ids)}")
+
+        ts_ok = all(isinstance(m.get("timestamp"), datetime) for m in msgs)
+        report.add("F4.msg.timestamp", "ok" if ts_ok else "warn", f"همه datetime: {ts_ok}")
+
+        bad_ct = [m for m in msgs if m.get("chat_type") not in VALID_CHAT_TYPES]
+        report.add("F5.msg.chat_type", "ok" if not bad_ct else "warn", f"{len(bad_ct)} chat_type نامعتبر" if bad_ct else f"همه معتبر")
+
+        bad_mt = [m for m in msgs if m.get("media_type") not in VALID_MEDIA_TYPES]
+        report.add("F6.msg.media_type", "ok" if not bad_mt else "warn", f"{len(bad_mt)} media_type نامعتبر" if bad_mt else f"همه معتبر")
+
+        empty_text = [m for m in msgs if not _is_valid_text(m.get("text", ""))]
+        report.add("F7.msg.text", "ok" if not empty_text else "fail", f"{len(empty_text)} پیام با متن خالی/whitespace" if empty_text else f"همه متن دارند")
+
+        empty_name = [m for m in msgs if not (m.get("chat_name") or "").strip()]
+        report.add("F8.msg.chat_name", "ok" if not empty_name else "fail", f"{len(empty_name)} پیام بدون chat_name" if empty_name else f"همه chat_name دارند")
+
+    # ═══════════════════════════════════════════════════
+    # G) فیلتر چت سیستمی
+    # ═══════════════════════════════════════════════════
+    section("G) فیلتر چت سیستمی")
+    if msgs:
+        system_in_output = [m.get("chat_name", "") for m in msgs if _is_system_chat(m.get("chat_name", ""))]
+        unique_system = list(set(system_in_output))
+
+        if unique_system:
+            report.add("G1.system.filter", "fail", f"{len(system_in_output)} پیام از {len(unique_system)} چت سیستمی: {unique_system[:5]}")
+        else:
+            report.add("G1.system.filter", "ok", "هیچ چت سیستمی در خروجی نیست")
+
+        real_chats = set()
+        for m in msgs:
+            cn = (m.get("chat_name") or "").strip()
+            if cn and not _is_system_chat(cn):
+                real_chats.add(cn)
+        report.add("G2.real_chats", "ok", f"{len(real_chats)} چت واقعی")
+
+        if real_chats:
+            print(f"\n  📋 چت‌های واقعی ({len(real_chats)}):")
+            for i, name in enumerate(sorted(real_chats)[:10], 1):
+                print(f"     {i}. {name[:60]}")
+            if len(real_chats) > 10:
+                print(f"     ... و {len(real_chats) - 10} چت دیگر")
+    else:
+        report.add("G1.system.filter", "skip", "پیامی برای بررسی نیست")
+        report.add("G2.real_chats", "skip", "پیامی نیست")
+
+    # ═══════════════════════════════════════════════════
+    # H) Pipeline → DB
+    # ═══════════════════════════════════════════════════
+    section("H) Pipeline → DB")
+    stored = 0
     try:
         t0 = time.monotonic()
         stored = await pipeline.feed(msgs)
         elapsed = (time.monotonic() - t0) * 1000
-        report.add(
-            "pipeline.feed",
-            "ok" if stored >= 0 else "fail",
-            f"fed={len(msgs)} | stored={stored} | {elapsed:.0f}ms",
-            elapsed,
-        )
+        report.add("H1.pipeline.feed", "ok" if stored >= 0 else "fail", f"fed={len(msgs)} | stored={stored} | {elapsed:.0f}ms", elapsed)
     except Exception as e:
-        report.add("pipeline.feed", "fail",
-                   f"{type(e).__name__}: {e}")
-
-    # ═══════════════════════════════════════════════════
-    # ۱۰) چک DB — فقط کلیدواژه‌دارها
-    # ═══════════════════════════════════════════════════
-    section("مرحله ۱۰: چک ذخیره‌سازی در DB")
-
-    if msgs:
-        try:
-            from analyzers.keyword_finder import get_keyword_finder
-            kw = get_keyword_finder()
-            msgs_with_kw = [
-                m for m in msgs
-                if kw.has_match(m.get("text") or "")
-            ]
-        except Exception as e:
-            msgs_with_kw = []
-            report.add("db.kw_filter", "warn", str(e))
-
-        report.add(
-            "db.scrape_stats", "ok",
-            f"{len(msgs)} scrape شد، "
-            f"{len(msgs_with_kw)} کلیدواژه‌دار",
-        )
-
-        if msgs_with_kw:
-            found = await pipeline.find_in_db(
-                msgs_with_kw, platform="bale"
-            )
-            total = len(msgs_with_kw)
-            in_db = len(found)
-
-            if in_db == total:
-                report.add(
-                    "db.scrape_saved", "ok",
-                    f"{in_db}/{total} کلیدواژه‌دار در DB ✅",
-                )
-            elif in_db > 0:
-                report.add(
-                    "db.scrape_saved", "warn",
-                    f"{in_db}/{total} کلیدواژه‌دار در DB "
-                    f"({total - in_db} missing)",
-                )
-            else:
-                report.add(
-                    "db.scrape_saved", "fail",
-                    f"0/{total} کلیدواژه‌دار در DB!",
-                )
-
-            if found:
-                print("\n  📥 نمونهٔ leadهای ذخیره‌شده در DB:")
-                for rid, row in list(found.items())[:5]:
-                    chat = (row.get("chat_name") or "?")[:25]
-                    txt = (row.get("text") or "")[:50]
-                    kwv = row.get("keywords") or "—"
-                    print(f"     [{chat}] {txt}")
-                    print(f"        db_id={row.get('id', '')[:30]} | "
-                          f"kw={kwv[:40]}")
-        else:
-            report.add(
-                "db.scrape_saved", "skip",
-                f"هیچ‌کدام از {len(msgs)} پیام scrape‌شده "
-                "کلیدواژه ندارند (طبیعی — پیام‌های عمومی)",
-            )
-            print("\n  ℹ️ هیچ پیام کلیدواژه‌داری در این scrape نبود")
-            print("     این طبیعی است — StorageHandler فقط "
-                  "پیام‌های برند را ذخیره می‌کند")
-            print("     💡 برای تست کامل: یک پیام با برند "
-                  "(مثل «یاراترا کریستا اس او پی») در بله بفرست")
-    else:
-        report.add(
-            "db.scrape_saved", "skip",
-            "هیچ پیامی برای چک نیست",
-        )
-
-    # ═══════════════════════════════════════════════════
-    # ۱۱) چک lead
-    # ═══════════════════════════════════════════════════
-    section("مرحله ۱۱: چک lead (آمار کلی)")
+        report.add("H1.pipeline.feed", "fail", f"{type(e).__name__}: {e}")
 
     try:
         total_db = await pipeline.count_messages(platform="bale")
-        total_leads = await pipeline.count_leads(platform="bale")
-        report.add(
-            "db.total_messages", "ok",
-            f"bale: {total_db} پیام در DB تست",
-        )
-        report.add(
-            "db.total_leads", "ok",
-            f"bale: {total_leads} سرنخ در DB تست",
-        )
+        report.add("H2.db.total", "ok", f"bale: {total_db} پیام در DB")
+    except Exception as e:
+        report.add("H2.db.total", "warn", f"{type(e).__name__}: {e}")
+        total_db = 0
 
-        if total_leads > 0:
+    try:
+        total_leads = await pipeline.count_leads(platform="bale")
+        report.add("H3.db.leads", "ok", f"bale: {total_leads} سرنخ")
+    except Exception as e:
+        report.add("H3.db.leads", "warn", f"{type(e).__name__}: {e}")
+        total_leads = 0
+
+    if msgs:
+        try:
+            found = await pipeline.find_in_db(msgs[:20], platform="bale")
+            in_db = len(found)
+            content_ok = 0
+            content_bad = []
+            for raw_id, row in found.items():
+                original = next((m for m in msgs if str(m.get("id")) == raw_id), None)
+                if not original:
+                    continue
+                orig_text = (original.get("text") or "").strip()
+                db_text = (row.get("text") or "").strip()
+                if orig_text[:100] != db_text[:100]:
+                    content_bad.append(f"id={raw_id[:20]} text mismatch")
+                else:
+                    content_ok += 1
+
+            if not content_bad:
+                report.add("H4.db.content", "ok", f"{content_ok} پیام با محتوای درست")
+            else:
+                report.add("H4.db.content", "warn", f"{len(content_bad)} پیام با محتوای ناهمخوان: {content_bad[:3]}")
+        except Exception as e:
+            report.add("H4.db.content", "warn", f"{type(e).__name__}: {e}")
+
+    # ═══════════════════════════════════════════════════
+    # I) گزارش صریح
+    # ═══════════════════════════════════════════════════
+    section("I) گزارش صریح")
+    if msgs and stored > 0 and total_leads == 0:
+        report.add("I1.lead.clarify", "info", f"{stored} پیام ذخیره شد ولی 0 کلیدواژه داشت → Lead واقعی = 0")
+        print(f"\n  ℹ️ {stored} پیام در DB ذخیره شد ولی 0 کلیدواژه داشت")
+    elif total_leads > 0:
+        report.add("I1.lead.clarify", "ok", f"{total_leads} Lead واقعی در DB")
+    else:
+        report.add("I1.lead.clarify", "skip", "پیامی برای بررسی نبود")
+
+    if total_leads > 0:
+        try:
             leads = await pipeline.find_leads_in_db("bale")
             print(f"\n  🎯 {min(3, len(leads))} lead نمونه:")
             for ld in leads[:3]:
                 chat = (ld.get("chat_name") or "?")[:25]
-                kwv = (ld.get("keywords") or "—")[:40]
-                tier = ld.get("opportunity_type") or "—"
-                print(f"     [{chat}] kw={kwv} | tier={tier}")
-    except Exception as e:
-        report.add("db.leads_check", "warn", str(e))
+                kw = (ld.get("keywords") or "—")[:40]
+                print(f"     [{chat}] kw={kw}")
+            report.add("I2.lead.sample", "ok", f"{min(3, len(leads))} نمونه نمایش داده شد")
+        except Exception as e:
+            report.add("I2.lead.sample", "warn", f"{type(e).__name__}: {e}")
 
     # ═══════════════════════════════════════════════════
-    # ۱۲) dump_dom
+    # J) پاک‌سازی
     # ═══════════════════════════════════════════════════
-    section("مرحله ۱۲: dump_dom")
+    section("J) پاک‌سازی")
     try:
-        dom_path = await collector.dump_dom()
-
-        if not dom_path:
-            # نسخهٔ API: dump_dom وجود ندارد ولی خطا هم نمی‌دهد
-            report.add(
-                "dump_dom", "skip",
-                "نسخهٔ API — dump_dom ندارد (طبیعی)",
-            )
-        else:
-            size = (
-                os.path.getsize(dom_path)
-                if os.path.exists(dom_path)
-                else 0
-            )
-            report.add(
-                "dump_dom",
-                "ok" if size > 0 else "warn",
-                f"size={size}B",
-            )
+        await safe_disconnect(collector, report)
     except Exception as e:
-        report.add("dump_dom", "warn",
-                   f"{type(e).__name__}: {e}")
+        report.add("J1.disconnect", "warn", f"{type(e).__name__}: {e}")
 
-    # ═══════════════════════════════════════════════════
-    # ۱۳) disconnect
-    # ═══════════════════════════════════════════════════
-    section("مرحله ۱۳: disconnect")
-    await safe_disconnect(collector, report)
-
-    # ═══════════════════════════════════════════════════
-    # ۱۴) پاک‌سازی pipeline
-    # ═══════════════════════════════════════════════════
-    section("مرحله ۱۴: پاک‌سازی pipeline")
     try:
         await pipeline.stop()
-        report.add("pipeline.cleanup", "ok", "DB تست پاک شد")
+        report.add("J2.pipeline.cleanup", "ok", "DB تست پاک شد")
     except Exception as e:
-        report.add("pipeline.cleanup", "warn",
-                   f"{type(e).__name__}: {e}")
+        report.add("J2.pipeline.cleanup", "warn", f"{type(e).__name__}: {e}")
 
-    # ═══════════════════════════════════════════════════
-    # نتیجه
-    # ═══════════════════════════════════════════════════
     ok = report.print_summary()
     report.save()
     return ok
 
 
+# ═══════════════════════════════════════════════════════════
+# Entry point
+# ═══════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--headless", action="store_true")
-    parser.add_argument("--max-chats", type=int, default=0)
-    parser.add_argument(
-        "--since-days", type=int, default=7,
-        help="تاریخچه چند روز گذشته خوانده شود (0=بدون تاریخچه، "
-             "فقط پیام‌های زنده)",
+    parser = argparse.ArgumentParser(
+        description="تست دقیق بله — Pipeline end-to-end (v6.0)",
     )
+    parser.add_argument("--headless", action="store_true", help="اجرای مرورگر بدون پنجره")
+    parser.add_argument("--max-chats", type=int, default=0, help="حداکثر چت (0=همه)")
+    parser.add_argument("--since-days", type=int, default=7, help="تاریخچه چند روز (0=بدون محدودیت)")
     args = parser.parse_args()
 
     ok = asyncio.run(

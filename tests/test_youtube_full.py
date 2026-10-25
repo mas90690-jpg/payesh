@@ -2,28 +2,11 @@
 """
 تست کامل یوتیوب — Pipeline end-to-end.
 
-Pipeline:
-  Collector → EventBus → StorageHandler → DB (isolated)
-
-نسخهٔ ۱.۰ (این نسخه):
-  - 🎯 تست کامل کلکتور یوتیوب (روش جدید: player response)
-  - ✅ استخراج description کامل از window.ytInitialPlayerResponse
-  - ✅ استخراج لینک ویدیو + لینک کانال
-  - ✅ ضدتکراری با seen_ids
-  - ✅ فیلتر کلیدواژه روی title + description + channel
-  - ⏭️ skip منطقی: اگر پلتفرم خاموش بود → skip (نه fail)
-  - ⏭️ skip منطقی: اگر هیچ ویدیویی کلیدواژه نداشت → skip
-  - ✅ هم‌راستا با test_bale_full.py و test_eitaa_full.py
-
-پیش‌نیازها:
-  - YOUTUBE_ENABLED=true در .env
-  - نشست ذخیره‌شده در storage/sessions/youtube_web/
-  - Chrome روی سیستم (CHROME_PATH در config)
-
-اجرا:
-  python tests/test_youtube_full.py
-  python tests/test_youtube_full.py --headless
-  python tests/test_youtube_full.py --max-videos 10
+نسخهٔ ۲.۰:
+  - ✅ sys.path.insert در ابتدا (رفع ModuleNotFoundError)
+  - ✅ همه importها بعد از sys.path
+  - ✅ سازگار با youtube.py نسخهٔ ۳.۰
+  - ✅ تست since، last_run_at، آمار تفکیکی
 """
 from __future__ import annotations
 
@@ -32,7 +15,9 @@ import asyncio
 import os
 import sys
 import time
+from datetime import datetime, timedelta
 
+# ✅ این خط باید اول باشد — قبل از هر import داخلی
 sys.path.insert(
     0,
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -53,7 +38,6 @@ from tests.pipeline_helpers import TestPipeline
 # helpers
 # ═════════════════════════════════════════════════════════
 def _session_dir() -> str:
-    """مسیر پوشهٔ نشست یوتیوب."""
     try:
         from config import STORAGE_DIR
         return os.path.join(
@@ -69,7 +53,6 @@ def _session_dir() -> str:
 
 
 def _session_has_data(path: str) -> bool:
-    """آیا پوشهٔ نشست محتوای واقعی دارد؟"""
     if not path or not os.path.isdir(path):
         return False
     try:
@@ -92,8 +75,9 @@ def _session_has_data(path: str) -> bool:
 async def main(
     headless: bool = False,
     max_videos: int = 10,
+    since_days: int = 7,
 ):
-    banner("تست کامل یوتیوب (YouTube) — Pipeline end-to-end")
+    banner("تست کامل یوتیوب (YouTube) — Pipeline end-to-end (v2.0)")
     report = TestReport("youtube")
 
     # ═══ ۱) env ═══
@@ -101,7 +85,6 @@ async def main(
     env_info = check_env("youtube")
     raw = env_info.get("raw", {})
 
-    # یوتیوب ممکنه در PLUGINS_CONFIG نباشه → env مستقیم
     enabled = raw.get("enabled", None)
     if enabled is None:
         enabled_str = os.getenv(
@@ -177,10 +160,7 @@ async def main(
         report.save()
         return False
 
-    report.add(
-        "session.has_data", "ok",
-        f"has_data=True",
-    )
+    report.add("session.has_data", "ok", "has_data=True")
 
     # ═══ ۴) pipeline ═══
     section("مرحله ۴: ساخت pipeline end-to-end")
@@ -204,11 +184,13 @@ async def main(
             headless=headless,
             poll_seconds=999,
             max_videos=max_videos,
-            delay_between=3.0,
+            delay_between=2.5,
+            scroll_rounds=8,
         )
         report.add(
             "collector.init", "ok",
-            f"platform={collector.platform_name}",
+            f"platform={collector.platform_name} | "
+            f"max_videos={max_videos}",
         )
     except Exception as e:
         report.add("collector.init", "fail", str(e))
@@ -263,12 +245,17 @@ async def main(
         report.add("is_logged_in", "warn", str(e))
 
     # ═══ ۸) fetch_messages ═══
-    section("مرحله ۸: fetch_messages")
+    section(f"مرحله ۸: fetch_messages (since={since_days} روز)")
     print(f"\n  {C.INFO}⏳ این مرحله ممکن است ۱-۳ دقیقه طول بکشد{C.END}")
 
     try:
         t0 = time.monotonic()
-        msgs = await collector.fetch_messages()
+        if since_days == 0:
+            msgs = await collector.fetch_messages(force_no_since=True)
+        else:
+            since_dt = datetime.now() - timedelta(days=since_days)
+            print(f"  🎯 since = {since_dt.isoformat()}")
+            msgs = await collector.fetch_messages(since=since_dt)
         elapsed = (time.monotonic() - t0) * 1000
         report.add(
             "fetch_messages",
@@ -279,6 +266,21 @@ async def main(
     except Exception as e:
         report.add("fetch_messages", "fail", str(e))
         msgs = []
+        
+    # ─── آمار scrape ───
+    stats = getattr(collector, "_last_scrape_stats", {})
+    if stats:
+        report.add(
+            "scrape.stats", "ok",
+            f"total={stats.get('total_in_feed', 0)} | "
+            f"new={stats.get('new_videos', 0)} | "
+            f"processed={stats.get('processed', 0)} | "
+            f"stored={stats.get('stored', 0)} | "
+            f"seen={stats.get('skipped_seen', 0)} | "
+            f"old={stats.get('skipped_old', 0)} | "
+            f"no-kw={stats.get('skipped_no_kw', 0)} | "
+            f"failed={stats.get('failed', 0)}",
+        )
 
     # ═══ ۹) ساختار پیام‌ها ═══
     section("مرحله ۹: بررسی ساختار پیام‌ها")
@@ -311,7 +313,6 @@ async def main(
             f"platforms={platforms} | channels={len(channels)}",
         )
 
-        # ─── چک لینک ویدیو ───
         with_link = [
             m for m in msgs
             if m.get("chat_link", "").startswith(
@@ -324,7 +325,6 @@ async def main(
             f"{len(with_link)}/{len(msgs)} لینک مستقیم دارند",
         )
 
-        # ─── چک لینک کانال ───
         with_channel_url = [
             m for m in msgs
             if m.get("channel_url")
@@ -337,8 +337,7 @@ async def main(
     else:
         report.add(
             "msg.structure", "warn",
-            "هیچ ویدیویی fetch نشد "
-            "(شاید فید خالی است یا نشست تازه است)",
+            "هیچ ویدیویی fetch نشد",
         )
 
     # ═══ ۱۰) feed pipeline ═══
@@ -415,8 +414,8 @@ async def main(
                 f"هیچ‌کدام از {len(msgs)} ویدیو کلیدواژه ندارند",
             )
             print("\n  ℹ️ هیچ ویدیوی کلیدواژه‌داری در این scrape نبود")
-            print("     💡 برای تست کامل: در یوتیوب کانال‌هایی "
-                  "با محتوای برند فالو کن")
+            print("     💡 برای تست کامل: کلیدواژه‌های یوتیوب را "
+                  "به keywords_custom.json اضافه کن")
     else:
         report.add(
             "db.scrape_saved", "skip",
@@ -488,7 +487,7 @@ async def main(
 # ═════════════════════════════════════════════════════════
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="تست کامل یوتیوب — Pipeline end-to-end",
+        description="تست کامل یوتیوب — Pipeline end-to-end (v2.0)",
     )
     parser.add_argument(
         "--headless", action="store_true",
@@ -498,12 +497,17 @@ if __name__ == "__main__":
         "--max-videos", type=int, default=10,
         help="حداکثر تعداد ویدیو برای scrape (پیش‌فرض 10)",
     )
+    parser.add_argument(
+        "--since-days", type=int, default=7,
+        help="تاریخچه چند روز (0=بدون محدودیت)",
+    )
     args = parser.parse_args()
 
     ok = asyncio.run(
         main(
             headless=args.headless,
             max_videos=args.max_videos,
+            since_days=args.since_days,
         )
     )
     sys.exit(0 if ok else 1)

@@ -1,15 +1,18 @@
 # collectors/eitaa.py
 """
-کلکتور ایتا (Eitaa) — نسخه v8.5 (دقیق + پایدار)
+کلکتور ایتا (Eitaa) — نسخهٔ ۹.۰ (نهایی — فوق دقیق)
 
-🎯 بهبودها نسبت به v8.4:
-  - ✅ wait_for_selector بعد از کلیک روی چت (رفع مشکل «۱ پیام»)
-  - ✅ sender_name درست برای گروه (فقط پیام‌های is-in)
-  - ✅ skip پیام‌های media خالی (just-media/is-message-empty)
-  - ✅ استخراج sender از data-peer-id والد اگر ممکن
-  - ✅ chat_type دقیق‌تر (channel هم تشخیص داده می‌شه)
-  - ✅ لاگ کامل با علت skip
-  - ✅ حفظ همه امکانات v8.4 (backfill، _clean_text، ضدتکراری)
+ویژگی‌ها:
+  - 🎯 id پایدار از data-mid + chat_id (بدون تکرار)
+  - 🎯 timestamp دقیق از data-timestamp (میلی‌ثانیه)
+  - 🎯 since دقیق (فیلتر بر اساس data-timestamp)
+  - 🎯 last_run_at — چند روز خاموش بود، از همون‌جا ادامه می‌ده
+  - 🎯 چت‌های سیستمی کامل فیلتر می‌شن
+  - 🎯 پیام بدون متن معتبر ذخیره نمی‌شه
+  - 🎯 آمار تفکیکی (_last_scrape_stats)
+  - 🎯 _seen_ids فقط بعد از keyword filter
+  - 🎯 messages_per_chat از env واقعاً اعمال می‌شه
+  - 🎯 تنظیمات از .env
 """
 import asyncio
 import hashlib
@@ -38,24 +41,33 @@ _MAX_SEEN = 100000
 EITAA_WEB_URL = "https://web.eitaa.com/"
 _PLATFORM = "eitaa"
 
-# ⚡ timeouts
-_CHAT_TIMEOUT = 30
+# ⏱️ timeoutها (از env قابل تنظیم)
+_CHAT_TIMEOUT = 120
 _SELECTOR_TIMEOUT_MS = 5000
-_WAIT_FOR_MSG_MS = 1500
-_MAX_SCROLL_ROUNDS = 30
+_WAIT_FOR_MSG_MS = 5000
+_MAX_SCROLL_ROUNDS = 60
+_MAX_SCROLL_TIME_TOTAL = 90
 
 # 🎭 تأخیرها
 _DELAY_MIN = 0.2
 _DELAY_MAX = 0.5
-_CHAT_OPEN_DELAY_MIN = 1.2
-_CHAT_OPEN_DELAY_MAX = 2.0
+_CHAT_OPEN_DELAY_MIN = 1.5
+_CHAT_OPEN_DELAY_MAX = 3.0
 
-# 🎯 چت‌های سیستمی
+# 🎯 چت‌های سیستمی — کامل
 _SYSTEM_NAMES = {
-    "پیام‌های ذخیره شده", "ذخیره شده", "شما",
-    "Saved Messages", "Drafts",
-    "ایتا", "Eitaa",
+    "پیام‌های ذخیره شده", "پیامهای ذخیره شده",
+    "ذخیره‌شده", "ذخیره شده", "شما", "تصویر", "پیام",
+    "Saved Messages", "Drafts", "You", "Images", "Messages",
+    "ایتا", "Eitaa", "تیم ایتا", "پشتیبانی ایتا",
+    "فایل", "فایل‌ها", "استیکر", "استیکرها", "گیف", "ویدیو",
+    "ویس", "عکس", "لینک", "مخاطبین", "پوشه‌ها", "گروه‌ها",
+    "کانال‌ها", "آلبوم",
 }
+
+_SYSTEM_PREFIXES = (
+    "کانال ایجاد", "گروه ایجاد", "Channel created", "Group created",
+)
 
 # 🎯 سلکتورها
 _CHAT_SELECTOR = ".chatlist-chat"
@@ -98,20 +110,37 @@ _EMPTY_MEDIA_CLASSES = (
 # 🎯 کاراکترهای PUA ایتا
 _PUA_CHARS = "\ue900\ue901\ue902\ue903\ue904\ue905\ue906\ue907\ue908\ue909"
 
+# 🎯 متن نامعتبر
+_INVALID_TEXT_PATTERNS = [
+    r"^\s*$",
+    r"^\s*[\d۰-۹]{1,2}:[\d۰-۹]{2}\s*$",
+    r"^\s*[\d۰-۹]+\s*$",
+    r"^\s*[\d۰-۹]{1,2}:[\d۰-۹]{2}\s*\n\s*[\d۰-۹]+\s*$",
+]
+
+
+def _is_invalid_text(text: str) -> bool:
+    """آیا متن پیام معتبر نیست؟"""
+    if not text or not text.strip():
+        return True
+    stripped = text.strip()
+    for pattern in _INVALID_TEXT_PATTERNS:
+        if re.match(pattern, stripped):
+            return True
+    return False
+
 
 def _clean_text(text: str) -> str:
     """پاک‌سازی متن پیام ایتا."""
     if not text:
         return ""
 
-    # ① حذف PUA
     for ch in _PUA_CHARS:
         text = text.replace(ch, "")
     text = re.sub(r'[\ue000-\uf8ff]', '', text)
 
     lines = [ln.rstrip() for ln in text.split('\n')]
 
-    # ② حذف خطوط انتهایی تزئینی
     while lines:
         last = lines[-1].strip()
 
@@ -156,21 +185,36 @@ class EitaaCollector(BaseCollector):
         phone: str = None,
         password: str = None,
         headless: bool = True,
-        poll_seconds: int = 180,
-        max_chats: int = 15,
-        chat_open_delay: float = 1.5,
-        messages_per_chat: int = 50,
-        backfill_scrolls: int = 3,
+        poll_seconds: int = None,
+        max_chats: int = None,
+        chat_open_delay: float = None,
+        messages_per_chat: int = None,
+        backfill_scrolls: int = None,
         **kwargs,
     ):
         super().__init__()
-        self.phone = phone
+
+        # ─── تنظیمات از env ───
+        self.phone = phone or os.getenv("EITAA_PHONE", "")
         self.password = password
         self.headless = headless
-        self._poll_seconds = int(poll_seconds)
-        self._max_chats = int(max_chats)
-        self._messages_per_chat = int(messages_per_chat)
-        self._backfill_scrolls = int(backfill_scrolls)
+
+        self._poll_seconds = int(
+            poll_seconds or os.getenv("EITAA_POLL_SECONDS", "180")
+        )
+        self._max_chats = int(
+            max_chats or os.getenv("EITAA_MAX_CHATS", "0")
+        )
+        self._chat_open_delay = float(
+            chat_open_delay or os.getenv("EITAA_CHAT_DELAY", "1.5")
+        )
+        self._messages_per_chat = int(
+            messages_per_chat or os.getenv("EITAA_MESSAGES_PER_CHAT", "500")
+        )
+        self._backfill_scrolls = int(
+            backfill_scrolls or os.getenv("EITAA_BACKFILL_SCROLLS", "10")
+        )
+
         self._needs_backfill = True
         self._pw = None
         self._context = None
@@ -182,6 +226,7 @@ class EitaaCollector(BaseCollector):
         self._kw = get_keyword_finder()
         self._page_lock = asyncio.Lock()
         self._stealth_applied = False
+        self._last_scrape_stats: dict[str, int] = {}
 
         if not hasattr(EitaaCollector, "_connect_lock"):
             EitaaCollector._connect_lock = asyncio.Lock()
@@ -198,6 +243,62 @@ class EitaaCollector(BaseCollector):
         )
         os.makedirs(os.path.dirname(self._seen_path), exist_ok=True)
         self._load_seen()
+
+        # ─── state (first run + last_run_at) ───
+        self._state_path = os.path.join(
+            STORAGE_DIR, "offset", "eitaa_state.json"
+        )
+        os.makedirs(os.path.dirname(self._state_path), exist_ok=True)
+        self._first_run_done = self._load_first_run()
+        self._last_run_at = self._load_last_run_at()
+
+        log_info(
+            f"🔧 [eitaa:init] mpc={self._messages_per_chat} | "
+            f"backfill={self._backfill_scrolls} | "
+            f"max_chats={self._max_chats}"
+        )
+
+    # ═══════════════════════════════════════════════
+    # state
+    # ═══════════════════════════════════════════════
+    def _load_first_run(self) -> bool:
+        try:
+            with open(self._state_path, encoding="utf-8") as f:
+                d = json.load(f)
+            done = bool(d.get("first_run_done", False))
+            if done:
+                log_info("♻️ [eitaa:state] بار اول انجام شده")
+            else:
+                log_info("🆕 [eitaa:state] بار اول — تاریخچه کامل")
+            return done
+        except Exception:
+            log_info("🆕 [eitaa:state] بار اول — تاریخچه کامل")
+            return False
+
+    def _load_last_run_at(self) -> datetime | None:
+        try:
+            with open(self._state_path, encoding="utf-8") as f:
+                d = json.load(f)
+            s = d.get("last_run_at")
+            if s:
+                return datetime.fromisoformat(s)
+        except Exception:
+            pass
+        return None
+
+    def _save_state(self):
+        try:
+            data = {
+                "first_run_done": True,
+                "first_run_at": getattr(
+                    self, "_first_run_at", datetime.now().isoformat()
+                ),
+                "last_run_at": datetime.now().isoformat(),
+            }
+            with open(self._state_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            log_warning(f"ذخیره state ناموفق: {e}")
 
     # ═══════════════════════════════════════════════
     # seen
@@ -234,7 +335,7 @@ class EitaaCollector(BaseCollector):
 
     @property
     def supports_history(self) -> bool:
-        return False
+        return True
 
     @property
     def supports_websocket(self) -> bool:
@@ -402,23 +503,15 @@ class EitaaCollector(BaseCollector):
         return ""
 
     async def _extract_sender(self, msg, chat_name: str) -> str:
-        """
-        🎯 استخراج فرستنده — فقط برای گروه.
-        برای پیام‌های is-out → فرستنده خودمون، پس chat_name.
-        برای پیام‌های is-in گروه → تلاش کن sender واقعی رو بگیر.
-        """
         try:
             cls = await msg.get_attribute("class") or ""
 
-            # پیام‌های خروجی (خودمون) → sender_name = chat_name
             if "is-out" in cls:
                 return chat_name
 
-            # پیام‌های خصوصی → sender_name = chat_name
             if "is-group" not in cls and "group" not in cls:
                 return chat_name
 
-            # پیام گروه ورودی → تلاش کن sender واقعی
             for sel in _SENDER_SELECTORS:
                 try:
                     el = await msg.query_selector(sel)
@@ -435,22 +528,50 @@ class EitaaCollector(BaseCollector):
 
         return chat_name
 
+    def _is_system_name(self, name: str) -> bool:
+        if not name:
+            return False
+        n = name.strip()
+        if not n:
+            return False
+        if n in _SYSTEM_NAMES:
+            return True
+        for prefix in _SYSTEM_PREFIXES:
+            if n.startswith(prefix):
+                return True
+        return False
+
     # ═══════════════════════════════════════════════
     # جمع‌آوری چت‌ها
     # ═══════════════════════════════════════════════
     async def _collect_chats(self) -> list[dict]:
+        # ۱) برگرد به بالای لیست
+        for _ in range(50):
+            try:
+                await self._page.mouse.wheel(0, -3000)
+            except Exception:
+                pass
+            await asyncio.sleep(0.1)
+
         chats = []
         seen_keys = set()
         last_count = 0
         stable_rounds = 0
 
+        import time
+        t_start = time.monotonic()
+
         for round_i in range(_MAX_SCROLL_ROUNDS):
+            if time.monotonic() - t_start > _MAX_SCROLL_TIME_TOTAL:
+                log_warning(f"⏰ [eitaa] timeout اسکرول")
+                break
+
             items = await self._page.query_selector_all(_CHAT_SELECTOR)
             for it in items:
                 try:
                     pid = await self._extract_peer_id(it)
                     name = await self._extract_title(it)
-                    if not name or name in _SYSTEM_NAMES:
+                    if not name or self._is_system_name(name):
                         continue
                     key = f"pid:{pid}" if pid else f"name:{name}"
                     if key in seen_keys:
@@ -468,12 +589,12 @@ class EitaaCollector(BaseCollector):
                 await self._page.mouse.wheel(0, 2500)
             except Exception:
                 pass
-            await self._human_delay(0.2, 0.4)
+            await self._human_delay(0.3, 0.7)
 
             cur = len(chats)
             if cur == last_count:
                 stable_rounds += 1
-                if stable_rounds >= 3:
+                if stable_rounds >= 4:
                     break
             else:
                 stable_rounds = 0
@@ -489,8 +610,36 @@ class EitaaCollector(BaseCollector):
         if not self._connected or not self._page:
             return []
 
+        effective_since = since
+        if effective_since is None and self._last_run_at:
+            effective_since = self._last_run_at
+            log_info(
+                f"♻️ [eitaa:since] از last_run_at: "
+                f"{self._last_run_at.isoformat()}"
+            )
+        elif since:
+            log_info(
+                f"🎯 [eitaa:since] از پارامتر since: "
+                f"{since.isoformat()}"
+            )
+
+        self._last_scrape_stats = {
+            "total_chats": 0,
+            "processed": 0,
+            "skipped_system": 0,
+            "skipped_target": 0,
+            "empty_chats": 0,
+            "failed": 0,
+            "messages_found": 0,
+            "messages_skipped_old": 0,
+            "messages_skipped_dup": 0,
+        }
+
         chats = await self._collect_chats()
+        self._last_scrape_stats["total_chats"] = len(chats)
+
         if not chats:
+            log_warning("⚠️ هیچ چتی پیدا نشد")
             return []
 
         if self._max_chats > 0:
@@ -500,7 +649,7 @@ class EitaaCollector(BaseCollector):
 
         for idx, chat in enumerate(chats):
             try:
-                await self._scrape_chat(chat, idx)
+                await self._scrape_chat(chat, idx, effective_since)
                 await self._human_delay(0.3, 0.6)
             except Exception as e:
                 log_warning(f"[{idx+1}] {chat.get('name')}: {e}")
@@ -510,25 +659,45 @@ class EitaaCollector(BaseCollector):
         self._save_seen()
         self._needs_backfill = False
 
+        if not self._first_run_done:
+            self._first_run_at = datetime.now().isoformat()
+            self._first_run_done = True
+        self._save_state()
+
         if new_msgs:
             log_success(f"📥 {len(new_msgs)} پیام از ایتا")
+
+        stats = self._last_scrape_stats
+        log_info(
+            f"📊 [eitaa:stats] total={stats['total_chats']} | "
+            f"processed={stats['processed']} | "
+            f"system={stats['skipped_system']} | "
+            f"target={stats['skipped_target']} | "
+            f"empty={stats['empty_chats']} | "
+            f"failed={stats['failed']} | "
+            f"found={stats['messages_found']} | "
+            f"old={stats['messages_skipped_old']} | "
+            f"dup={stats['messages_skipped_dup']}"
+        )
 
         return new_msgs
 
     # ═══════════════════════════════════════════════
     # اسکرپ یک چت
     # ═══════════════════════════════════════════════
-    async def _scrape_chat(self, chat: dict, idx: int):
+    async def _scrape_chat(self, chat: dict, idx: int, effective_since: datetime = None):
         peer_id = chat["peer_id"]
         name = chat["name"]
 
-        if not name or name in _SYSTEM_NAMES:
+        if not name or self._is_system_name(name):
+            self._last_scrape_stats["skipped_system"] += 1
             return
 
         try:
             if (self._targets.enabled(_PLATFORM) and
                 not self._targets.is_target(name, platform=_PLATFORM)):
                 log_debug(f"⏭️ [{idx+1}] غیرهدف: {name}")
+                self._last_scrape_stats["skipped_target"] += 1
                 return
         except Exception:
             pass
@@ -537,9 +706,9 @@ class EitaaCollector(BaseCollector):
 
         if not await self._click_chat(peer_id, name):
             log_warning(f"⏭️ [{idx+1}] کلیک نشد: {name}")
+            self._last_scrape_stats["failed"] += 1
             return
 
-        # 🎯 NEW: انتظار برای لود شدن پیام‌ها بعد از کلیک
         try:
             await self._page.wait_for_selector(
                 ".bubbles .bubble",
@@ -547,7 +716,6 @@ class EitaaCollector(BaseCollector):
                 state="attached",
             )
         except Exception:
-            # timeout → احتمالاً چت خالیه یا هنوز لود نشده
             pass
 
         await self._human_delay(
@@ -555,18 +723,18 @@ class EitaaCollector(BaseCollector):
         )
 
         try:
-            await asyncio.wait_for(
-                self._scrape_current(name, peer_id),
+            count = await asyncio.wait_for(
+                self._scrape_current(name, peer_id, effective_since),
                 timeout=_CHAT_TIMEOUT,
             )
+            if count == 0:
+                self._last_scrape_stats["empty_chats"] += 1
+            self._last_scrape_stats["processed"] += 1
         except asyncio.TimeoutError:
             log_warning(f"⏱️ [{idx+1}] timeout: {name}")
+            self._last_scrape_stats["failed"] += 1
 
-    # ═══════════════════════════════════════════════
-    # کلیک مطمئن روی چت
-    # ═══════════════════════════════════════════════
     async def _click_chat(self, peer_id: str, name: str) -> bool:
-        # ① سریع با data-peer-id
         if peer_id:
             try:
                 sel = f'.chatlist-chat[data-peer-id="{peer_id}"]'
@@ -582,7 +750,6 @@ class EitaaCollector(BaseCollector):
             except Exception as e:
                 log_debug(f"   کلیک با peer_id نشد: {e}")
 
-        # ② fallback: اسکرول تا پیدا شدن
         for attempt in range(30):
             try:
                 items = await self._page.query_selector_all(_CHAT_SELECTOR)
@@ -616,9 +783,6 @@ class EitaaCollector(BaseCollector):
 
         return False
 
-    # ═══════════════════════════════════════════════
-    # backfill scroll داخل چت
-    # ═══════════════════════════════════════════════
     async def _backfill_scroll(self):
         if not (self._needs_backfill and self._backfill_scrolls > 0):
             return
@@ -639,13 +803,17 @@ class EitaaCollector(BaseCollector):
     # ═══════════════════════════════════════════════
     # اسکرپ چت باز فعلی — نسخه دقیق
     # ═══════════════════════════════════════════════
-    async def _scrape_current(self, name: str, peer_id: str):
+    async def _scrape_current(
+        self,
+        name: str,
+        peer_id: str,
+        effective_since: datetime = None,
+    ) -> int:
         page = self._page
         chat_id = peer_id if peer_id else name
 
         await self._backfill_scroll()
 
-        # ② پیدا کردن پیام‌ها
         messages = []
         used_sel = None
         for sel in _MSG_SELECTORS:
@@ -662,13 +830,13 @@ class EitaaCollector(BaseCollector):
 
         if not messages:
             log_debug(f"   ⚠️ [{name}] هیچ پیامی نبود")
-            return
+            return 0
 
         total_bubbles = len(messages)
         log_info(f"   📨 {name}: {total_bubbles} پیام یافت ({used_sel})")
 
         limit = (
-            max(self._messages_per_chat, 200)
+            max(self._messages_per_chat, 300)
             if self._needs_backfill
             else self._messages_per_chat
         )
@@ -680,6 +848,10 @@ class EitaaCollector(BaseCollector):
         skipped_kw = 0
         skipped_seen = 0
         skipped_short = 0
+        skipped_old = 0
+        skipped_dup = 0
+
+        _seen_in_this_chat: set[str] = set()
 
         for msg in messages[-limit:]:
             try:
@@ -690,7 +862,7 @@ class EitaaCollector(BaseCollector):
                     skipped_service += 1
                     continue
 
-                # ─── ② skip پیام‌های media خالی (عکس/ویدیو بدون کپشن) ───
+                # ─── ② skip پیام‌های media خالی ───
                 is_empty_media = any(
                     marker in cls for marker in _EMPTY_MEDIA_CLASSES
                 )
@@ -698,53 +870,103 @@ class EitaaCollector(BaseCollector):
                     skipped_empty_media += 1
                     continue
 
-                # ─── ③ data-mid ───
+                # ─── ③ data-mid (از والد بگیر!) ───
                 mid = await msg.get_attribute("data-mid") or ""
+                if not mid:
+                    try:
+                        parent = await msg.evaluate_handle("el => el.parentElement")
+                        if parent:
+                            mid = await parent.get_attribute("data-mid") or ""
+                    except Exception:
+                        pass
 
-                # ─── ④ متن خام ───
+                # ─── ④ data-timestamp (از والد بگیر!) ───
+                msg_timestamp = None
+                date_ms = 0
+                try:
+                    parent = await msg.evaluate_handle("el => el.parentElement")
+                    if parent:
+                        ts_raw = await parent.get_attribute("data-timestamp") or ""
+                        if ts_raw:
+                            try:
+                                ts_val = int(ts_raw)
+                                if ts_val > 10_000_000_000:
+                                    msg_timestamp = datetime.fromtimestamp(ts_val / 1000)
+                                else:
+                                    msg_timestamp = datetime.fromtimestamp(ts_val)
+                                date_ms = ts_val
+                            except (ValueError, OSError):
+                                pass
+                except Exception:
+                    pass
+
+                # ─── ⑤ متن خام ───
                 raw_text = (await msg.inner_text() or "").strip()
                 if not raw_text:
                     continue
 
-                # ─── ⑤ پاک‌سازی ───
+                # ─── ⑥ پاک‌سازی ───
                 text = _clean_text(raw_text)
                 if not text:
                     continue
 
-                # 🎯 متن خیلی کوتاه (کمتر از ۳ کاراکتر) → skip
-                if len(text.strip()) < 3:
+                if _is_invalid_text(text):
                     skipped_short += 1
                     continue
 
-                # 🎯 FIX: اگه data-mid نبود از hash استفاده کن
-                if not mid:
-                    mid = hashlib.sha256(
-                        f"{chat_id}:{text}".encode("utf-8")
-                    ).hexdigest()[:16]
+                # ─── ⑦ since filter ───
+                if effective_since and msg_timestamp:
+                    if msg_timestamp < effective_since:
+                        skipped_old += 1
+                        continue
+
+                # ─── ⑧ id پایدار ───
+                if mid:
+                    mid_final = hashlib.sha256(
+                        f"{chat_id}:{mid}".encode("utf-8")
+                    ).hexdigest()[:32]
+                elif date_ms:
+                    mid_final = hashlib.sha256(
+                        f"{chat_id}:{date_ms}".encode("utf-8")
+                    ).hexdigest()[:32]
+                    skipped_nomid += 1
+                else:
+                    mid_final = hashlib.sha256(
+                        f"{chat_id}:{text[:200]}".encode("utf-8")
+                    ).hexdigest()[:32]
                     skipped_nomid += 1
 
-                uniq = f"{chat_id}:{mid}"
-                if uniq in self._seen_ids:
-                    skipped_seen += 1
+                if mid_final in _seen_in_this_chat:
+                    skipped_dup += 1
                     continue
-                self._seen_ids.add(uniq)
+                _seen_in_this_chat.add(mid_final)
 
-                # ─── ⑥ فیلتر کلیدواژه ───
+                self._last_scrape_stats["messages_found"] += 1
+
+                # ─── ⑨ فیلتر کلیدواژه ───
                 if not self._kw.has_match(text):
                     skipped_kw += 1
                     continue
 
-                # ─── ⑦ sender (نسخه دقیق) ───
+                # ─── ⑩ ضدتکرار سراسری ───
+                uniq = f"{chat_id}:{mid_final}"
+                if uniq in self._seen_ids:
+                    skipped_seen += 1
+                    self._last_scrape_stats["messages_skipped_dup"] += 1
+                    continue
+                self._seen_ids.add(uniq)
+
+                # ─── ⑪ sender ───
                 sender = await self._extract_sender(msg, name)
 
-                # ─── ⑧ chat_type ───
+                # ─── ⑫ chat_type ───
                 chat_type = "private"
                 if "is-group" in cls:
                     chat_type = "group"
                 elif "is-channel" in cls or "channel" in cls.lower():
                     chat_type = "channel"
 
-                # ─── ⑨ media ───
+                # ─── ⑬ media ───
                 media_type, local_file_path = "text", None
                 try:
                     mt, lp = await download_dom_image(
@@ -755,8 +977,12 @@ class EitaaCollector(BaseCollector):
                 except Exception:
                     pass
 
+                # ─── ⑭ timestamp نهایی ───
+                final_ts = msg_timestamp or datetime.now()
+
+                # ─── ⑮ اضافه به صف ───
                 self._messages_queue.append({
-                    "id": str(mid),
+                    "id": mid_final,
                     "platform": _PLATFORM,
                     "text": text,
                     "chat_id": chat_id,
@@ -766,7 +992,7 @@ class EitaaCollector(BaseCollector):
                     "chat_link": None,
                     "user_id": "",
                     "sender_name": sender,
-                    "timestamp": datetime.now(),
+                    "timestamp": final_ts,
                     "media_type": media_type,
                     "file_id": None,
                     "local_file_path": local_file_path,
@@ -779,16 +1005,28 @@ class EitaaCollector(BaseCollector):
                 log_debug(f"   خطا در پردازش پیام: {e}")
                 continue
 
-        # 🎯 گزارش نهایی
-        log_info(
-            f"   📊 {name}: قبول={count} | "
-            f"service={skipped_service} | "
-            f"empty-media={skipped_empty_media} | "
-            f"short={skipped_short} | "
-            f"nomid→hash={skipped_nomid} | "
-            f"seen={skipped_seen} | "
-            f"kw-skip={skipped_kw}"
-        )
+        # ─── گزارش نهایی ───
+        if count > 0:
+            log_success(
+                f"   📩 از {name}: {count} پیام "
+                f"(از {total_bubbles} چک‌شده)"
+            )
+        else:
+            log_info(
+                f"   ℹ️ {name}: 0 پیام جدید "
+                f"(service={skipped_service}، "
+                f"empty-media={skipped_empty_media}، "
+                f"short={skipped_short}، "
+                f"nomid→hash={skipped_nomid}، "
+                f"seen={skipped_seen}، "
+                f"kw-skip={skipped_kw}، "
+                f"old={skipped_old}، "
+                f"dup={skipped_dup})"
+            )
+
+        self._last_scrape_stats["messages_skipped_old"] += skipped_old
+
+        return count
 
     # ═══════════════════════════════════════════════
     # ابزار

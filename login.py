@@ -330,7 +330,7 @@ def _normalize_phone(phone: str) -> str:
 # روبیکا (rubpy)
 # ═══════════════════════════════════════════
 async def login_rubika() -> bool:
-    """ورود روبیکا با شماره + کد پیامکی."""
+    """ورود روبیکا با شماره + کد پیامکی، و باز کردن مرورگر برای مدیریت گروه‌ها."""
     t0 = time.monotonic()
     log_info(f"▶️ {_LOGIN_PREFIX}:rubika] شروع")
 
@@ -358,7 +358,29 @@ async def login_rubika() -> bool:
         )
         return False
 
-    log_info(f"🔑 {_LOGIN_PREFIX}:rubika] منتظر کد پیامکی...")
+    # ═══════════════════════════════════════════════════
+    # 🎯 چک: آیا نشست از قبل وجود دارد؟
+    # ═══════════════════════════════════════════════════
+    import os
+    session_exists = os.path.exists(session_path)
+    
+    if session_exists:
+        log_success(f"✅ {_LOGIN_PREFIX}:rubika] نشست از قبل وجود دارد — بدون لاگین مجدد")
+        # ─── باز کردن مرورگر برای مدیریت گروه‌ها ───
+        try:
+            import webbrowser
+            # آدرس وب روبیکا (با نشست ذخیره شده، کاربر لاگین است)
+            webbrowser.open("https://web.rubika.ir/")
+            log_success(f"🌐 {_LOGIN_PREFIX}:rubika] مرورگر باز شد برای مدیریت گروه‌ها")
+            return True
+        except Exception as e:
+            log_warning(f"⚠️ {_LOGIN_PREFIX}:rubika] باز کردن مرورگر | {e}")
+            return False
+    
+    # ═══════════════════════════════════════════════════
+    # لاگین جدید (اگر نشست وجود نداشت)
+    # ═══════════════════════════════════════════════════
+    log_info(f"🔑 {_LOGIN_PREFIX}:rubika] نشست جدید — منتظر کد پیامکی...")
 
     client = None
     me = ""
@@ -375,10 +397,7 @@ async def login_rubika() -> bool:
             return False
 
         try:
-            try:
-                await client.start(phone_number=phone)
-            except TypeError:
-                await client.start(phone)
+            await client.start(phone_number=phone)
         except Exception as e:
             log_error(
                 f"❌ {_LOGIN_PREFIX}:rubika] start | "
@@ -406,13 +425,18 @@ async def login_rubika() -> bool:
                 f"✅ {_LOGIN_PREFIX}:rubika] ورود موفق | "
                 f"me={me[:50]} | {elapsed_ms:.0f}ms"
             )
+            # ─── بعد از لاگین موفق، مرورگر باز کن ───
+            try:
+                import webbrowser
+                webbrowser.open("https://web.rubika.ir/")
+                log_success(f"🌐 {_LOGIN_PREFIX}:rubika] مرورگر باز شد برای مدیریت گروه‌ها")
+            except Exception as e:
+                log_warning(f"⚠️ {_LOGIN_PREFIX}:rubika] باز کردن مرورگر | {e}")
         else:
             log_warning(
                 f"⚠️ {_LOGIN_PREFIX}:rubika] ناموفق | "
                 f"{elapsed_ms:.0f}ms"
             )
-
-
 # ═══════════════════════════════════════════
 # تلگرام (Playwright / web)
 # ═══════════════════════════════════════════

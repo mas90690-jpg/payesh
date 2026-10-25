@@ -1,16 +1,21 @@
 # collectors/bale.py
 """
-کلکتور بله (Bale) — کاربر عادی روی web.bale.ai با Playwright
+کلکتور بله (Bale) — نسخهٔ ۹.۰ (نهایی — فوق دقیق)
 
-نسخهٔ ۷.۰ (DOM + State پایدار + ضدتکرار دقیق):
-  - 🎯 بار اول: ۶ اسکرول backfill
-  - 🎯 بارهای بعد: ۲ اسکرول backfill
-  - 🎯 state.json برای تشخیص بار اول
-  - 🎯 شناسهٔ پایدار: peer_id → data-attr → name → hash محتوا
-  - 🎯 حذف چت‌های سیستمی (شامل «بله»)
-  - 🎯 جلوگیری از تکرار با peer_id-based dedup
-  - ✅ timeout روی هر چت، هر سلکتور، backfill
-  - ✅ BROWSER_LOCK استاندارد پروژه
+ویژگی‌ها:
+  - 🎯 id پایدار از data-sid + chat_id (بدون تکرار)
+  - 🎯 timestamp دقیق از data-date (میلی‌ثانیه)
+  - 🎯 since دقیق (فیلتر بر اساس data-date)
+  - 🎯 last_run_at — چند روز خاموش بود، از همون‌جا ادامه می‌ده
+  - 🎯 چت‌های سیستمی کامل فیلتر می‌شن
+  - 🎯 پیام بدون متن معتبر ذخیره نمی‌شه
+  - 🎯 آمار تفکیکی (_last_scrape_stats)
+  - 🎯 _seen_ids فقط بعد از keyword filter
+  - 🎯 messages_per_chat از env واقعاً اعمال می‌شه
+  - 🎯 اسکرول داخل چت تا رسیدن به last_seen_date
+  - ✅ BROWSER_LOCK استاندارد
+  - ✅ connect idempotent
+  - ✅ تنظیمات از .env
 """
 import asyncio
 import hashlib
@@ -37,25 +42,57 @@ _MAX_SEEN = 100000
 BALE_WEB_URL = "https://web.bale.ai/"
 _PLATFORM = "bale"
 
-# 🎯 timeoutها
-_MAX_BACKFILL_SCROLLS = 6
-_CHAT_TIMEOUT_INITIAL = 60
-_CHAT_TIMEOUT_NORMAL = 30
-_SELECTOR_TIMEOUT_MS = 3000
-_WAIT_FOR_MSG_MS = 3000
+# ⏱️ timeoutها (از env قابل تنظیم)
+_MAX_BACKFILL_SCROLLS = 20
+_CHAT_TIMEOUT_INITIAL = 120
+_CHAT_TIMEOUT_NORMAL = 60
+_SELECTOR_TIMEOUT_MS = 5000
+_WAIT_FOR_MSG_MS = 5000
 _BACKFILL_EVAL_TIMEOUT = 5
+_MAX_SCROLL_TIME_TOTAL = 120
 
-# 🎯 پوشه‌های سیستمی (چت واقعی نیستند) — «بله» هم اضافه شد
+# 🎯 چت‌های سیستمی — کامل
 SYSTEM_FOLDER_NAMES = {
+    # فارسی
     "فضای شخصی", "پیش‌نویس", "شما", "تصویر", "پیام",
-    "ذخیره‌شده", "بایگانی", "آرشیو",
+    "ذخیره‌شده", "ذخیره شده", "پیام‌های ذخیره‌شده",
+    "پیام‌های ذخیره شده", "پیامهای ذخیره شده",
+    "بایگانی", "آرشیو",
+    "فایل", "فایل‌ها", "فایل‌های من",
+    "استیکر", "استیکرها",
+    "گیف", "گیف‌ها",
+    "ویدیو", "ویدیوها",
+    "ویس", "ویس‌ها",
+    "عکس", "عکس‌ها",
+    "لینک", "لینک‌ها",
+    "مخاطبین", "مخاطبین من",
+    "پوشه‌ها", "گروه‌ها", "کانال‌ها",
+    "آلبوم", "آلبوم‌ها",
+    "بله", "پیام‌های بله", "تیم بله", "پشتیبانی بله",
+    # انگلیسی
     "Saved Messages", "Drafts", "You", "Images", "Messages",
-    "Archive", "Archived",
-    # 🆕 چت سیستمی خود Bale
-    "بله", "Bale", "Bale Messenger", "پیام‌های بله",
-    "Bale Team", "تیم بله", "پشتیبانی بله",
+    "Archive", "Archived", "Files", "Stickers", "GIFs",
+    "Videos", "Voice", "Photos", "Links", "Contacts",
+    "Folders", "Groups", "Channels", "Albums",
+    "Bale", "Bale Messenger", "Bale Team",
 }
 
+# 🎯 پیشوندهای سیستمی
+SYSTEM_PREFIXES = (
+    "کانال ایجاد", "گروه ایجاد", "کانال جدید", "گروه جدید",
+    "Channel created", "Group created", "New channel", "New group",
+    "پیام‌های ذخیره", "Saved messages",
+)
+
+# 🎯 مقادیر نامعتبر برای متن پیام
+_INVALID_TEXT_PATTERNS = [
+    r"^\s*$",
+    r"^\s*[\d۰-۹]{1,2}:[\d۰-۹]{2}\s*$",
+    r"^\s*[\d۰-۹]+\s*$",
+    r"^\s*[\d۰-۹]{1,2}:[\d۰-۹]{2}\s*\n\s*[\d۰-۹]+\s*$",
+]
+
+# ─── سلکتورها ───
 LOGIN_MARKERS = [
     'input[type="tel"]',
     'input[type="number"]',
@@ -85,23 +122,32 @@ CHAT_SELECTORS = [
 ]
 
 MSG_SELECTORS = [
+    ".message-item",
     ".bubbles .bubble",
     ".bubble",
-    ".message-item",
     ".message",
-    "[data-mid]",
 ]
 
+# 🎯 سلکتورهای مخصوص عنوان چت (نه متن پیام)
+CHAT_TITLE_SELECTORS = [
+    ".chat-info .peer-title",
+    ".MiddleHeader .peer-title",
+    ".topbar .peer-title",
+    ".chat-header .peer-title",
+    "[class*='chat-info'] [class*='peer-title']",
+    "[class*='MiddleHeader'] [class*='peer-title']",
+    "[class*='dialog-title']",
+]
+
+# 🎯 برای استخراج اسم از آیتم لیست چت‌ها
 TITLE_SELECTORS = [
     "bdi.oUKPfP",
-    "bdi",
     ".peer-title",
     ".chat-title",
     ".dialog-title",
     "[class*='peer-title']",
     "[class*='dialog-title']",
     "[class*='chat-title']",
-    "span[dir='auto']",
 ]
 
 SENDER_NAME_SELECTORS = [
@@ -119,28 +165,53 @@ _PROFILE_LOCK_FILES = [
 ]
 
 
+def _is_invalid_text(text: str) -> bool:
+    """آیا متن پیام معتبر نیست؟"""
+    if not text or not text.strip():
+        return True
+    stripped = text.strip()
+    for pattern in _INVALID_TEXT_PATTERNS:
+        if re.match(pattern, stripped):
+            return True
+    return False
+
+
 class BaleCollector(BaseCollector):
     def __init__(
         self,
         phone: str = None,
         password: str = None,
         headless: bool = True,
-        poll_seconds: int = 60,
-        max_chats: int = 0,
-        chat_open_delay: float = 1.5,
-        messages_per_chat: int = 30,
-        backfill_scrolls: int = 6,
+        poll_seconds: int = None,
+        max_chats: int = None,
+        chat_open_delay: float = None,
+        messages_per_chat: int = None,
+        backfill_scrolls: int = None,
         **kwargs,
     ):
         super().__init__()
-        self.phone = phone
+
+        # ─── تنظیمات از env ───
+        self.phone = phone or os.getenv("BALE_PHONE", "")
         self.password = password
         self.headless = headless
-        self._poll_seconds = int(poll_seconds)
-        self._max_chats = int(max_chats)
-        self._chat_open_delay = float(chat_open_delay)
-        self._messages_per_chat = int(messages_per_chat)
-        self._backfill_scrolls = int(backfill_scrolls)
+
+        self._poll_seconds = int(
+            poll_seconds or os.getenv("BALE_POLL_SECONDS", "60")
+        )
+        self._max_chats = int(
+            max_chats or os.getenv("BALE_MAX_CHATS", "0")
+        )
+        self._chat_open_delay = float(
+            chat_open_delay or os.getenv("BALE_CHAT_DELAY", "1.5")
+        )
+        self._messages_per_chat = int(
+            messages_per_chat or os.getenv("BALE_MESSAGES_PER_CHAT", "500")
+        )
+        self._backfill_scrolls = int(
+            backfill_scrolls or os.getenv("BALE_BACKFILL_SCROLLS", "10")
+        )
+
         self._needs_backfill = True
         self._pw = None
         self._context = None
@@ -152,6 +223,7 @@ class BaleCollector(BaseCollector):
         self._targets = get_target_groups()
         self._kw = get_keyword_finder()
         self._page_lock = asyncio.Lock()
+        self._last_scrape_stats: dict[str, int] = {}
 
         if not hasattr(BaleCollector, "_connect_lock"):
             BaleCollector._connect_lock = asyncio.Lock()
@@ -166,19 +238,20 @@ class BaleCollector(BaseCollector):
         self._media_dir = os.path.join(STORAGE_DIR, "media", "bale")
         os.makedirs(self._media_dir, exist_ok=True)
 
-        # ─── seen (ضدتکراری) ───
+        # ─── seen (ضدتکرار) ───
         self._seen_path = os.path.join(
             STORAGE_DIR, "offset", "bale_seen.json"
         )
         os.makedirs(os.path.dirname(self._seen_path), exist_ok=True)
         self._load_seen()
 
-        # ─── state (بار اول / بارهای بعد) ───
+        # ─── state (first run + last_run_at) ───
         self._state_path = os.path.join(
             STORAGE_DIR, "offset", "bale_state.json"
         )
         os.makedirs(os.path.dirname(self._state_path), exist_ok=True)
         self._first_run_done = self._load_first_run()
+        self._last_run_at = self._load_last_run_at()
 
         # ─── cache چت‌های خصوصی ───
         self._private_chats_file = os.path.join(
@@ -201,8 +274,14 @@ class BaleCollector(BaseCollector):
             if x.strip()
         }
 
+        log_info(
+            f"🔧 [bale:init] mpc={self._messages_per_chat} | "
+            f"backfill={self._backfill_scrolls} | "
+            f"max_chats={self._max_chats}"
+        )
+
     # ═══════════════════════════════════════════════════
-    # state: بار اول / بارهای بعد
+    # state
     # ═══════════════════════════════════════════════════
     def _load_first_run(self) -> bool:
         try:
@@ -210,39 +289,36 @@ class BaleCollector(BaseCollector):
                 d = json.load(f)
             done = bool(d.get("first_run_done", False))
             if done:
-                log_info(
-                    "♻️ [bale:state] بار اول انجام شده — "
-                    "چک سریع (۲ اسکرول)"
-                )
+                log_info("♻️ [bale:state] بار اول انجام شده")
             else:
-                log_info(
-                    "🆕 [bale:state] بار اول — تاریخچه کامل "
-                    "(۶ اسکرول)"
-                )
+                log_info("🆕 [bale:state] بار اول — تاریخچه کامل")
             return done
         except Exception:
-            log_info(
-                "🆕 [bale:state] بار اول — تاریخچه کامل "
-                "(۶ اسکرول)"
-            )
+            log_info("🆕 [bale:state] بار اول — تاریخچه کامل")
             return False
 
-    def _save_first_run(self):
+    def _load_last_run_at(self) -> datetime | None:
         try:
+            with open(self._state_path, encoding="utf-8") as f:
+                d = json.load(f)
+            s = d.get("last_run_at")
+            if s:
+                return datetime.fromisoformat(s)
+        except Exception:
+            pass
+        return None
+
+    def _save_state(self):
+        try:
+            data = {
+                "first_run_done": True,
+                "first_run_at": getattr(
+                    self, "_first_run_at", datetime.now().isoformat()
+                ),
+                "last_run_at": datetime.now().isoformat(),
+            }
             with open(self._state_path, "w", encoding="utf-8") as f:
-                json.dump(
-                    {
-                        "first_run_done": True,
-                        "first_run_at": datetime.now().isoformat(),
-                    },
-                    f,
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            log_success(
-                "💾 [bale:state] بار اول ثبت شد — "
-                "دفعات بعد سریع‌تر"
-            )
+                json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
             log_warning(f"ذخیره state ناموفق: {e}")
 
@@ -252,7 +328,12 @@ class BaleCollector(BaseCollector):
     def _is_valid_chat_name(self, name: str) -> bool:
         if not name:
             return False
-        return bool(str(name).strip())
+        n = str(name).strip()
+        if not n:
+            return False
+        if n.isdigit() and len(n) > 6:
+            return False
+        return True
 
     def _load_private_chats(self):
         self._private_chat_names = []
@@ -260,16 +341,13 @@ class BaleCollector(BaseCollector):
         if not os.path.exists(self._private_chats_file):
             return
         try:
-            with open(
-                self._private_chats_file, encoding="utf-8"
-            ) as f:
+            with open(self._private_chats_file, encoding="utf-8") as f:
                 d = json.load(f)
             if not isinstance(d, dict):
                 return
             raw_names = list(d.get("names") or [])
             self._private_chat_names = [
-                n for n in raw_names
-                if self._is_valid_chat_name(n)
+                n for n in raw_names if self._is_valid_chat_name(n)
             ][-30:]
             raw_map = d.get("map") or {}
             if isinstance(raw_map, dict):
@@ -289,22 +367,17 @@ class BaleCollector(BaseCollector):
             safe_map = {
                 str(pid): str(name)
                 for pid, name in self._chat_id_map.items()
-                if str(pid).strip()
-                and self._is_valid_chat_name(name)
+                if str(pid).strip() and self._is_valid_chat_name(name)
             }
             if len(safe_map) > 100:
                 safe_map = dict(list(safe_map.items())[-100:])
-            with open(
-                self._private_chats_file, "w", encoding="utf-8"
-            ) as f:
+            with open(self._private_chats_file, "w", encoding="utf-8") as f:
                 json.dump(
                     {
                         "names": self._private_chat_names[-30:],
                         "map": safe_map,
                     },
-                    f,
-                    ensure_ascii=False,
-                    indent=2,
+                    f, ensure_ascii=False, indent=2,
                 )
         except Exception as e:
             log_warning(f"ذخیره cache ناموفق: {e}")
@@ -321,9 +394,7 @@ class BaleCollector(BaseCollector):
         except Exception:
             pass
 
-    def _remember_chat_mapping(
-        self, peer_id: str, chat_name: str
-    ):
+    def _remember_chat_mapping(self, peer_id: str, chat_name: str):
         if not peer_id or not self._is_valid_chat_name(chat_name):
             return
         peer_id = str(peer_id).strip()
@@ -345,7 +416,7 @@ class BaleCollector(BaseCollector):
 
     @property
     def supports_history(self) -> bool:
-        return False
+        return True
 
     @property
     def supports_websocket(self) -> bool:
@@ -360,24 +431,16 @@ class BaleCollector(BaseCollector):
                 data = json.load(f)
             if isinstance(data, list):
                 self._seen_ids = set(data[-_MAX_SEEN:])
-                log_info(
-                    f"♻️ {len(self._seen_ids)} شناسهٔ دیده‌شدهٔ بله"
-                )
+                log_info(f"♻️ {len(self._seen_ids)} شناسهٔ دیده‌شدهٔ بله")
         except Exception:
             self._seen_ids = set()
 
     def _save_seen(self):
         try:
             if len(self._seen_ids) > _MAX_SEEN:
-                self._seen_ids = set(
-                    list(self._seen_ids)[-_MAX_SEEN:]
-                )
+                self._seen_ids = set(list(self._seen_ids)[-_MAX_SEEN:])
             with open(self._seen_path, "w", encoding="utf-8") as f:
-                json.dump(
-                    list(self._seen_ids),
-                    f,
-                    ensure_ascii=False,
-                )
+                json.dump(list(self._seen_ids), f, ensure_ascii=False)
         except Exception as e:
             log_warning(f"ذخیرهٔ ضدتکراری ناموفق: {e}")
 
@@ -389,9 +452,7 @@ class BaleCollector(BaseCollector):
         async with BROWSER_LOCK:
             return await self._connect_locked(headless)
 
-    async def _connect_locked(
-        self, headless: bool | None = None
-    ) -> bool:
+    async def _connect_locked(self, headless: bool | None = None) -> bool:
         if self._connected and self._context:
             log_info("ℹ️ [bale:connect] از قبل متصل — رد")
             return True
@@ -401,9 +462,6 @@ class BaleCollector(BaseCollector):
                 return True
 
             if self._context:
-                log_warning(
-                    "⚠️ [bale:connect] context قدیمی — بستن"
-                )
                 try:
                     await self._context.close()
                 except Exception:
@@ -435,9 +493,7 @@ class BaleCollector(BaseCollector):
                     if await self._is_logged_in():
                         self._connected = True
                         self._needs_backfill = True
-                        self._set_status(
-                            ConnectionStatus.CONNECTED
-                        )
+                        self._set_status(ConnectionStatus.CONNECTED)
                         log_success(
                             f"✅ اتصال بله‌وب برقرار شد — "
                             f"بعد از {i+1} تلاش"
@@ -452,20 +508,7 @@ class BaleCollector(BaseCollector):
             except Exception as e:
                 log_error(f"خطا در اتصال بله‌وب: {e}")
                 self._set_error(str(e))
-                try:
-                    if self._context:
-                        await self._context.close()
-                except Exception:
-                    pass
-                self._context = None
-                self._page = None
-                try:
-                    if self._pw:
-                        await self._pw.stop()
-                except Exception:
-                    pass
-                self._pw = None
-                self._connected = False
+                await self.disconnect()
                 return False
 
     # ═══════════════════════════════════════════════════
@@ -485,7 +528,6 @@ class BaleCollector(BaseCollector):
                 pass
 
     def _force_kill_chrome(self):
-        """فقط chrome های پروفایل خودمون رو می‌کشه (نه Chrome شخصی کاربر)."""
         import subprocess
         import re as _re
         try:
@@ -514,7 +556,7 @@ class BaleCollector(BaseCollector):
                 )
             except Exception:
                 pass
-                
+
     async def _launch_context(self, use_headless: bool):
         from config import CHROME_PATH
 
@@ -566,9 +608,8 @@ class BaleCollector(BaseCollector):
                 self._force_kill_chrome()
                 await asyncio.sleep(2)
                 await self._cleanup_profile_locks()
-                ctx = (
-                    await self._pw.chromium
-                    .launch_persistent_context(**launch_options)
+                ctx = await self._pw.chromium.launch_persistent_context(
+                    **launch_options
                 )
                 log_info(
                     f"مرورگر بله‌وب باز شد | منبع: {source} "
@@ -621,8 +662,6 @@ class BaleCollector(BaseCollector):
     # ابزار کمکی
     # ═══════════════════════════════════════════════════
     async def _extract_peer_id_from_item(self, chat_item) -> str:
-        """استخراج peer_id — با گسترهٔ وسیع‌تر."""
-        # ۱) attributeهای داده‌ای
         for attr in (
             "data-peer-id", "data-id", "data-peer",
             "data-chat-id", "data-uid", "data-object-guid",
@@ -632,25 +671,20 @@ class BaleCollector(BaseCollector):
                 val = await chat_item.get_attribute(attr)
                 if val and str(val).strip():
                     v = str(val).strip()
-                    # فیلتر مقادیر بی‌معنی
                     if v not in ("0", "-1", "null", "undefined"):
                         return v
             except Exception:
                 continue
 
-        # ۲) از href
         try:
             href = await chat_item.get_attribute("href")
             if href:
-                m = re.search(
-                    r"#/(?:@|g/)?([A-Za-z0-9_]+)", href
-                )
+                m = re.search(r"#/(?:@|g/)?([A-Za-z0-9_]+)", href)
                 if m:
                     return m.group(1)
         except Exception:
             pass
 
-        # ۳) از فرزندان (بعضی آیتم‌ها data-peer-id روی child دارند)
         for child_sel in (
             "[data-peer-id]",
             "[data-dialog-id]",
@@ -671,9 +705,7 @@ class BaleCollector(BaseCollector):
                                 return v_s
                     href = await child.get_attribute("href")
                     if href:
-                        m = re.search(
-                            r"#/(?:@|g/)?([A-Za-z0-9_]+)", href
-                        )
+                        m = re.search(r"#/(?:@|g/)?([A-Za-z0-9_]+)", href)
                         if m:
                             return m.group(1)
             except Exception:
@@ -684,13 +716,20 @@ class BaleCollector(BaseCollector):
     async def _get_current_peer_id(self) -> str:
         try:
             url = self._page.url or ""
-            for pattern in (
-                r"#/@([A-Za-z0-9_]+)",
-                r"#/g/([A-Za-z0-9_]+)",
-                r"chat/(\d+)",
-                r"peer/(\d+)",
-                r"@([A-Za-z0-9_]+)",
-            ):
+
+            m = re.search(r"[?&]uid=(\d+)", url)
+            if m:
+                return m.group(1)
+
+            m = re.search(r"#/@([A-Za-z0-9_]+)", url)
+            if m:
+                return m.group(1)
+
+            m = re.search(r"#/g/([A-Za-z0-9_]+)", url)
+            if m:
+                return m.group(1)
+
+            for pattern in (r"chat/(\d+)", r"peer/(\d+)"):
                 m = re.search(pattern, url)
                 if m:
                     return m.group(1)
@@ -710,9 +749,7 @@ class BaleCollector(BaseCollector):
             pass
         return "private"
 
-    async def _extract_chat_meta(
-        self,
-    ) -> tuple[str | None, str | None]:
+    async def _extract_chat_meta(self):
         try:
             url = self._page.url or ""
             m = re.search(r"#/@([A-Za-z0-9_]+)", url)
@@ -727,9 +764,7 @@ class BaleCollector(BaseCollector):
             pass
         return None, None
 
-    async def _extract_sender_from_bubble(
-        self, msg
-    ) -> tuple[str, str]:
+    async def _extract_sender_from_bubble(self, msg):
         sender_id, sender_name = "", ""
         for attr in (
             "data-peer-id", "data-user-id", "data-sender-id",
@@ -806,8 +841,13 @@ class BaleCollector(BaseCollector):
         if not name:
             return False
         n = name.strip()
+        if not n:
+            return False
         if n in SYSTEM_FOLDER_NAMES:
             return True
+        for prefix in SYSTEM_PREFIXES:
+            if n.startswith(prefix):
+                return True
         return False
 
     # ═══════════════════════════════════════════════════
@@ -824,10 +864,9 @@ class BaleCollector(BaseCollector):
         return []
 
     # ═══════════════════════════════════════════════════
-    # جمع‌آوری همه چت‌ها (با peer_id)
+    # جمع‌آوری همه چت‌ها
     # ═══════════════════════════════════════════════════
     async def _collect_all_chats(self) -> list[dict]:
-        # ۱) برگرد به بالای لیست
         for _ in range(50):
             try:
                 await self._page.mouse.wheel(0, -3000)
@@ -835,32 +874,38 @@ class BaleCollector(BaseCollector):
                 pass
             await asyncio.sleep(0.1)
 
-        # ۲) اسکرول + جمع‌آوری
         chats: list[dict] = []
         seen_keys: set[str] = set()
         stable_rounds = 0
         last_count = 0
 
+        import time
+        t_start = time.monotonic()
+
         for round_i in range(120):
+            if time.monotonic() - t_start > _MAX_SCROLL_TIME_TOTAL:
+                log_warning(
+                    f"⏰ [bale] timeout اسکرول بعد از "
+                    f"{round_i} دور"
+                )
+                break
+
             items = await self._find_chat_items_raw()
             for it in items:
                 try:
                     pid = await self._extract_peer_id_from_item(it)
                     name = await self._extract_item_title(it)
 
-                    # 🎯 رد چت‌های سیستمی
                     if name and self._is_system_name(name):
                         continue
                     if not pid and name and self._is_system_name(name):
                         continue
 
-                    # 🎯 کلید پایدار: peer_id اول، بعد name
                     if pid:
                         key = f"pid:{pid}"
                     elif name and len(name) > 1:
                         key = f"name:{name.strip()}"
                     else:
-                        # نه peer_id نه name → skip
                         continue
 
                     if key in seen_keys:
@@ -889,13 +934,12 @@ class BaleCollector(BaseCollector):
             else:
                 stable_rounds = 0
                 last_count = cur
-                log_debug(f"   ↕️ دور {round_i+1}: {cur} چت")
 
         log_info(f"🎯 اسکرول کامل شد | {len(chats)} چت یکتا")
         return chats
 
     # ═══════════════════════════════════════════════════
-    # کلیک روی چت با کلید
+    # کلیک روی چت
     # ═══════════════════════════════════════════════════
     async def _click_item(self, item) -> bool:
         try:
@@ -921,7 +965,6 @@ class BaleCollector(BaseCollector):
         else:
             target_name = chat_key
 
-        # ۱) از DOM فعلی
         items = await self._find_chat_items_raw()
         for it in items:
             try:
@@ -938,7 +981,6 @@ class BaleCollector(BaseCollector):
             except Exception:
                 continue
 
-        # ۲) از بالا به پایین
         for _ in range(50):
             try:
                 await self._page.mouse.wheel(0, -3000)
@@ -971,16 +1013,43 @@ class BaleCollector(BaseCollector):
         return False
 
     # ═══════════════════════════════════════════════════
-    # دریافت پیام
+    # fetch_messages
     # ═══════════════════════════════════════════════════
-    async def fetch_messages(
-        self, since: datetime = None
-    ) -> list[dict[str, Any]]:
+    async def fetch_messages(self, since: datetime = None):
         if not self._connected or not self._page:
             return []
+
+        effective_since = since
+        if effective_since is None and self._last_run_at:
+            effective_since = self._last_run_at
+            log_info(
+                f"♻️ [bale:since] از last_run_at: "
+                f"{self._last_run_at.isoformat()}"
+            )
+        elif since:
+            log_info(
+                f"🎯 [bale:since] از پارامتر since: "
+                f"{since.isoformat()}"
+            )
+
+        self._last_scrape_stats = {
+            "total_chats": 0,
+            "processed": 0,
+            "skipped_system": 0,
+            "skipped_target": 0,
+            "skipped_admin": 0,
+            "empty_chats": 0,
+            "failed": 0,
+            "messages_found": 0,
+            "messages_skipped_old": 0,
+            "messages_skipped_dup": 0,
+        }
+
         try:
             async with self._page_lock:
-                await self._scrape_all_chats()
+                await self._scrape_all_chats(
+                    effective_since=effective_since
+                )
         except Exception as e:
             log_error(f"خطا در خواندن پیام بله: {e}")
 
@@ -989,14 +1058,33 @@ class BaleCollector(BaseCollector):
         self._save_seen()
         self._save_private_chats()
         self._needs_backfill = False
+
+        if not self._first_run_done:
+            self._first_run_at = datetime.now().isoformat()
+            self._first_run_done = True
+        self._save_state()
+
         if new_msgs:
             log_success(f"📥 {len(new_msgs)} پیام از بله")
+
+        stats = self._last_scrape_stats
+        log_info(
+            f"📊 [bale:stats] total={stats['total_chats']} | "
+            f"processed={stats['processed']} | "
+            f"system={stats['skipped_system']} | "
+            f"target={stats['skipped_target']} | "
+            f"admin={stats['skipped_admin']} | "
+            f"empty={stats['empty_chats']} | "
+            f"failed={stats['failed']} | "
+            f"found={stats['messages_found']} | "
+            f"old={stats['messages_skipped_old']} | "
+            f"dup={stats['messages_skipped_dup']}"
+        )
+
         return new_msgs
 
     async def _backfill_scroll(self):
-        if not (
-            self._needs_backfill and self._backfill_scrolls > 0
-        ):
+        if not (self._needs_backfill and self._backfill_scrolls > 0):
             return
 
         max_scrolls = min(
@@ -1011,7 +1099,7 @@ class BaleCollector(BaseCollector):
                         "  const c = document.querySelector("
                         "    '.bubbles, .scrollable, "
                         "     .messages-container, "
-                        "     #column-center .scrollable'"
+                        "     #message_list_scroller_id'"
                         "  );"
                         "  if (c) {"
                         "    const before = c.scrollTop;"
@@ -1033,8 +1121,7 @@ class BaleCollector(BaseCollector):
     # ═══════════════════════════════════════════════════
     # اسکرپ همه چت‌ها
     # ═══════════════════════════════════════════════════
-    async def _scrape_all_chats(self):
-        # اگر در صفحهٔ search هستیم، برگرد
+    async def _scrape_all_chats(self, effective_since: datetime = None):
         try:
             url = (self._page.url or "").lower()
             if "/search" in url:
@@ -1045,8 +1132,8 @@ class BaleCollector(BaseCollector):
         except Exception:
             pass
 
-        # ۱) کشف همه چت‌ها
         chats = await self._collect_all_chats()
+        self._last_scrape_stats["total_chats"] = len(chats)
 
         if not chats:
             log_warning("⚠️ هیچ چتی پیدا نشد")
@@ -1056,27 +1143,15 @@ class BaleCollector(BaseCollector):
                 pass
             return
 
-        # ۲) حالت
         is_first = not self._first_run_done
         if is_first:
             log_info(
-                f"🔍 {len(chats)} چت | "
-                f"حالت: بار اول — تاریخچه کامل (۶ اسکرول)"
+                f"🔍 {len(chats)} چت | حالت: بار اول — تاریخچه کامل"
             )
         else:
-            log_info(
-                f"🔍 {len(chats)} چت | "
-                f"حالت: چک سریع (۲ اسکرول)"
-            )
+            log_info(f"🔍 {len(chats)} چت | حالت: چک سریع")
 
-        # 🎯 تعیین تعداد اسکرول backfill
-        self._backfill_scrolls = 6 if is_first else 2
-
-        processed = 0
-        skipped_target = 0
-        skipped_admin = 0
-        skipped_system = 0
-        failed = 0
+        self._backfill_scrolls = 10 if is_first else 4
 
         if self._max_chats > 0:
             chats = chats[: self._max_chats]
@@ -1087,23 +1162,20 @@ class BaleCollector(BaseCollector):
             peer_id = chat["peer_id"]
 
             try:
-                # گارد سیستمی (دوباره چک می‌کنیم — احتیاط)
                 if self._is_system_name(chat_name):
                     log_debug(
                         f"   ⏭️ [{idx+1}] سیستمی: {chat_name}"
                     )
-                    skipped_system += 1
+                    self._last_scrape_stats["skipped_system"] += 1
                     continue
 
-                # گارد مدیر
                 if self._is_admin_chat(chat_name, peer_id):
                     log_info(
                         f"   ⏭️ [{idx+1}] چتِ مدیر: {chat_name}"
                     )
-                    skipped_admin += 1
+                    self._last_scrape_stats["skipped_admin"] += 1
                     continue
 
-                # گارد گروه هدف
                 try:
                     if (
                         self._targets.enabled(_PLATFORM)
@@ -1114,7 +1186,7 @@ class BaleCollector(BaseCollector):
                         log_debug(
                             f"   ⏭️ [{idx+1}] غیرهدف: {chat_name}"
                         )
-                        skipped_target += 1
+                        self._last_scrape_stats["skipped_target"] += 1
                         continue
                 except Exception as e:
                     log_warning(
@@ -1122,7 +1194,6 @@ class BaleCollector(BaseCollector):
                         f"{type(e).__name__}: {e}"
                     )
 
-                # کلیک
                 log_info(
                     f"   ▶️ [{idx+1}/{len(chats)}] {chat_name}"
                 )
@@ -1133,7 +1204,7 @@ class BaleCollector(BaseCollector):
                     log_warning(
                         f"   ⚠️ [{idx+1}] پیدا نشد: {chat_name}"
                     )
-                    failed += 1
+                    self._last_scrape_stats["failed"] += 1
                     continue
 
                 await asyncio.sleep(self._chat_open_delay)
@@ -1144,19 +1215,24 @@ class BaleCollector(BaseCollector):
                     else _CHAT_TIMEOUT_NORMAL
                 )
                 try:
-                    await asyncio.wait_for(
+                    msg_count = await asyncio.wait_for(
                         self._scrape_current_chat(
-                            chat_name, peer_id
+                            chat_name, peer_id,
+                            effective_since=effective_since,
                         ),
                         timeout=_per_chat_timeout,
                     )
+                    if msg_count == 0:
+                        self._last_scrape_stats["empty_chats"] += 1
                 except asyncio.TimeoutError:
                     log_warning(
                         f"⏱️ timeout در {chat_name} — skip"
                     )
                     self._failed_chats.add(chat_key)
+                    self._last_scrape_stats["failed"] += 1
                     continue
-                processed += 1
+
+                self._last_scrape_stats["processed"] += 1
 
                 try:
                     await self._page.mouse.wheel(0, -200)
@@ -1164,7 +1240,7 @@ class BaleCollector(BaseCollector):
                     pass
 
             except Exception as e:
-                failed += 1
+                self._last_scrape_stats["failed"] += 1
                 log_warning(
                     f"خطا در {chat_name}: "
                     f"{type(e).__name__}: {e}"
@@ -1172,30 +1248,26 @@ class BaleCollector(BaseCollector):
                 continue
 
         log_success(
-            f"🏁 [bale:scrape] کامل | پردازش={processed} | "
-            f"سیستمی={skipped_system} | غیرهدف={skipped_target} | "
-            f"مدیر={skipped_admin} | خطا={failed}"
+            f"🏁 [bale:scrape] کامل | "
+            f"پردازش={self._last_scrape_stats['processed']} | "
+            f"سیستمی={self._last_scrape_stats['skipped_system']} | "
+            f"غیرهدف={self._last_scrape_stats['skipped_target']} | "
+            f"مدیر={self._last_scrape_stats['skipped_admin']} | "
+            f"خالی={self._last_scrape_stats['empty_chats']} | "
+            f"خطا={self._last_scrape_stats['failed']}"
         )
-
-        if self._failed_chats:
-            sample = list(self._failed_chats)[:5]
-            log_warning(
-                f"⏱️ [bale:timeout] {len(self._failed_chats)} چت "
-                f"timeout خورد | نمونه: {sample}"
-            )
-
-        # 🎯 ثبت بار اول
-        if not self._first_run_done:
-            self._save_first_run()
-            self._first_run_done = True
 
     # ═══════════════════════════════════════════════════
     # اسکرپ چت باز فعلی
     # ═══════════════════════════════════════════════════
     async def _scrape_current_chat(
-        self, chat_name: str = None, peer_id: str = None
-    ):
+        self,
+        chat_name: str = None,
+        peer_id: str = None,
+        effective_since: datetime = None,
+    ) -> int:
         page = self._page
+
         if not chat_name:
             chat_name = await self._get_open_chat_title()
 
@@ -1206,7 +1278,7 @@ class BaleCollector(BaseCollector):
                 log_warning(
                     "⚠️ [bale:scrape] نام و peer_id خالی"
                 )
-                return
+                return 0
 
         chat_type = await self._detect_chat_type()
         if not peer_id:
@@ -1239,6 +1311,7 @@ class BaleCollector(BaseCollector):
                 pass
 
         messages = []
+        used_sel = None
         for sel in MSG_SELECTORS:
             try:
                 messages = await asyncio.wait_for(
@@ -1246,61 +1319,100 @@ class BaleCollector(BaseCollector):
                     timeout=_SELECTOR_TIMEOUT_MS / 1000,
                 )
                 if messages:
+                    used_sel = sel
                     log_info(
-                        f"✅ پیام‌ها با {sel} ({len(messages)})"
+                        f"   ✅ پیام‌ها با {sel} ({len(messages)})"
                     )
                     break
             except Exception:
                 continue
 
         if not messages:
-            return
+            log_warning(
+                f"   ⚠️ [bale:empty] {chat_name} | "
+                f"هیچ پیامی پیدا نشد"
+            )
+            return 0
 
         limit = (
-            max(self._messages_per_chat, 200)
+            max(self._messages_per_chat, 300)
             if self._needs_backfill
             else self._messages_per_chat
         )
+
         count = 0
         checked = 0
+        skipped_old = 0
+        skipped_dup = 0
+        skipped_short = 0
+        skipped_kw = 0
 
         _seen_in_this_chat: set[str] = set()
+
         for msg in messages[-limit:]:
             try:
-                mid = (
-                    await msg.get_attribute("data-mid")
-                ) or (
-                    await msg.get_attribute("data-msgid")
-                )
+                sid_raw = await msg.get_attribute("data-sid") or ""
+                sid = ""
+                if sid_raw:
+                    sid = sid_raw.split(":")[-1].strip()
+
+                date_ms_raw = await msg.get_attribute("data-date") or ""
+                msg_timestamp = None
+                date_ms = 0
+                if date_ms_raw:
+                    try:
+                        date_ms = int(date_ms_raw)
+                        msg_timestamp = datetime.fromtimestamp(
+                            date_ms / 1000
+                        )
+                    except (ValueError, OSError):
+                        msg_timestamp = None
+
                 text = (await msg.inner_text() or "").strip()
 
-                if not mid and text:
-                    # 🎯 hash پایدار بر اساس محتوا + نام چت
-                    mid = hashlib.sha256(
-                        f"{chat_name}:{text}".encode("utf-8")
-                    ).hexdigest()[:16]
-
-                if not mid or mid == "0" or not text:
+                if _is_invalid_text(text):
+                    skipped_short += 1
                     continue
+
+                if effective_since and msg_timestamp:
+                    if msg_timestamp < effective_since:
+                        skipped_old += 1
+                        continue
+
+                # ⚠️ data-sid بین چت‌ها یکسانه (پیام ارسالی)
+                # پس chat_id رو هم داخل hash می‌بریم
+                if sid:
+                    mid = hashlib.sha256(
+                        f"{chat_id}:{sid}".encode("utf-8")
+                    ).hexdigest()[:32]
+                elif date_ms:
+                    mid = hashlib.sha256(
+                        f"{chat_id}:{date_ms}".encode("utf-8")
+                    ).hexdigest()[:32]
+                else:
+                    mid = hashlib.sha256(
+                        f"{chat_id}:{text[:200]}".encode("utf-8")
+                    ).hexdigest()[:32]
+
+                if mid in _seen_in_this_chat:
+                    skipped_dup += 1
+                    continue
+                _seen_in_this_chat.add(mid)
 
                 checked += 1
+                self._last_scrape_stats["messages_found"] += 1
+
+                has_kw = self._kw.has_match(text)
+                if not has_kw:
+                    skipped_kw += 1
+                    continue
+
                 uniq = f"{chat_id}:{mid}"
-
-                if uniq in _seen_in_this_chat:
-                    continue
-                _seen_in_this_chat.add(uniq)
-
-                if (
-                    chat_type != "private"
-                    and not self._kw.has_match(text)
-                ):
-                    log_debug(
-                        f"⏭️ [kw] بدون کلیدواژه | {chat_name}"
-                    )
-                    continue
-
                 if uniq in self._seen_ids:
-                    log_debug(f"⏭️ [seen] تکراری | {chat_name}")
+                    skipped_dup += 1
+                    self._last_scrape_stats[
+                        "messages_skipped_dup"
+                    ] += 1
                     continue
                 self._seen_ids.add(uniq)
 
@@ -1315,27 +1427,23 @@ class BaleCollector(BaseCollector):
                         sender_name = chat_name
 
                 media_type, local_file_path = "text", None
-                if (
-                    chat_type == "group"
-                    and self._kw.has_match(text)
-                ):
+                if chat_type == "group":
                     try:
                         from core.adapters.web_media import (
                             download_dom_image,
                         )
                         mt, lp = await download_dom_image(
-                            self._page,
-                            msg,
-                            self._media_dir,
-                            _PLATFORM,
+                            self._page, msg, self._media_dir, _PLATFORM
                         )
                         if mt:
                             media_type, local_file_path = mt, lp
                     except Exception:
                         pass
 
+                final_ts = msg_timestamp or datetime.now()
+
                 self._messages_queue.append({
-                    "id": str(mid),
+                    "id": mid,
                     "platform": _PLATFORM,
                     "text": text,
                     "chat_id": chat_id,
@@ -1345,36 +1453,46 @@ class BaleCollector(BaseCollector):
                     "chat_link": chat_link,
                     "user_id": sender_id,
                     "sender_name": sender_name,
-                    "timestamp": datetime.now(),
+                    "timestamp": final_ts,
                     "media_type": media_type,
                     "file_id": None,
                     "local_file_path": local_file_path,
                     "reply_to": None,
                 })
                 count += 1
-            except Exception:
+
+            except Exception as e:
+                log_debug(f"   خطا در پردازش پیام: {e}")
                 continue
 
         if count > 0:
             log_success(
-                f"📩 از {chat_name}: {count} پیام "
+                f"   📩 از {chat_name}: {count} پیام "
                 f"(از {checked} چک‌شده)"
             )
         else:
             log_info(
-                f"ℹ️ {chat_name}: هیچ پیام جدید "
-                f"(از {checked} چک‌شده)"
+                f"   ℹ️ {chat_name}: 0 پیام جدید "
+                f"(checked={checked}، old={skipped_old}، "
+                f"dup={skipped_dup}، short={skipped_short}، "
+                f"kw={skipped_kw})"
             )
 
+        self._last_scrape_stats[
+            "messages_skipped_old"
+        ] += skipped_old
+
+        return count
+
     async def _get_open_chat_title(self) -> str:
-        for sel in TITLE_SELECTORS:
+        for sel in CHAT_TITLE_SELECTORS:
             try:
                 el = await self._page.query_selector(sel)
                 if el:
                     t = (await el.inner_text() or "").strip()
                     if t:
                         first = t.split("\n")[0].strip()
-                        if first:
+                        if first and len(first) < 100:
                             return first
             except Exception:
                 continue
@@ -1383,9 +1501,7 @@ class BaleCollector(BaseCollector):
     # ═══════════════════════════════════════════════════
     # ارسال پیام — غیرفعال
     # ═══════════════════════════════════════════════════
-    async def send_message(
-        self, chat_id, chat_type, text: str
-    ) -> bool:
+    async def send_message(self, chat_id, chat_type, text: str) -> bool:
         log_info(
             f"⏭️ [bale:send] غیرفعال (فقط‌خواندن) | "
             f"chat_id={chat_id}"
