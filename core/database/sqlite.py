@@ -30,6 +30,25 @@ from core.kernel.logger import (
     log_warning,
 )
 
+import sqlite3 as _sqlite3_for_adapters
+
+
+# ═══════════════════════════════════════════════════════════
+# آداپتور datetime — رفع DeprecationWarning پایتون ۳.۱۲+
+# ═══════════════════════════════════════════════════════════
+def _adapt_datetime_iso(val: datetime) -> str:
+    """datetime → ISO 8601 string."""
+    return val.isoformat()
+
+
+def _convert_datetime(val: bytes) -> datetime:
+    """ISO 8601 string → datetime."""
+    return datetime.fromisoformat(val.decode())
+
+
+_sqlite3_for_adapters.register_adapter(datetime, _adapt_datetime_iso)
+_sqlite3_for_adapters.register_converter("TIMESTAMP", _convert_datetime)
+_sqlite3_for_adapters.register_converter("DATETIME", _convert_datetime)
 
 # ═══════════════════════════════════════════
 # helpers
@@ -183,7 +202,13 @@ class SQLiteDatabase(BaseDatabase):
                 return self._connection
 
             import aiosqlite
-            conn = await aiosqlite.connect(self.db_path)
+            conn = await aiosqlite.connect(
+                self.db_path,
+                detect_types=(
+                    _sqlite3_for_adapters.PARSE_DECLTYPES
+                    | _sqlite3_for_adapters.PARSE_COLNAMES
+                ),
+            )
             conn.row_factory = aiosqlite.Row
 
             # ⚡ PRAGMAها — یک بار برای همیشه

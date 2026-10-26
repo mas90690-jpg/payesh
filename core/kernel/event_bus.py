@@ -36,7 +36,7 @@
   - ✅ حفظ همهٔ FIXهای نسخهٔ ۳ (hot-reload EVENT_LOG).
 """
 from __future__ import annotations
-
+import inspect
 import asyncio
 import contextlib
 import os
@@ -196,12 +196,12 @@ def _event_log_enabled() -> bool:
 def _is_async_callable(handler: Callable) -> bool:
     """🎯 FIX: تشخیص async callable (نه فقط coroutine function)."""
     # ─── coroutine function ───
-    if asyncio.iscoroutinefunction(handler):
+    if inspect.iscoroutinefunction(handler):
         return True
 
     # ─── instance با __call__ async ───
     call = getattr(handler, "__call__", None)
-    return bool(call is not None and asyncio.iscoroutinefunction(call))
+    return bool(call is not None and inspect.iscoroutinefunction(call))
 
 
 # ═══════════════════════════════════════════

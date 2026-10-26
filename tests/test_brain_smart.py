@@ -6,16 +6,20 @@
 لایه 3: ManualBrain     (قوانین یادگرفته)
 لایه 4: AIAssistant     (DeepSeek / Ollama)
 """
-from __future__ import annotations
-
 import asyncio
 import os
 import sys
 import time
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(ROOT))
+
+# این تست‌ها demo هستند (نه تست واحد) و به شبکه/AI نیاز دارند
+# پیش‌فرض skip می‌شوند — برای اجرا: pytest -m slow
+pytestmark = [pytest.mark.slow, pytest.mark.network]
 
 
 # ══════════════════════════════════════════════════════════

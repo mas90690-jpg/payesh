@@ -52,7 +52,7 @@ class BaleBotCollector(BaseCollector):
             return False
 
         token = os.getenv("BALE_BOT_TOKEN", "").strip()
-        return token
+        return bool(token)
 
     def __init__(
         self,

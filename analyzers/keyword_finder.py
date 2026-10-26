@@ -538,6 +538,10 @@ class KeywordFinder(BaseAnalyzer):
                 f"🐌 [KF:load] کند | {elapsed_ms:.0f}ms"
             )
 
+    def reload(self) -> None:
+        """بارگذاری مجدد کلیدواژه‌ها از فایل‌ها (بعد از تغییر)."""
+        self._load(initial=False)
+        
     def _maybe_reload(self):
         """چک mtime — اگه تغییری بوده reload کن."""
         now = time.monotonic()

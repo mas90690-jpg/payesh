@@ -62,10 +62,6 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Optional, Sequence
-import sys, io
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
-
 # ---------------------------------------------------------------------------
 # Console
 # ---------------------------------------------------------------------------
@@ -188,7 +184,7 @@ CURRENT_REFERENCE_BASELINE = {
 }
 LATEST_TOOL_REFERENCE = {
     "python": "3.14.8",
-    "ruf": "0.16.10",
+    "ruff": "0.16.10",
     "bandit": "1.9.4",
     "mypy": "2.4.0",
     "note": "Versions verified against public package/release pages on 2026-10-05; the script executes the installed local versions when external mode is enabled.",
@@ -2458,7 +2454,7 @@ def run_dependency_audit(root: Path, c: Collector) -> None:
 def run_external(root: Path, c: Collector) -> None:
     """Run available industry tools without making them hard dependencies."""
     jobs: list[tuple[str, list[str], str]] = [
-        ("ruf", ["ruf", "check", ".", "--output-format", "json"], "maintainability"),
+        ("ruff", ["ruff", "check", ".", "--output-format", "json"], "maintainability"),
         ("bandit", ["bandit", "-r", ".", "-", "json", "-q"], "security"),
         ("pyflakes", ["pyflakes", "."], "maintainability"),
     ]
@@ -2476,7 +2472,7 @@ def run_external(root: Path, c: Collector) -> None:
         if rc == 0:
             continue
         # Preserve exact tool output as evidence, but keep each external result auditable.
-        parsed = _parse_external_json_findings(name, out) if name in {"ruf", "bandit"} else []
+        parsed = _parse_external_json_findings(name, out) if name in {"ruff", "bandit"} else []
         if name == "bandit" and isinstance(parsed, dict):
             parsed = parsed.get("results", [])
         if isinstance(parsed, list) and parsed:
@@ -2874,6 +2870,20 @@ def scan(config: ScanConfig) -> tuple[Collector, str, float]:
 # ---------------------------------------------------------------------------
 
 def main() -> int:
+    import io as _io
+    # UTF-8 safe stdout/stderr (فقط در main، نه در سطح ماژول)
+    try:
+        if hasattr(sys.stdout, "buffer"):
+            sys.stdout = _io.TextIOWrapper(
+                sys.stdout.buffer, encoding="utf-8"
+            )
+        if hasattr(sys.stderr, "buffer"):
+            sys.stderr = _io.TextIOWrapper(
+                sys.stderr.buffer, encoding="utf-8"
+            )
+    except Exception:
+        pass
+
     parser = argparse.ArgumentParser(
         description="Health Check + Forensic Static Analysis v8.0 Professor Edition"
     )
