@@ -4,16 +4,25 @@
   - به هر collector یک task اختصاصی می‌دهد
   - interval هر collector را از خودش می‌پرسد (poll_interval_seconds)
   - در صورت قطع شدن، با backoff نمایی دوباره وصل می‌کند
-  - بعد از وصل، پیام‌های ازدست‌رفته را از last_poll می‌خواند (catch-up)
+  - بعد از وصل، فقط اگر شکاف واقعی وجود دارد، پیام‌های ازدست‌رفته
+    را از last_poll می‌خواند (catch-up هوشمند)
   - هر دور موفق، last_poll را به‌روز می‌کند (ضربان زنده)
 
-نسخهٔ ۶ (این نسخه):
-  - 🐛 FIX: `stop()` حالا با timeout 15s هر collector را disconnect
-    می‌کند و در صورت timeout پروسه‌های chrome همان collector را
-    می‌کشد.
-  - 🐛 FIX: `_initial_fetch_all` به شکل درست (connect + catch-up).
-  - 🐛 FIX: `_kill_collector_chrome` متد مستقل (نه داخل poll).
-  - ✅ حفظ همهٔ FIXهای نسخهٔ ۵.
+نسخهٔ ۷ (این نسخه):
+  - 🐛 FIX: catch-up فقط وقتی شکاف واقعی وجود دارد اجرا می‌شود
+    (نه صرفاً به این دلیل که reconnect رخ داده). این کار از
+    «حلقهٔ اسکرول بی‌پایان» در bale/eitaa و پر شدن RAM جلوگیری
+    می‌کند و poll_interval_seconds را واقعاً اعمال می‌کند.
+  - 🐛 FIX: _catch_up حالا last_poll را به poll_interval_seconds
+    محدود می‌کند (جلوگیری از fetch_history روی ۲۴ ساعت برای
+    platformهایی که interval کمتر دارند).
+  - 🐛 FIX: _process_messages هم اگر last_poll نداشت، از
+    poll_interval_seconds استفاده می‌کند (نه کورکورانه ۲۴ ساعت).
+  - 🐛 FIX: ترتیب تعریف _env_int/_env_float قبل از ثابت‌ها.
+  - 🐛 FIX: indent درست در _supervise_reconnect (try/except
+    در جای صحیح).
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۶ (stop با timeout و kill chrome،
+    initial_fetch درست، kill_collector_chrome مستقل).
 """
 from __future__ import annotations
 
@@ -36,7 +45,7 @@ from core.kernel.logger import (
 
 
 # ═══════════════════════════════════════════
-# helpers
+# helpers — قبل از هر ثابت
 # ═══════════════════════════════════════════
 def _env_int(
     name: str, default: int,
@@ -111,6 +120,14 @@ _DISCONNECT_TIMEOUT_S = _env_float(
     "ORCH_DISCONNECT_TIMEOUT_S", 15.0,
     min_val=2.0, max_val=120.0,
 )
+# 🐛 FIX: آستانهٔ تشخیص شکاف واقعی (ثانیه).
+# اگر last_poll قدیمی‌تر از این مقدار باشد → catch-up لازم.
+# اگر تازه‌تر باشد → catch-up رد می‌شود (چون _process_messages
+# همین الان موفق بوده و شکافی نیست).
+_GAP_THRESHOLD_S = _env_float(
+    "ORCH_GAP_THRESHOLD_S", 300.0,   # ۵ دقیقه
+    min_val=30.0, max_val=3600.0,
+)
 
 # backoff connection
 _RECONNECT_DELAYS: tuple[int, ...] = (
@@ -182,7 +199,8 @@ class Orchestrator:
             f"collectors={len(self.collectors)} | "
             f"intervals=[{', '.join(intervals_info) or '—'}] | "
             f"reconnect_attempts={_RECONNECT_MAX_ATTEMPTS} | "
-            f"poll_timeout={_POLL_TIMEOUT_S}s"
+            f"poll_timeout={_POLL_TIMEOUT_S}s | "
+            f"gap_threshold={_GAP_THRESHOLD_S:.0f}s"
         )
 
     # ═══════════════════════════════════════════
@@ -280,7 +298,6 @@ class Orchestrator:
                 "⚠️ [ORCH:start] هیچ task polling وجود ندارد — "
                 "start() بی‌کار می‌ماند"
             )
-            # منتظر stop_event
             try:
                 await self._stop_event.wait()
             except asyncio.CancelledError:
@@ -509,7 +526,7 @@ class Orchestrator:
     async def _supervise_reconnect(
         self, collector: BaseCollector
     ):
-        """قطع و اتصالِ مجدد با backoff نمایی + catch-up."""
+        """قطع و اتصالِ مجدد با backoff نمایی + catch-up هوشمند."""
         platform = getattr(
             collector, "platform_name", "?"
         )
@@ -567,22 +584,39 @@ class Orchestrator:
                         f"وصل شد | attempt={attempt} | "
                         f"{elapsed_ms:.0f}ms"
                     )
-                    try:
-                        await asyncio.wait_for(
-                            self._catch_up(collector),
-                            timeout=_CATCHUP_TIMEOUT_S,
+
+                    # 🐛 FIX: catch-up فقط اگر شکاف واقعی وجود دارد
+                    # (نه صرفاً به این دلیل که reconnect رخ داده)
+                    needs_catchup = await self._has_real_gap(
+                        platform
+                    )
+                    if needs_catchup:
+                        log_info(
+                            f"📚 [ORCH:reconnect:{platform}] "
+                            f"شکاف شناسایی شد — catch-up"
                         )
-                    except TimeoutError:
-                        log_warning(
-                            f"⏰ [ORCH:reconnect:{platform}] "
-                            f"catch-up timeout "
-                            f"{_CATCHUP_TIMEOUT_S}s"
-                        )
-                    except Exception as e:
-                        log_error(
-                            f"❌ [ORCH:reconnect:{platform}] "
-                            f"catch-up | "
-                            f"{type(e).__name__}: {e}"
+                        try:
+                            await asyncio.wait_for(
+                                self._catch_up(collector),
+                                timeout=_CATCHUP_TIMEOUT_S,
+                            )
+                        except TimeoutError:
+                            log_warning(
+                                f"⏰ [ORCH:reconnect:{platform}] "
+                                f"catch-up timeout "
+                                f"{_CATCHUP_TIMEOUT_S}s"
+                            )
+                        except Exception as e:
+                            log_error(
+                                f"❌ [ORCH:reconnect:{platform}] "
+                                f"catch-up | "
+                                f"{type(e).__name__}: {e}"
+                            )
+                    else:
+                        log_info(
+                            f"ℹ️ [ORCH:reconnect:{platform}] "
+                            f"شکافی نیست (last_poll تازه است) — "
+                            f"catch-up رد شد"
                         )
                     return
                 else:
@@ -619,6 +653,74 @@ class Orchestrator:
         )
 
     # ═══════════════════════════════════════════
+    # has_real_gap — تشخیص شکاف واقعی
+    # ═══════════════════════════════════════════
+    async def _has_real_gap(self, platform: str) -> bool:
+        """آیا از last_poll تا حالا شکاف واقعی وجود دارد؟
+
+        معیار:
+          - اگر هیچ last_poll در DB نیست → True (اولین اجرا)
+          - اگر last_poll قدیمی‌تر از _GAP_THRESHOLD_S است → True
+          - وگرنه → False (تازه‌است، احتمالاً _process_messages
+            همین الان موفق بوده)
+
+        هدف: جلوگیری از catch-up بی‌مورد بعد از reconnect،
+        بدون حذف قابلیت catch-up در مواقع لازم.
+        """
+        try:
+            db_last = await self.db.get_last_poll(platform)
+        except Exception as e:
+            log_warning(
+                f"⚠️ [ORCH:gap:{platform}] get_last_poll | "
+                f"{type(e).__name__}: {e} — فرض: شکاف دارد"
+            )
+            return True  # امن: فرض کن شکاف دارد
+
+        if not db_last:
+            log_info(
+                f"ℹ️ [ORCH:gap:{platform}] last_poll وجود ندارد — "
+                f"اولین اجرا → catch-up لازم"
+            )
+            return True
+
+        # ─── بررسی فاصله ───
+        if isinstance(db_last, str):
+            try:
+                db_last = datetime.fromisoformat(db_last)
+            except Exception:
+                log_warning(
+                    f"⚠️ [ORCH:gap:{platform}] last_poll "
+                    f"فرمت نامعتبر: {db_last!r} — فرض: شکاف دارد"
+                )
+                return True
+
+        now = datetime.now()
+        try:
+            gap_s = (now - db_last).total_seconds()
+        except Exception as e:
+            log_warning(
+                f"⚠️ [ORCH:gap:{platform}] محاسبه فاصله | "
+                f"{type(e).__name__}: {e} — فرض: شکاف دارد"
+            )
+            return True
+
+        if gap_s < 0:
+            # last_poll در آینده — عجیب، ولی امن‌تر است فرض کنیم شکاف دارد
+            log_warning(
+                f"⚠️ [ORCH:gap:{platform}] last_poll در آینده "
+                f"({gap_s:.0f}s) — فرض: شکاف دارد"
+            )
+            return True
+
+        has_gap = gap_s > _GAP_THRESHOLD_S
+        log_info(
+            f"🔍 [ORCH:gap:{platform}] فاصله={gap_s:.0f}s | "
+            f"آستانه={_GAP_THRESHOLD_S:.0f}s | "
+            f"شکاف={'بله' if has_gap else 'خیر'}"
+        )
+        return has_gap
+
+    # ═══════════════════════════════════════════
     # catch-up
     # ═══════════════════════════════════════════
     async def _catch_up(self, collector: BaseCollector):
@@ -647,10 +749,42 @@ class Orchestrator:
                 last_poll = db_last
                 source = "db"
             else:
-                last_poll = (
-                    datetime.now() - timedelta(hours=24)
+                # 🐛 FIX: حداکثر ۲۴ ساعت عقب، ولی اگر interval کمتر
+                # است از interval استفاده کن
+                max_back_h = min(
+                    24.0,
+                    max(
+                        self.poll_interval_seconds / 3600.0,
+                        1.0,
+                    ),
                 )
-                source = "default(-24h)"
+                last_poll = (
+                    datetime.now()
+                    - timedelta(hours=max_back_h)
+                )
+                source = f"default(-{max_back_h:.0f}h)"
+
+            # 🐛 FIX: حتی اگر last_poll قدیمی باشد، حداکثر تا interval عقب برو
+            # (برای platformهایی که interval=86400s دارند، این همان 24h است
+            #  ولی برای interval=3600s، حداکثر 1h عقب می‌رویم)
+            if isinstance(last_poll, datetime):
+                max_lookback = (
+                    datetime.now()
+                    - timedelta(
+                        seconds=max(
+                            self.poll_interval_seconds,
+                            3600,
+                        )
+                    )
+                )
+                if last_poll < max_lookback:
+                    log_info(
+                        f"ℹ️ [ORCH:catchup:{platform}] "
+                        f"last_poll={last_poll:%Y-%m-%d %H:%M} "
+                        f"قدیمی‌تر از interval — "
+                        f"محدود به {max_lookback:%Y-%m-%d %H:%M}"
+                    )
+                    last_poll = max_lookback
 
             log_info(
                 f"📚 [ORCH:catchup:{platform}] شروع | "
@@ -842,13 +976,26 @@ class Orchestrator:
             log_warning(
                 f"⚠️ [ORCH:msg:{platform}] "
                 f"get_last_poll | "
-                f"{type(e).__name__}: {e} — default(-24h)"
+                f"{type(e).__name__}: {e} — default"
             )
             last_poll = None
 
         if not last_poll:
+            # 🐛 FIX: از interval خودِ collector استفاده کن، نه کورکورانه ۲۴ ساعت
+            # (مثلاً برای bale_bot که interval=5s است، بهتر است فقط
+            #  ۵ دقیقه عقب برویم تا کل ۲۴ ساعت را نخوانیم)
+            fallback_s = max(
+                float(
+                    getattr(
+                        collector,
+                        "poll_interval_seconds",
+                        300,
+                    )
+                ),
+                300.0,  # حداقل ۵ دقیقه
+            )
             last_poll = (
-                datetime.now() - timedelta(hours=24)
+                datetime.now() - timedelta(seconds=fallback_s)
             )
 
         # ─── fetch ───
@@ -1100,7 +1247,7 @@ class Orchestrator:
         # 🐛 FIX: بیداری سریع taskهای خواب‌رفته
         if self._stop_event is not None:
             self._stop_event.set()
-            
+
         # 🐛 FIX: cancel صریح تسک‌های polling
         if self._pending_tasks:
             pending = [t for t in self._pending_tasks if not t.done()]
@@ -1122,7 +1269,6 @@ class Orchestrator:
                     log_warning(
                         "⏰ [ORCH:stop] cancel تسک‌ها timeout 5s"
                     )
-                    
 
         for i, collector in enumerate(
             self.collectors, 1
@@ -1187,6 +1333,7 @@ class Orchestrator:
             "initial_timeout_s": _INITIAL_TIMEOUT_S,
             "reconnect_max_attempts": _RECONNECT_MAX_ATTEMPTS,
             "reconnect_delays": list(_RECONNECT_DELAYS),
+            "gap_threshold_s": _GAP_THRESHOLD_S,
         }
 
     def __repr__(self) -> str:

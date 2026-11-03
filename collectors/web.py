@@ -178,14 +178,24 @@ class WebCollector(BaseCollector):
 
     def _save_seen(self):
         """اثرانگشت‌های دیده‌شده را روی دیسک ذخیره می‌کند (با سقف _MAX_SEEN)."""
+        tmp = self._seen_path + ".tmp"
         try:
             if len(self._seen_hashes) > _MAX_SEEN:
                 # فقط آخرین _MAX_SEEN نگه داشته شود
                 self._seen_hashes = set(list(self._seen_hashes)[-_MAX_SEEN:])
-            with open(self._seen_path, "w", encoding="utf-8") as f:
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(list(self._seen_hashes), f, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self._seen_path)
         except Exception as e:
             log_warning(f"ذخیرهٔ ضدتکراری وب ناموفق: {e}")
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except Exception:
+                pass
+                
 
     # ==================================================
     # اتصال = بارگذاری فایل لینک‌ها

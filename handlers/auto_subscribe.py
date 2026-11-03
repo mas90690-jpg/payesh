@@ -344,10 +344,11 @@ class AutoSubscriber:
         # ─── ۴) شکست ───
         log_warning(
             f"⚠️ [SUBSCRIBE:events:none] {hname} | "
-            f"نه can_handle نه fallback | handler ثبت نمی‌شود"
+            f"نه can_handle نه fallback | handler ثبت نمی‌شود | "
+            f"known={list(self._known_events)} | "
+            f"fallback_names={list(self._fallback_by_name.keys())}"
         )
         return []
-
     # ═══════════════════════════════════════════
     # عیب‌یابی
     # ═══════════════════════════════════════════

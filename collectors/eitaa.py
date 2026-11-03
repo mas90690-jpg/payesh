@@ -213,14 +213,24 @@ class EitaaCollector(BaseCollector):
             self._seen_ids = set()
 
     def _save_seen(self):
+        """ذخیرهٔ seen — atomic (tmp + replace + fsync)."""
+        tmp = self._seen_path + ".tmp"
         try:
             if len(self._seen_ids) > _MAX_SEEN:
                 self._seen_ids = set(list(self._seen_ids)[-_MAX_SEEN:])
-            with open(self._seen_path, "w", encoding="utf-8") as f:
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(list(self._seen_ids), f, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self._seen_path)
         except Exception as e:
             log_warning(f"ذخیره seen: {e}")
-
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except Exception:
+                pass
+                
     # ═══════════════════════════════════════════════
     # خواص
     # ═══════════════════════════════════════════════
@@ -489,21 +499,22 @@ class EitaaCollector(BaseCollector):
         if not self._connected or not self._page:
             return []
 
-        chats = await self._collect_chats()
-        if not chats:
-            return []
+        async with self._page_lock:
+            chats = await self._collect_chats()
+            if not chats:
+                return []
 
-        if self._max_chats > 0:
-            chats = chats[:self._max_chats]
+            if self._max_chats > 0:
+                chats = chats[:self._max_chats]
 
-        log_info(f"⚡ {len(chats)} چت (سریالی)")
+            log_info(f"⚡ {len(chats)} چت (سریالی)")
 
-        for idx, chat in enumerate(chats):
-            try:
-                await self._scrape_chat(chat, idx)
-                await self._human_delay(0.3, 0.6)
-            except Exception as e:
-                log_warning(f"[{idx+1}] {chat.get('name')}: {e}")
+            for idx, chat in enumerate(chats):
+                try:
+                    await self._scrape_chat(chat, idx)
+                    await self._human_delay(0.3, 0.6)
+                except Exception as e:
+                    log_warning(f"[{idx+1}] {chat.get('name')}: {e}")
 
         new_msgs = self._messages_queue.copy()
         self._messages_queue.clear()
@@ -514,7 +525,7 @@ class EitaaCollector(BaseCollector):
             log_success(f"📥 {len(new_msgs)} پیام از ایتا")
 
         return new_msgs
-
+        
     # ═══════════════════════════════════════════════
     # اسکرپ یک چت
     # ═══════════════════════════════════════════════

@@ -18,12 +18,27 @@
   - حداکثر ۱۰ کار در روز
   - حداکثر ۳ کار در ساعت
   - ۳-۸ ثانیه صبر بین کارها
-  - فقط ۹ صبح - ۱۱ شب
+  - فقط ۹ صبح - ۱۱ شب (تهران)
+  - آمار در فایل ذخیره می‌شود (ری‌استارت پاک نمی‌کند)
+  - record فقط بعد از موفقیت
   - لاگ کامل
+
+نسخهٔ ۸ (این نسخه — استاندارد):
+  - 🎯 آمار در فایل ذخیره می‌شود (نه کلاس‌متغیر)
+  - 🎯 ساعت کاری به timezone تهران
+  - 🎯 record() فقط بعد از موفقیت (توسط caller)
+  - 🎯 atomic write برای آمار (tmp + replace + fsync)
+  - 🎯 قفل per-platform برای جلوگیری از race
+  - 🎯 timeout صریح در _goto_chat
+  - 🎯 log صریح در get_controller
+  - 🎯 fill() به‌جای keyboard.type در WhatsApp (سریع‌تر)
+  - ✅ حفظ API قبلی (همه توابع و امضاها یکسان)
 """
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import random
 import time
 from datetime import datetime
@@ -43,6 +58,11 @@ MIN_DELAY_S = 3.0
 MAX_DELAY_S = 8.0
 WORK_HOUR_START = 9
 WORK_HOUR_END = 23
+WORK_TIMEZONE = "Asia/Tehran"
+
+# سقف ذخیره‌سازی آمار
+_MAX_STATS_AGE_S = 7 * 86400
+_MAX_STATS_ENTRIES = 1000
 
 DANGEROUS_ACTIONS = frozenset({
     "join", "leave", "send", "forward",
@@ -51,27 +71,110 @@ DANGEROUS_ACTIONS = frozenset({
 
 
 # ═══════════════════════════════════════════
+# helpers
+# ═══════════════════════════════════════════
+def _get_stats_path() -> str:
+    """مسیر فایل آمار — از data.paths."""
+    try:
+        from data import paths as dp
+        offset_dir = os.path.join(str(dp.STORAGE_DIR), "offset")
+        os.makedirs(offset_dir, exist_ok=True)
+        return os.path.join(offset_dir, "controller_stats.json")
+    except Exception:
+        fallback = "storage/offset"
+        os.makedirs(fallback, exist_ok=True)
+        return os.path.join(fallback, "controller_stats.json")
+
+
+def _atomic_write_json(path: str, data: dict) -> bool:
+    """نوشتن atomic JSON — tmp + replace + fsync."""
+    tmp = path + ".tmp"
+    try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+        return False
+
+
+# ═══════════════════════════════════════════
 # SafeAction — امنیت مشترک
 # ═══════════════════════════════════════════
 class SafeAction:
-    _shared_stats: dict[str, list[float]] = {}
+    """مدیریت امن اکشن‌ها — per-platform، persistent، timezone-aware."""
+
+    # قفل per-platform برای جلوگیری از race
+    _locks: dict[str, asyncio.Lock] = {}
 
     def __init__(self, platform: str):
         self.platform = platform
-        if platform not in self._shared_stats:
-            self._shared_stats[platform] = []
         self._last_action_at = 0.0
+        self._stats_file = _get_stats_path()
 
+        if platform not in SafeAction._locks:
+            SafeAction._locks[platform] = asyncio.Lock()
+        self._lock = SafeAction._locks[platform]
+
+    # ─── خواندن/نوشتن آمار ───
+    def _load_all_stats(self) -> dict[str, list[float]]:
+        """همهٔ آمار را از فایل می‌خواند."""
+        try:
+            if not os.path.exists(self._stats_file):
+                return {}
+            with open(self._stats_file, encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                return {}
+            return data
+        except Exception:
+            return {}
+
+    def _get_actions(self) -> list[float]:
+        """آمار این پلتفرم — با فیلتر قدیمی‌ها."""
+        data = self._load_all_stats()
+        actions = data.get(self.platform, [])
+        if not isinstance(actions, list):
+            return []
+        now = time.time()
+        return [
+            float(t) for t in actions
+            if isinstance(t, (int, float))
+            and now - float(t) < _MAX_STATS_AGE_S
+        ]
+
+    def _save_actions(self, actions: list[float]) -> bool:
+        """ذخیرهٔ آمار این پلتفرم — atomic."""
+        data = self._load_all_stats()
+        data[self.platform] = actions[-_MAX_STATS_ENTRIES:]
+        return _atomic_write_json(self._stats_file, data)
+
+    # ─── ساعت کاری ───
     @staticmethod
     def _is_work_time() -> bool:
-        now = datetime.now().hour
-        return WORK_HOUR_START <= now <= WORK_HOUR_END
+        """آیا الان ساعت کاری است؟ (تهران، نه UTC)."""
+        try:
+            from zoneinfo import ZoneInfo
+            now = datetime.now(ZoneInfo(WORK_TIMEZONE))
+        except Exception:
+            now = datetime.now()
+        return WORK_HOUR_START <= now.hour <= WORK_HOUR_END
 
+    # ─── چک محدودیت‌ها ───
     def _check_limits(self) -> tuple[bool, str]:
+        """چک سقف روزانه/ساعتی + ساعت کاری."""
         now = time.time()
-        actions = self._shared_stats[self.platform]
-
-        actions[:] = [t for t in actions if now - t < 86400]
+        actions = self._get_actions()
 
         if len(actions) >= MAX_PER_DAY:
             return False, f"⛔ امروز {MAX_PER_DAY} کار کردی — فردا"
@@ -82,13 +185,24 @@ class SafeAction:
             return False, f"⛔ در ساعت اخیر {MAX_PER_HOUR} کار — صبر کن"
 
         if not self._is_work_time():
+            try:
+                from zoneinfo import ZoneInfo
+                now_tz = datetime.now(ZoneInfo(WORK_TIMEZONE))
+                current_h = now_tz.hour
+            except Exception:
+                current_h = datetime.now().hour
             return (
                 False,
-                f"⏰ فقط {WORK_HOUR_START} صبح تا {WORK_HOUR_END} شب",
+                f"⏰ فقط {WORK_HOUR_START} صبح تا "
+                f"{WORK_HOUR_END} شب (تهران) | "
+                f"الان ساعت {current_h}",
             )
+
         return True, ""
 
+    # ─── wait ───
     async def wait(self) -> None:
+        """تأخیر انسانی قبل از اکشن بعدی."""
         now = time.monotonic()
         elapsed = now - self._last_action_at
         if elapsed < MIN_DELAY_S:
@@ -102,28 +216,48 @@ class SafeAction:
             await asyncio.sleep(wait_s)
         self._last_action_at = time.monotonic()
 
+    # ─── record ───
     def record(self) -> None:
-        self._shared_stats[self.platform].append(time.time())
+        """ثبت اکشن موفق — هم در حافظه هم در فایل."""
+        actions = self._get_actions()
+        actions.append(time.time())
+        if not self._save_actions(actions):
+            log_warning(
+                f"⚠️ [CONTROLLER:{self.platform}] "
+                f"ذخیرهٔ آمار ناموفق"
+            )
 
+    # ─── check (async، با قفل) ───
     async def check(self) -> tuple[bool, str]:
-        ok, reason = self._check_limits()
-        if not ok:
-            return False, reason
-        await self.wait()
-        return True, ""
+        """چک کامل + تأخیر — با قفل per-platform."""
+        async with self._lock:
+            ok, reason = self._check_limits()
+            if not ok:
+                return False, reason
+            await self.wait()
+            return True, ""
 
+    # ─── آمار ───
     @classmethod
     def get_stats(cls, platform: str) -> dict:
+        """آمار یک پلتفرم — برای debug/admin."""
+        helper = cls.__new__(cls)
+        helper.platform = platform
+        helper._stats_file = _get_stats_path()
+        actions = helper._get_actions()
+
         now = time.time()
-        actions = cls._shared_stats.get(platform, [])
         hour_ago = now - 3600
         day_ago = now - 86400
+
         return {
             "today": len([t for t in actions if t > day_ago]),
             "this_hour": len([t for t in actions if t > hour_ago]),
             "max_day": MAX_PER_DAY,
             "max_hour": MAX_PER_HOUR,
             "work_hours": f"{WORK_HOUR_START}-{WORK_HOUR_END}",
+            "timezone": WORK_TIMEZONE,
+            "is_work_time": cls._is_work_time(),
         }
 
 
@@ -179,13 +313,21 @@ class _BaseController:
     async def _goto_chat(self, chat: str, url_tmpl: str = "") -> bool:
         if not self._page:
             return False
+        if not chat:
+            return False
         try:
             if chat.startswith("http"):
-                await self._page.goto(chat)
+                target = chat
             elif url_tmpl:
-                await self._page.goto(url_tmpl.format(chat=chat))
+                target = url_tmpl.format(chat=chat)
             else:
                 return False
+
+            await self._page.goto(
+                target,
+                wait_until="domcontentloaded",
+                timeout=30000,
+            )
             await asyncio.sleep(3)
             return True
         except Exception as e:
@@ -208,7 +350,6 @@ class BaleController(_BaseController):
             return "❌ query خالی است"
 
         try:
-            self._safe.record()
             box = await self._page.query_selector(
                 'input[placeholder*="جستجو"], '
                 'input[placeholder*="Search"], '
@@ -231,6 +372,7 @@ class BaleController(_BaseController):
                     lines.append(f"  {i}. {text.split(chr(10))[0][:60]}")
                 except Exception:
                     continue
+            self._safe.record()
             log_success(f"✅ [bale:search] «{query}»")
             return "\n".join(lines)
         except Exception as e:
@@ -243,8 +385,9 @@ class BaleController(_BaseController):
         if not link:
             return "❌ لینک گروه لازم است"
         try:
-            self._safe.record()
-            await self._page.goto(link)
+            await self._page.goto(
+                link, wait_until="domcontentloaded", timeout=30000
+            )
             await asyncio.sleep(3)
             btn = await self._page.query_selector(
                 'button:has-text("عضویت"), '
@@ -254,6 +397,7 @@ class BaleController(_BaseController):
                 return "⚠️ دکمهٔ عضویت پیدا نشد"
             await btn.click()
             await asyncio.sleep(2)
+            self._safe.record()
             return f"✅ عضو شدی در {link}"
         except Exception as e:
             return f"❌ خطا: {e}"
@@ -265,8 +409,9 @@ class BaleController(_BaseController):
         if not group:
             return "❌ نام یا لینک گروه لازم است"
         try:
-            self._safe.record()
-            await self._goto_chat(group, "https://web.bale.ai/#/g/{chat}")
+            await self._goto_chat(
+                group, "https://web.bale.ai/#/g/{chat}"
+            )
             menu = await self._page.query_selector(
                 '.chat-menu, .header-menu, button[aria-label*="منو"]'
             )
@@ -286,6 +431,7 @@ class BaleController(_BaseController):
             if confirm:
                 await confirm.click()
                 await asyncio.sleep(2)
+            self._safe.record()
             return f"✅ از {group} خارج شدی"
         except Exception as e:
             return f"❌ خطا: {e}"
@@ -297,8 +443,9 @@ class BaleController(_BaseController):
         if not chat or not text:
             return "❌ chat و text لازم است"
         try:
-            self._safe.record()
-            await self._goto_chat(chat, "https://web.bale.ai/#/g/{chat}")
+            await self._goto_chat(
+                chat, "https://web.bale.ai/#/g/{chat}"
+            )
             box = await self._page.query_selector(
                 'div[contenteditable="true"], .composer-input'
             )
@@ -306,10 +453,14 @@ class BaleController(_BaseController):
                 return "❌ جعبهٔ پیام پیدا نشد"
             await box.click()
             await asyncio.sleep(0.5)
-            await self._page.keyboard.type(text)
+            try:
+                await box.fill(text)
+            except Exception:
+                await self._page.keyboard.type(text)
             await asyncio.sleep(1)
             await self._page.keyboard.press("Enter")
             await asyncio.sleep(2)
+            self._safe.record()
             return f"✅ پیام فرستاده شد به {chat}"
         except Exception as e:
             return f"❌ خطا: {e}"
@@ -329,7 +480,6 @@ class EitaaController(_BaseController):
         if not query:
             return "❌ query خالی"
         try:
-            self._safe.record()
             box = await self._page.query_selector(
                 'input[placeholder*="جستجو"], .search-input'
             )
@@ -348,6 +498,7 @@ class EitaaController(_BaseController):
                     lines.append(f"  {i}. {t.split(chr(10))[0][:60]}")
                 except Exception:
                     continue
+            self._safe.record()
             return "\n".join(lines)
         except Exception as e:
             return f"❌ خطا: {e}"
@@ -359,8 +510,9 @@ class EitaaController(_BaseController):
         if not link:
             return "❌ لینک گروه لازم است"
         try:
-            self._safe.record()
-            await self._page.goto(link)
+            await self._page.goto(
+                link, wait_until="domcontentloaded", timeout=30000
+            )
             await asyncio.sleep(3)
             btn = await self._page.query_selector(
                 'button:has-text("عضویت"), button:has-text("Join")'
@@ -369,6 +521,7 @@ class EitaaController(_BaseController):
                 return "⚠️ دکمهٔ عضویت پیدا نشد"
             await btn.click()
             await asyncio.sleep(2)
+            self._safe.record()
             return f"✅ عضو شدی در {link}"
         except Exception as e:
             return f"❌ خطا: {e}"
@@ -380,9 +533,12 @@ class EitaaController(_BaseController):
         if not group:
             return "❌ نام گروه لازم است"
         try:
-            self._safe.record()
-            await self._goto_chat(group, "https://web.eitaa.com/#/g/{chat}")
-            menu = await self._page.query_selector('.chat-menu, .header-menu')
+            await self._goto_chat(
+                group, "https://web.eitaa.com/#/g/{chat}"
+            )
+            menu = await self._page.query_selector(
+                '.chat-menu, .header-menu'
+            )
             if menu:
                 await menu.click()
                 await asyncio.sleep(1)
@@ -393,6 +549,7 @@ class EitaaController(_BaseController):
                 return "⚠️ دکمهٔ خروج پیدا نشد"
             await btn.click()
             await asyncio.sleep(2)
+            self._safe.record()
             return f"✅ از {group} خارج شدی"
         except Exception as e:
             return f"❌ خطا: {e}"
@@ -404,8 +561,9 @@ class EitaaController(_BaseController):
         if not chat or not text:
             return "❌ chat و text لازم است"
         try:
-            self._safe.record()
-            await self._goto_chat(chat, "https://web.eitaa.com/#/g/{chat}")
+            await self._goto_chat(
+                chat, "https://web.eitaa.com/#/g/{chat}"
+            )
             box = await self._page.query_selector(
                 'div[contenteditable="true"], .composer-input'
             )
@@ -413,10 +571,14 @@ class EitaaController(_BaseController):
                 return "❌ جعبهٔ پیام پیدا نشد"
             await box.click()
             await asyncio.sleep(0.5)
-            await self._page.keyboard.type(text)
+            try:
+                await box.fill(text)
+            except Exception:
+                await self._page.keyboard.type(text)
             await asyncio.sleep(1)
             await self._page.keyboard.press("Enter")
             await asyncio.sleep(2)
+            self._safe.record()
             return "✅ پیام فرستاده شد"
         except Exception as e:
             return f"❌ خطا: {e}"
@@ -435,9 +597,9 @@ class RubikaController(_BaseController):
         if not query:
             return "❌ query خالی"
         try:
-            self._safe.record()
             if self._client and hasattr(self._client, "search_global"):
                 result = await self._client.search_global(query)
+                self._safe.record()
                 return f"🔍 نتایج: {result}"
             return "⚠️ search در rubpy پشتیبانی نمی‌شود"
         except Exception as e:
@@ -450,9 +612,9 @@ class RubikaController(_BaseController):
         if not link:
             return "❌ لینک گروه لازم است"
         try:
-            self._safe.record()
             if self._client and hasattr(self._client, "join_chat"):
                 await self._client.join_chat(link)
+                self._safe.record()
                 return "✅ عضو شدی"
             return "⚠️ join در rubpy پشتیبانی نمی‌شود"
         except Exception as e:
@@ -465,9 +627,9 @@ class RubikaController(_BaseController):
         if not group:
             return "❌ نام گروه لازم است"
         try:
-            self._safe.record()
             if self._client and hasattr(self._client, "leave_chat"):
                 await self._client.leave_chat(group)
+                self._safe.record()
                 return "✅ خارج شدی"
             return "⚠️ leave در rubpy پشتیبانی نمی‌شود"
         except Exception as e:
@@ -480,9 +642,9 @@ class RubikaController(_BaseController):
         if not chat or not text:
             return "❌ chat و text لازم است"
         try:
-            self._safe.record()
             if self._client and hasattr(self._client, "send_message"):
                 await self._client.send_message(chat, text)
+                self._safe.record()
                 return "✅ پیام فرستاده شد"
             return "⚠️ send در rubpy پشتیبانی نمی‌شود"
         except Exception as e:
@@ -492,10 +654,12 @@ class RubikaController(_BaseController):
         ok, reason = await self._safe.check()
         if not ok:
             return reason
+        if not chat or not message_id:
+            return "❌ chat و message_id لازم است"
         try:
-            self._safe.record()
             if self._client and hasattr(self._client, "delete_messages"):
                 await self._client.delete_messages(chat, [message_id])
+                self._safe.record()
                 return "✅ پیام حذف شد"
             return "⚠️ delete در rubpy پشتیبانی نمی‌شود"
         except Exception as e:
@@ -516,7 +680,6 @@ class TelegramController(_BaseController):
         if not query:
             return "❌ query خالی"
         try:
-            self._safe.record()
             box = await self._page.query_selector(
                 'input.input-search-input, .input-search input, '
                 '[contenteditable="true"].input-search-input'
@@ -524,7 +687,10 @@ class TelegramController(_BaseController):
             if not box:
                 return "❌ جعبهٔ سرچ پیدا نشد"
             await box.click()
-            await box.fill(query)
+            try:
+                await box.fill(query)
+            except Exception:
+                await self._page.keyboard.type(query)
             await asyncio.sleep(2)
             results = await self._page.query_selector_all(
                 '.chatlist-chat, .search-result, .ListItem'
@@ -536,6 +702,7 @@ class TelegramController(_BaseController):
                     lines.append(f"  {i}. {t.split(chr(10))[0][:60]}")
                 except Exception:
                     continue
+            self._safe.record()
             return "\n".join(lines)
         except Exception as e:
             return f"❌ خطا: {e}"
@@ -547,8 +714,9 @@ class TelegramController(_BaseController):
         if not link:
             return "❌ لینک گروه لازم است"
         try:
-            self._safe.record()
-            await self._page.goto(link)
+            await self._page.goto(
+                link, wait_until="domcontentloaded", timeout=30000
+            )
             await asyncio.sleep(3)
             btn = await self._page.query_selector(
                 'button:has-text("Join"), button:has-text("عضویت"), '
@@ -558,6 +726,7 @@ class TelegramController(_BaseController):
                 return "⚠️ دکمهٔ عضویت پیدا نشد"
             await btn.click()
             await asyncio.sleep(2)
+            self._safe.record()
             return f"✅ عضو شدی در {link}"
         except Exception as e:
             return f"❌ خطا: {e}"
@@ -569,11 +738,13 @@ class TelegramController(_BaseController):
         if not group:
             return "❌ نام گروه لازم است"
         try:
-            self._safe.record()
             if group.startswith("http"):
-                await self._page.goto(group)
+                await self._page.goto(
+                    group,
+                    wait_until="domcontentloaded",
+                    timeout=30000,
+                )
             await asyncio.sleep(3)
-            # کلیک روی هدر برای باز شدن پروفایل
             header = await self._page.query_selector(
                 '.chat-info, .MiddleHeader .info, .topbar'
             )
@@ -593,6 +764,7 @@ class TelegramController(_BaseController):
                 return "⚠️ دکمهٔ خروج پیدا نشد"
             await btn.click()
             await asyncio.sleep(2)
+            self._safe.record()
             return f"✅ از {group} خارج شدی"
         except Exception as e:
             return f"❌ خطا: {e}"
@@ -604,9 +776,12 @@ class TelegramController(_BaseController):
         if not chat or not text:
             return "❌ chat و text لازم است"
         try:
-            self._safe.record()
             if chat.startswith("http"):
-                await self._page.goto(chat)
+                await self._page.goto(
+                    chat,
+                    wait_until="domcontentloaded",
+                    timeout=30000,
+                )
             await asyncio.sleep(3)
             box = await self._page.query_selector(
                 'div[contenteditable="true"].input-message-input, '
@@ -616,10 +791,14 @@ class TelegramController(_BaseController):
                 return "❌ جعبهٔ پیام پیدا نشد"
             await box.click()
             await asyncio.sleep(0.5)
-            await self._page.keyboard.type(text)
+            try:
+                await box.fill(text)
+            except Exception:
+                await self._page.keyboard.type(text)
             await asyncio.sleep(1)
             await self._page.keyboard.press("Enter")
             await asyncio.sleep(2)
+            self._safe.record()
             return "✅ پیام فرستاده شد"
         except Exception as e:
             return f"❌ خطا: {e}"
@@ -639,7 +818,6 @@ class WhatsAppController(_BaseController):
         if not query:
             return "❌ query خالی"
         try:
-            self._safe.record()
             box = await self._page.query_selector(
                 'div[contenteditable="true"][data-tab="3"], '
                 '[data-testid="chat-list-search"]'
@@ -648,7 +826,10 @@ class WhatsAppController(_BaseController):
                 return "❌ جعبهٔ سرچ پیدا نشد"
             await box.click()
             await asyncio.sleep(0.5)
-            await self._page.keyboard.type(query)
+            try:
+                await box.fill(query)
+            except Exception:
+                await self._page.keyboard.type(query)
             await asyncio.sleep(2)
             results = await self._page.query_selector_all(
                 '[data-testid="cell-frame-container"], '
@@ -661,6 +842,7 @@ class WhatsAppController(_BaseController):
                     lines.append(f"  {i}. {t.split(chr(10))[0][:60]}")
                 except Exception:
                     continue
+            self._safe.record()
             return "\n".join(lines)
         except Exception as e:
             return f"❌ خطا: {e}"
@@ -672,7 +854,6 @@ class WhatsAppController(_BaseController):
         if not chat or not text:
             return "❌ chat و text لازم است"
         try:
-            self._safe.record()
             # جستجوی چت
             search_box = await self._page.query_selector(
                 'div[contenteditable="true"][data-tab="3"]'
@@ -680,7 +861,10 @@ class WhatsAppController(_BaseController):
             if search_box:
                 await search_box.click()
                 await asyncio.sleep(0.5)
-                await self._page.keyboard.type(chat)
+                try:
+                    await search_box.fill(chat)
+                except Exception:
+                    await self._page.keyboard.type(chat)
                 await asyncio.sleep(2)
                 # کلیک روی اولین نتیجه
                 first = await self._page.query_selector(
@@ -700,10 +884,14 @@ class WhatsAppController(_BaseController):
                 return "❌ جعبهٔ پیام پیدا نشد"
             await box.click()
             await asyncio.sleep(0.5)
-            await self._page.keyboard.type(text)
+            try:
+                await box.fill(text)
+            except Exception:
+                await self._page.keyboard.type(text)
             await asyncio.sleep(1)
             await self._page.keyboard.press("Enter")
             await asyncio.sleep(2)
+            self._safe.record()
             return f"✅ پیام فرستاده شد به {chat}"
         except Exception as e:
             return f"❌ خطا: {e}"
@@ -730,16 +918,18 @@ class LinkedInController(_BaseController):
         if not query:
             return "❌ query خالی"
         try:
-            self._safe.record()
             url = (
                 "https://www.linkedin.com/search/results/content/"
                 f"?keywords={query}&origin=GLOBAL_SEARCH_HEADER"
             )
-            await self._page.goto(url)
+            await self._page.goto(
+                url, wait_until="domcontentloaded", timeout=30000
+            )
             await asyncio.sleep(5)
             posts = await self._page.query_selector_all(
                 "div[role='listitem']"
             )
+            self._safe.record()
             return f"🔍 نتایج «{query}»: {len(posts)} پست"
         except Exception as e:
             return f"❌ خطا: {e}"
@@ -765,12 +955,14 @@ class InstagramController(_BaseController):
         if not query:
             return "❌ query خالی"
         try:
-            self._safe.record()
             await self._page.goto(
-                f"https://www.instagram.com/explore/tags/{query}/"
+                f"https://www.instagram.com/explore/tags/{query}/",
+                wait_until="domcontentloaded",
+                timeout=30000,
             )
             await asyncio.sleep(4)
             posts = await self._page.query_selector_all("article")
+            self._safe.record()
             return f"🔍 نتایج «{query}»: {len(posts)} پست"
         except Exception as e:
             return f"❌ خطا: {e}"
@@ -793,12 +985,13 @@ class YouTubeController(_BaseController):
         if not query:
             return "❌ query خالی"
         try:
-            self._safe.record()
             url = (
                 "https://www.youtube.com/results"
                 f"?search_query={query.replace(' ', '+')}"
             )
-            await self._page.goto(url)
+            await self._page.goto(
+                url, wait_until="domcontentloaded", timeout=30000
+            )
             await asyncio.sleep(4)
             videos = await self._page.query_selector_all(
                 "ytd-video-renderer"
@@ -812,6 +1005,7 @@ class YouTubeController(_BaseController):
                         lines.append(f"  {i}. {title[:60]}")
                 except Exception:
                     continue
+            self._safe.record()
             return "\n".join(lines)
         except Exception as e:
             return f"❌ خطا: {e}"
@@ -845,11 +1039,30 @@ _CONTROLLER_MAP = {
 
 def get_controller(platform: str, collector: Any) -> Any | None:
     """ساخت کنترلر مناسب برای پلتفرم."""
+    if not collector:
+        log_warning(
+            f"⚠️ [CONTROLLER] collector خالی | platform={platform}"
+        )
+        return None
+
     platform = platform.lower().strip()
     cls = _CONTROLLER_MAP.get(platform)
     if not cls:
+        log_warning(
+            f"⚠️ [CONTROLLER] پلتفرم پشتیبانی نمی‌شود | "
+            f"platform={platform} | "
+            f"available={list(_CONTROLLER_MAP.keys())}"
+        )
         return None
-    return cls(collector)
+
+    try:
+        return cls(collector)
+    except Exception as e:
+        log_error(
+            f"❌ [CONTROLLER] ساخت کنترلر ناموفق | "
+            f"platform={platform} | {type(e).__name__}: {e}"
+        )
+        return None
 
 
 def list_platforms() -> list[str]:

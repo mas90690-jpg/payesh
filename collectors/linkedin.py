@@ -217,18 +217,28 @@ class LinkedInCollector(BaseCollector):
             self._seen_ids = set()
 
     def _save_seen(self):
+        """ذخیرهٔ seen — atomic (tmp + replace + fsync)."""
+        tmp = self._seen_path + ".tmp"
         try:
             if len(self._seen_ids) > _MAX_SEEN:
                 self._seen_ids = set(
                     list(self._seen_ids)[-_MAX_SEEN:]
                 )
-            with open(self._seen_path, "w", encoding="utf-8") as f:
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(
                     list(self._seen_ids), f, ensure_ascii=False
                 )
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self._seen_path)
         except Exception as e:
             log_warning(f"ذخیرهٔ ضدتکراری ناموفق: {e}")
-
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except Exception:
+                pass
+                
     # ═══════════════════════════════════════════════════
     # last_run
     # ═══════════════════════════════════════════════════
@@ -479,8 +489,7 @@ class LinkedInCollector(BaseCollector):
                         return False
                 except Exception:
                     continue
-            if "linkedin.com" in url:
-                return True
+            # fallback خطرناک حذف شد — فقط LOGGEDIN_MARKERS معتبرند
             return False
         except Exception:
             return False
@@ -493,6 +502,7 @@ class LinkedInCollector(BaseCollector):
                 for p in ("/login", "/authwall", "/checkpoint")
             ):
                 self._connected = False
+                self._page_lock = asyncio.Lock()
                 self._set_status(ConnectionStatus.ERROR)
                 log_warning(
                     "⚠️ نشست منقضی — "
@@ -523,26 +533,27 @@ class LinkedInCollector(BaseCollector):
             )
             return []
 
-        if self._monitor_feed:
-            try:
-                await self._scrape_feed()
-            except Exception as e:
-                log_warning(f"خطا در فید: {e}")
-
-        if self._search_enabled:
-            searches = self._load_searches()
-            for q in searches:
-                if not self._connected:
-                    break
+        async with self._page_lock:
+            if self._monitor_feed:
                 try:
-                    await self._scrape_search(q)
-                    await asyncio.sleep(
-                        self._search_delay
-                        + random.uniform(0, self._search_delay)
-                    )
+                    await self._scrape_feed()
                 except Exception as e:
-                    log_warning(f"خطا در «{q}»: {e}")
-                    continue
+                    log_warning(f"خطا در فید: {e}")
+
+            if self._search_enabled:
+                searches = self._load_searches()
+                for q in searches:
+                    if not self._connected:
+                        break
+                    try:
+                        await self._scrape_search(q)
+                        await asyncio.sleep(
+                            self._search_delay
+                            + random.uniform(0, self._search_delay)
+                        )
+                    except Exception as e:
+                        log_warning(f"خطا در «{q}»: {e}")
+                        continue
 
         new_msgs = self._messages_queue.copy()
         self._messages_queue.clear()
@@ -555,7 +566,7 @@ class LinkedInCollector(BaseCollector):
         if new_msgs:
             log_success(f"📥 {len(new_msgs)} پست از لینکدین")
         return new_msgs
-
+        
     # ═══════════════════════════════════════════════════
     # scrape فید
     # ═══════════════════════════════════════════════════

@@ -256,7 +256,7 @@
     {
       "name": "system_snapshot",
       "priority": 40,
-      "triggers": ["خلاصه", "همه چیز", "گزارش کامل", "وضعیت کلی"],
+      "triggers": ["همه چیز", "گزارش کامل", "وضعیت کلی"],
       "action": {
         "type": "callable",
         "function": "system_snapshot"

@@ -173,13 +173,24 @@ class WhatsAppCollector(BaseCollector):
             self._seen_ids = set()
 
     def _save_seen(self):
+        """ذخیرهٔ seen — atomic (tmp + replace + fsync)."""
+        tmp = self._seen_path + ".tmp"
         try:
             if len(self._seen_ids) > _MAX_SEEN:
                 self._seen_ids = set(list(self._seen_ids)[-_MAX_SEEN:])
-            with open(self._seen_path, "w", encoding="utf-8") as f:
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(list(self._seen_ids), f, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self._seen_path)
         except Exception as e:
             log_warning(f"ذخیرهٔ ضدتکراری واتساپ ناموفق: {e}")
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except Exception:
+                pass
+                
 
     # ==================================================
     # ⭐ NEW: اتصال با BROWSER_LOCK (استاندارد پروژه)

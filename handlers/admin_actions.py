@@ -162,6 +162,10 @@ class AdminActions:
 
         self._restart_task: asyncio.Task | None = None
 
+        # 🎯 کش آمار (TTL=10s)
+        self._stats_cache = (0.0, "")
+        self._stats_ttl = 10.0
+
         # 🎯 لاگ init — خلاصه
         params = _get_params_data()
         log_info(
@@ -486,54 +490,48 @@ class AdminActions:
     # ═══════════════════════════════════════
     def live_context(self) -> str:
         """آمار زنده — با اسم پلتفرم فارسی."""
+        import time as _t
+        now = _t.time()
+        if now - self._stats_cache[0] < self._stats_ttl:
+            return self._stats_cache[1]
+
         empty = _get_error_msg(
             "empty_stats", _DEFAULT_EMPTY_STATS
         )
         conn = None
         try:
-            conn = sqlite3.connect(self.db_path)
+            # 🐛 FIX: timeout برای جلوگیری از قفل شدن
+            conn = sqlite3.connect(
+                self.db_path,
+                timeout=5.0,
+            )
             cur = conn.cursor()
             total = cur.execute(
                 "SELECT COUNT(*) FROM messages "
                 "WHERE keywords!=''"
             ).fetchone()[0]
-            today = cur.execute(
+            leads = total
+            hot = cur.execute(
                 "SELECT COUNT(*) FROM messages "
-                "WHERE keywords!='' "
-                "AND date(timestamp)=date('now')"
+                "WHERE opportunity_type='داغ'"
             ).fetchone()[0]
-            byp = cur.execute(
+            rows = cur.execute(
                 "SELECT platform, COUNT(*) FROM messages "
                 "WHERE keywords!='' GROUP BY platform"
             ).fetchall()
-            last = cur.execute(
-                "SELECT platform, chat_name, keywords, timestamp "
-                "FROM messages WHERE keywords!='' "
-                "ORDER BY timestamp DESC LIMIT 1"
-            ).fetchone()
-
-            byp_fa = "، ".join(
-                f"{fa_platform(p)}={n}" for p, n in byp
+            by = "، ".join(
+                f"{fa_platform(p)}: {n}" for p, n in rows
+            ) or "—"
+            result = (
+                f"📊 آمار زنده:\n"
+                f"سرنخ: {leads} | داغ: {hot}\n"
+                f"به تفکیک پلتفرم: {by}"
             )
-            parts = [
-                f"کل سرنخ‌ها: {total}",
-                f"امروز: {today}",
-                (
-                    f"به‌تفکیک: {byp_fa}"
-                    if byp else "به‌تفکیک: -"
-                ),
-            ]
-            if last:
-                parts.append(
-                    f"آخرین سرنخ: {fa_platform(last[0])} / "
-                    f"گروه {last[1]} / "
-                    f"کلیدواژه {last[2]} / {last[3]}"
-                )
-            return "\n".join(parts)
+            self._stats_cache = (now, result)
+            return result
         except Exception as e:
-            log_warning(
-                f"⚠️ [ADMIN:live_ctx] "
-                f"{type(e).__name__}: {e}"
+            log_error(
+                f"❌ [ADMIN:live_context] {type(e).__name__}: {e}"
             )
             return empty
         finally:
@@ -542,9 +540,14 @@ class AdminActions:
                     conn.close()
                 except Exception:
                     pass
-
+                    
     def status(self) -> str:
         """آمار کلی — با اسم پلتفرم فارسی."""
+        import time as _t
+        now = _t.time()
+        if now - self._stats_cache[0] < self._stats_ttl:
+            return self._stats_cache[1]
+
         conn = None
         try:
             conn = sqlite3.connect(self.db_path)
@@ -568,11 +571,13 @@ class AdminActions:
             by = "، ".join(
                 f"{fa_platform(p)}: {n}" for p, n in rows
             ) or "—"
-            return (
+            result = (
                 f"📊 وضعیت:\n"
                 f"کل پیام: {total} | سرنخ: {leads} | داغ: {hot}\n"
                 f"به تفکیک پلتفرم: {by}"
             )
+            self._stats_cache = (now, result)
+            return result
         except Exception as e:
             log_error(
                 f"❌ [ADMIN:status] {type(e).__name__}: {e}"
@@ -584,7 +589,7 @@ class AdminActions:
                     conn.close()
                 except Exception:
                     pass
-
+                    
     async def health(self) -> str:
         """سلامت کامل — با اسم پلتفرم فارسی."""
         lines = ["🩺 سلامتِ کامل:"]
@@ -938,21 +943,83 @@ class AdminActions:
                 f"مجازها: {', '.join(sorted(safe))}"
             )
 
+        # 🐛 FIX: چک کن config.py از env می‌خواند
+        env_readable = self._check_config_reads_env(name)
+
         ok, err = self._update_env(name, val)
         if not ok:
             log_error(f"❌ [ADMIN:set_param] {name} | {err}")
             return f"خطا در تغییر: {err}"
 
         log_success(f"✅ [ADMIN:set_param] {name}={val}")
+
+        # 🎯 مقدار جدید را در پروسهٔ جاری هم اعمال کن
+        try:
+            os.environ[name] = str(val)
+        except Exception as e:
+            log_warning(
+                f"⚠️ [ADMIN:set_param] os.environ | "
+                f"{type(e).__name__}: {e}"
+            )
+
+        if not env_readable:
+            return (
+                f"⚠️ {name}={val} در .env ذخیره شد، "
+                f"ولی config.py این پارامتر را hardcode کرده. "
+                f"برای اثر کردن، باید config.py هم تغییر کند."
+            )
+
         return (
             f"✅ {name}={val} ذخیره شد. "
             f"برای اعمالِ کامل، ری‌استارت کن."
         )
 
+    @staticmethod
+    def _check_config_reads_env(param_name: str) -> bool:
+        """آیا config.py این پارامتر را از env می‌خواند؟"""
+        try:
+            import ast
+            import config as _c
+            with open(_c.__file__, encoding="utf-8") as f:
+                tree = ast.parse(f.read())
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                fn = node.func
+                name = (
+                    fn.id if isinstance(fn, ast.Name)
+                    else fn.attr if isinstance(fn, ast.Attribute)
+                    else ""
+                )
+                if name in (
+                    "getenv", "_env_int",
+                    "_env_bool", "_env_float",
+                ):
+                    if (
+                        node.args
+                        and isinstance(node.args[0], ast.Constant)
+                        and node.args[0].value == param_name
+                    ):
+                        return True
+            return False
+        except Exception:
+            # امن: اگر نمی‌توانیم چک کنیم، فرض کن از env می‌خواند
+            return True
+            
     def _update_env(self, key: str, value: str) -> tuple[bool, str]:
-        """نوشتن atomic در .env + fsync."""
+        """نوشتن atomic در .env + fsync — با اعتبارسنجی."""
         env_path = os.path.join(self.root, ".env")
         tmp_path = env_path + ".tmp"
+
+        # 🐛 FIX: اعتبارسنجی key
+        if not key or not key.isidentifier():
+            return False, f"کلید نامعتبر: {key!r}"
+
+        # 🐛 FIX: اگر مقدار شامل newline بود، escape کن
+        if "\n" in value or "\r" in value:
+            value = (
+                value.replace("\r", "").replace("\n", "\\n")
+            )
 
         try:
             lines: list[str] = []
@@ -1002,7 +1069,7 @@ class AdminActions:
             except Exception:
                 pass
             return False, f"{type(e).__name__}: {e}"
-
+            
     # ═══════════════════════════════════════
     # feature request / restart
     # ═══════════════════════════════════════
@@ -1134,15 +1201,15 @@ class AdminActions:
     async def start_platform_direct(
         self, platform: str = "bale"
     ) -> str:
-        """روشن کردن پلتفرم — با دستور مستقیم مدیر.
-
-        Args:
-            platform: نام پلتفرم (bale, eitaa, ...).
-
-        Returns:
-            نتیجه یا خطا.
-        """
+        """روشن کردن پلتفرم — با دستور مستقیم مدیر."""
         platform = str(platform or "bale").strip().lower()
+
+        # 🎯 نگاشت نام فارسی → کلید استاندارد
+        try:
+            from handlers._ai_utils import canonical_platform
+            platform = canonical_platform(platform)
+        except Exception:
+            pass
 
         log_info(
             f"🚀 [ADMIN:start_platform] platform={platform}"
@@ -1186,20 +1253,20 @@ class AdminActions:
     async def stop_platform_direct(
         self, platform: str = "bale"
     ) -> str:
-        """خاموش کردن پلتفرم — با دستور مستقیم مدیر.
-
-        Args:
-            platform: نام پلتفرم (bale, eitaa, ...).
-
-        Returns:
-            نتیجه یا خطا.
-        """
+        """خاموش کردن پلتفرم — با دستور مستقیم مدیر."""
         platform = str(platform or "bale").strip().lower()
+
+        # 🎯 نگاشت نام فارسی → کلید استاندارد
+        try:
+            from handlers._ai_utils import canonical_platform
+            platform = canonical_platform(platform)
+        except Exception:
+            pass
 
         log_info(
             f"🛑 [ADMIN:stop_platform] platform={platform}"
         )
-
+        
         # ─── چک پلتفرم ───
         try:
             from collectors.controller import list_platforms
@@ -1226,7 +1293,7 @@ class AdminActions:
             log_success(
                 f"✅ [ADMIN:stop_platform] {platform}"
             )
-            return result or f"✅ {platform} خاموش شد."
+            return result or f"⚠️ {platform}: پاسخ خالی از مغز"
         except Exception as e:
             log_error(
                 f"❌ [ADMIN:stop_platform] "

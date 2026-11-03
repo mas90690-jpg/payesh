@@ -66,6 +66,21 @@ class AdminMemory:
             1, min(max_e, _MAX_ENTRIES_HARD_CAP)
         )
 
+        # 🎯 شمارندهٔ درون‌حافظه (برای جلوگیری از خواندن مکرر)
+        self._count_cache: int | None = None
+
+        # بار اول: شمارنده را از فایل حساب کن
+        try:
+            if os.path.exists(self.path):
+                lines = self._read_tail_lines(
+                    self.path, max_bytes=_TAIL_READ_BYTES * 4
+                )
+                self._count_cache = sum(
+                    1 for ln in lines if ln.strip()
+                )
+        except Exception:
+            self._count_cache = 0
+            
     # ═══════════════════════════════════════════
     # helpers
     # ═══════════════════════════════════════════
@@ -251,32 +266,37 @@ class AdminMemory:
             )
             return False
 
-        # ─── cap (اگر لازم بود) ───
-        try:
-            lines = self._read_tail_lines(
-                self.path, max_bytes=_TAIL_READ_BYTES * 4
-            )
-            if len(lines) > self.max_entries:
-                # 🎯 FIX: atomic cap
-                kept = lines[-self.max_entries:]
-                if self._atomic_write_lines(self.path, kept):
-                    log_info(
-                        f"🧹 [MEM:cap] {len(lines)} → {len(kept)} | "
-                        f"path={os.path.basename(self.path)}"
-                    )
-                else:
-                    log_warning(
-                        f"⚠️ [MEM:cap] atomic write ناموفق | "
-                        f"path={os.path.basename(self.path)}"
-                    )
-        except Exception as e:
-            log_warning(
-                f"⚠️ [MEM:cap] {type(e).__name__}: {e} | "
-                f"path={os.path.basename(self.path)}"
-            )
+        # ─── شمارندهٔ درون‌حافظه ───
+        self._count_cache = (self._count_cache or 0) + 1
+
+        # ─── cap (فقط هر ۲ برابر) ───
+        if self._count_cache > self.max_entries * 2:
+            try:
+                lines = self._read_tail_lines(
+                    self.path, max_bytes=_TAIL_READ_BYTES * 4
+                )
+                if len(lines) > self.max_entries:
+                    # 🎯 FIX: atomic cap
+                    kept = lines[-self.max_entries:]
+                    if self._atomic_write_lines(self.path, kept):
+                        log_info(
+                            f"🧹 [MEM:cap] {len(lines)} → {len(kept)} | "
+                            f"path={os.path.basename(self.path)}"
+                        )
+                    else:
+                        log_warning(
+                            f"⚠️ [MEM:cap] atomic write ناموفق | "
+                            f"path={os.path.basename(self.path)}"
+                        )
+            except Exception as e:
+                log_warning(
+                    f"⚠️ [MEM:cap] {type(e).__name__}: {e} | "
+                    f"path={os.path.basename(self.path)}"
+                )
+            self._count_cache = self.max_entries
 
         return True
-
+        
     # ═══════════════════════════════════════════
     # count
     # ═══════════════════════════════════════════

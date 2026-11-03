@@ -178,16 +178,26 @@ class TelegramWebCollector(BaseCollector):
             self._seen_ids = set()
 
     def _save_seen(self):
+        """ذخیرهٔ seen — atomic (tmp + replace + fsync)."""
+        tmp = self._seen_path + ".tmp"
         try:
             if len(self._seen_ids) > _MAX_SEEN:
                 self._seen_ids = set(
                     list(self._seen_ids)[-_MAX_SEEN:]
                 )
-            with open(self._seen_path, "w", encoding="utf-8") as f:
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(list(self._seen_ids), f, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self._seen_path)
         except Exception as e:
             log_warning(f"ذخیرهٔ ضدتکراری تلگرام ناموفق: {e}")
-
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except Exception:
+                pass
+                
     # ═══════════════════════════════════════════════════
     # اتصال
     # ═══════════════════════════════════════════════════
@@ -340,15 +350,36 @@ class TelegramWebCollector(BaseCollector):
                 pass
 
     def _force_kill_chrome(self):
+        """فقط پروفایل مرورگر خود ربات را می‌کشد، نه Chrome کاربر."""
+        import subprocess
+        import re as _re
         try:
-            import subprocess
-            subprocess.run(
-                ["taskkill", "/F", "/IM", "chrome.exe"],
-                capture_output=True, timeout=5,
-            )
+            out = subprocess.run(
+                ["wmic", "process", "where", "name='chrome.exe'",
+                 "get", "ProcessId,CommandLine"],
+                capture_output=True, text=True, timeout=10,
+                encoding="utf-8", errors="ignore",
+            ).stdout
         except Exception:
-            pass
+            return
 
+        target = os.path.normcase(self._user_data_dir)
+        for line in out.splitlines():
+            if "--user-data-dir" not in line:
+                continue
+            if target not in os.path.normcase(line):
+                continue
+            m = _re.search(r"(\d+)\s*$", line.strip())
+            if not m:
+                continue
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/PID", m.group(1), "/T"],
+                    capture_output=True, timeout=5,
+                )
+            except Exception:
+                pass
+                
     async def _is_logged_in(self) -> bool:
         try:
             for sel in LOGGEDIN_MARKERS:

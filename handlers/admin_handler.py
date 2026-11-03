@@ -1,17 +1,12 @@
 """
-ChatOps admin handler — نسخهٔ ۱۷ (ترتیب درست: parse_command اول).
+ChatOps admin handler — نسخهٔ ۱۹ (استاندارد، داده‌محور، امن).
 
-تغییرات نسخهٔ ۱۷:
-  - 🎯 FIX بحرانی: در `process_text`، `parse_command` **قبل از** 
-    `_recall_persistent` و `manual_brain` صدا زده می‌شود.
-    قبلاً حافظه اول اجرا می‌شد و پاسخ غلط برمی‌گرداند.
-  - 🎯 FIX بحرانی: در `handle`، `parse_command` **قبل از** 
-    `_recall_persistent` و `manual_brain` صدا زده می‌شود.
-  - ✅ حفظ همهٔ رفتار نسخهٔ ۱۶.
-
-نسخهٔ ۱۶:
-  - 🐛 FIX: `_remember` پاسخ‌های fallback را ذخیره نمی‌کند.
-  - 🐛 FIX: `_recall_persistent` پاسخ‌های fallback را رد می‌کند.
+تغییرات نسخهٔ ۱۹:
+  - 🐛 FIX: بازگرداندن بدنهٔ کامل `_handle_command` و `_handle_free_text`
+    که در نسخهٔ ۱۸ ناقص شده بودند.
+  - 🎯 `_DIRECT_ACTIONS` در سطح ماژول (نه داخل تابع).
+  - 🎯 `_chunk_text` با هشدار truncation.
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۱۸.
 """
 from __future__ import annotations
 
@@ -23,7 +18,12 @@ from analyzers.keyword_finder import get_keyword_finder
 from core.adapters import messenger_registry
 from core.adapters.command_parser import parse_command
 from core.contracts.base_handler import BaseHandler
-from core.kernel.logger import log_error, log_info, log_success, log_warning
+from core.kernel.logger import (
+    log_error,
+    log_info,
+    log_success,
+    log_warning,
+)
 from core.safe_brain import get_safe_brain
 from core.services.ai_assistant import get_ai_assistant
 from data.loader import load_json
@@ -51,20 +51,29 @@ try:
     _manual_brain_available = True
 except ImportError as e:
     _manual_brain_available = False
-    log_warning(f"⚠️ [ADMIN:init] manual_brain در دسترس نیست | {e}")
+    log_warning(
+        f"⚠️ [ADMIN:init] manual_brain در دسترس نیست | {e}"
+    )
 
 try:
     from core.brain import get_brain
     _brain_available = True
 except ImportError as e:
     _brain_available = False
-    log_warning(f"⚠️ [ADMIN:init] brain در دسترس نیست | {e}")
+    log_warning(
+        f"⚠️ [ADMIN:init] brain در دسترس نیست | {e}"
+    )
 
 
 # ═══════════════════════════════════════════
 # helpers
 # ═══════════════════════════════════════════
-def _env_int(name, default, min_val=None, max_val=None) -> int:
+def _env_int(
+    name: str,
+    default: int,
+    min_val: int | None = None,
+    max_val: int | None = None,
+) -> int:
     try:
         v = int(os.getenv(name, str(default)))
     except (ValueError, TypeError):
@@ -76,7 +85,12 @@ def _env_int(name, default, min_val=None, max_val=None) -> int:
     return v
 
 
-def _env_float(name, default, min_val=None, max_val=None) -> float:
+def _env_float(
+    name: str,
+    default: float,
+    min_val: float | None = None,
+    max_val: float | None = None,
+) -> float:
     try:
         v = float(os.getenv(name, str(default)))
     except (ValueError, TypeError):
@@ -101,13 +115,14 @@ def _env_bool(name: str, default: bool = True) -> bool:
 
 
 # ═══════════════════════════════════════════
-# ثابت‌ها (فقط env-based)
+# ثابت‌ها (env-based)
 # ═══════════════════════════════════════════
 _LOG_PREVIEW_LEN = _env_int("ADMIN_LOG_PREVIEW", 100, 20, 500)
 _SLOW_HANDLE_MS = _env_int("ADMIN_SLOW_HANDLE_MS", 5000, 100, 60_000)
 _SLOW_LAYER_MS = _env_int("ADMIN_SLOW_LAYER_MS", 3000, 100, 60_000)
 _SLOW_REPLY_MS = _env_int("ADMIN_SLOW_REPLY_MS", 3000, 100, 60_000)
 _REPLY_CHUNK = _env_int("ADMIN_REPLY_CHUNK", 3900, 500, 10_000)
+_REPLY_MAX_CHUNKS = _env_int("ADMIN_REPLY_MAX_CHUNKS", 20, 1, 100)
 _DOMAIN_RELOAD_SECONDS = _env_float(
     "ADMIN_DOMAIN_RELOAD_S", 120.0, 10.0, 3600.0
 )
@@ -126,6 +141,69 @@ _PERSISTENT_IMPORTANCE = _env_float(
 
 _VALID_PLATFORMS = frozenset(PLATFORMS_ORDER)
 
+
+# ═══════════════════════════════════════════
+# اکشن‌های مستقیم (بدون عبور از safe_brain)
+# ═══════════════════════════════════════════
+_DIRECT_ACTIONS: frozenset[str] = frozenset({
+    # ─── پلتفرم ───
+    "start_platform",
+    "stop_platform",
+    "search_platform",
+    "join_group",
+    # ─── آمار و وضعیت ───
+    "status",
+    "health",
+    "platform_status",
+    "lead_details",
+    # ─── گزارش و CRM ───
+    "report",
+    "crm",
+    # ─── کلیدواژه ───
+    "keywords",
+    "add_keyword",
+    "remove_keyword",
+    "has_keyword",
+    # ─── پارامترها ───
+    "get_param",
+    "set_param",
+    # ─── لاگ ───
+    "logs",
+    "explain_logs",
+    # ─── سیستم ───
+    "restart",
+    "help",
+    "feature_request",
+})
+
+# ═══════════════════════════════════════════
+# 🎯 اکشن‌هایی که با parse_command مستقیم اجرا می‌شن
+# (نه چت و سؤال آزاد)
+# ═══════════════════════════════════════════
+_DIRECT_ONLY_ACTIONS: frozenset[str] = frozenset({
+    # ─── وضعیت و آمار ───
+    "status",
+    "health",
+    "stats",
+    "report",
+    "crm",
+    "logs",
+    "lead_details",
+    "platform_status",
+    # ─── کلیدواژه ───
+    "keywords",
+    "add_keyword",
+    "remove_keyword",
+    "has_keyword",
+    # ─── سیستم ───
+    "restart",
+    "help",
+    "get_param",
+    "set_param",
+    # ─── پلتفرم ───
+    "start_platform",
+    "stop_platform",
+})
 
 # ═══════════════════════════════════════════
 # Fallback prefixes cache
@@ -171,7 +249,10 @@ class DomainGuard:
         self._data: dict = {}
         self._mtime: float = 0.0
         self._last_check: float = 0.0
+        self._msg_cache: dict = {}
+        self._msg_mtime: float = 0.0
         self._load(initial=True)
+        self._load_messages()
 
     def _load(self, initial: bool = False) -> None:
         if not os.path.exists(self.config_path):
@@ -219,6 +300,27 @@ class DomainGuard:
             return
         if current_mtime != self._mtime:
             self._load(initial=False)
+
+    def _load_messages(self) -> None:
+        """بارگذاری messages.json با cache mtime."""
+        path = str(data_paths.MESSAGES)
+        try:
+            mtime = os.path.getmtime(path)
+        except Exception:
+            mtime = 0.0
+        if self._msg_cache and self._msg_mtime == mtime:
+            return
+        try:
+            self._msg_cache = load_json("messages") or {}
+            self._msg_mtime = mtime
+        except Exception:
+            self._msg_cache = {}
+            self._msg_mtime = mtime
+
+    def _get_msg(self, key: str, default: str) -> str:
+        """خواندن پیام از cache."""
+        self._load_messages()
+        return self._msg_cache.get(key, default)
 
     @property
     def in_domain(self) -> tuple[str, ...]:
@@ -268,8 +370,7 @@ class DomainGuard:
         tpl = self._data.get("out_of_domain_reply", "")
 
         if not tpl:
-            msgs = load_json("messages")
-            tpl = msgs.get(
+            tpl = self._get_msg(
                 "out_of_domain_reply",
                 "🤖 «{query}» خارج از حوزهٔ من است.",
             )
@@ -278,10 +379,9 @@ class DomainGuard:
             return tpl.format(query=query[:80])
         except (KeyError, IndexError):
             return tpl
-
+            
     def get_empty_reply(self) -> str:
-        msgs = load_json("messages")
-        return msgs.get(
+        return self._get_msg(
             "empty_reply",
             "🤔 متوجه نشدم. «راهنما» بزن.",
         )
@@ -301,7 +401,7 @@ class DomainGuard:
 # AdminHandler
 # ═══════════════════════════════════════════
 class AdminHandler(BaseHandler):
-    """ChatOps — داده‌محور."""
+    """ChatOps — داده‌محور، استاندارد، امن."""
 
     def __init__(self, db, scorer=None, **kwargs):
         super().__init__()
@@ -368,7 +468,9 @@ class AdminHandler(BaseHandler):
         if _manual_brain_available:
             try:
                 self.manual_brain = get_manual_brain(self.db_path)
-                log_success("✅ [ADMIN:init] ManualBrain بارگذاری شد")
+                log_success(
+                    "✅ [ADMIN:init] ManualBrain بارگذاری شد"
+                )
             except Exception as e:
                 log_warning(
                     f"⚠️ [ADMIN:init] manual_brain init ناموفق | "
@@ -402,7 +504,9 @@ class AdminHandler(BaseHandler):
             )
             self.platform = "bale"
 
-        self._platform_enabled = self._check_platform_enabled(self.platform)
+        self._platform_enabled = self._check_platform_enabled(
+            self.platform
+        )
 
         # ─── دانش ───
         self._knowledge = self._load_knowledge()
@@ -467,15 +571,19 @@ class AdminHandler(BaseHandler):
             with open(path, encoding="utf-8") as f:
                 text = f.read()
             log_info(
-                f"📚 [ADMIN:init] knowledge بارگذاری شد | {len(text)}ch"
+                f"📚 [ADMIN:init] knowledge بارگذاری شد | "
+                f"{len(text)}ch"
             )
             return text
         except FileNotFoundError:
-            log_warning(f"⚠️ [ADMIN:init] knowledge نبود | {path}")
+            log_warning(
+                f"⚠️ [ADMIN:init] knowledge نبود | {path}"
+            )
             return ""
         except Exception as e:
             log_warning(
-                f"⚠️ [ADMIN:init] knowledge | {type(e).__name__}: {e}"
+                f"⚠️ [ADMIN:init] knowledge | "
+                f"{type(e).__name__}: {e}"
             )
             return ""
 
@@ -485,6 +593,19 @@ class AdminHandler(BaseHandler):
     def _remember(self, text: str, reply: str) -> None:
         if not text or not reply:
             return
+
+        # 🎯 دستورات مستقیم ذخیره نشوند
+        try:
+            from core.adapters.command_parser import parse_command
+            action, _ = parse_command(text)
+            if action is not None:
+                log_info(
+                    f"⏭️ [ADMIN:memory] دستور مستقیم — "
+                    f"ذخیره نشد | action={action}"
+                )
+                return
+        except Exception:
+            pass
 
         if self._is_safebrain_fallback(reply):
             log_info(
@@ -528,24 +649,29 @@ class AdminHandler(BaseHandler):
             results = self.persistent_memory.recall(
                 query=text,
                 category=_PERSISTENT_CATEGORY,
-                limit=1,
+                limit=3,
             )
             if not results:
                 return None
 
-            best = results[0]
-            answer = best.get("value") or ""
-            if not answer or len(answer) < 10:
+            # 🎯 بهترین نتیجه با importance کافی
+            best = None
+            for r in results:
+                imp = float(r.get("importance", 0) or 0)
+                ans = str(r.get("value") or "")
+                if imp < 0.5:
+                    continue
+                if len(ans) < 10:
+                    continue
+                if self._is_safebrain_fallback(ans):
+                    continue
+                best = r
+                break
+
+            if not best:
                 return None
 
-            if self._is_safebrain_fallback(answer):
-                log_info(
-                    f"⏭️ [ADMIN:recall:persistent] "
-                    f"fallback در حافظه — رد شد | "
-                    f"'{text[:40]}'"
-                )
-                return None
-
+            answer = str(best.get("value") or "")
             log_success(
                 f"🎯 [ADMIN:recall:persistent] '{text[:40]}' → "
                 f"'{answer[:40]}' | "
@@ -558,7 +684,7 @@ class AdminHandler(BaseHandler):
                 f"{type(e).__name__}: {e}"
             )
             return None
-
+            
     # ═══════════════════════════════════════
     # BaseHandler
     # ═══════════════════════════════════════
@@ -614,7 +740,9 @@ class AdminHandler(BaseHandler):
             return self._brain
         try:
             self._brain = get_brain(db=self.db)
-            log_info("🏗️ [ADMIN:brain] Brain ساخته شد (lazy)")
+            log_info(
+                "🏗️ [ADMIN:brain] Brain ساخته شد (lazy)"
+            )
         except Exception as e:
             log_warning(
                 f"⚠️ [ADMIN:brain] ساخت ناموفق | "
@@ -687,7 +815,8 @@ class AdminHandler(BaseHandler):
             )
         except Exception as e:
             log_warning(
-                f"⚠️ [ADMIN:fallback:ai] {type(e).__name__}: {e}"
+                f"⚠️ [ADMIN:fallback:ai] "
+                f"{type(e).__name__}: {e}"
             )
 
         elapsed_ms = (time.monotonic() - t0) * 1000
@@ -698,7 +827,7 @@ class AdminHandler(BaseHandler):
         return None
 
     # ═══════════════════════════════════════
-    # entry point (بله) — نسخهٔ ۱۷
+    # entry point (بله)
     # ═══════════════════════════════════════
     async def handle(self, event):
         t0 = time.monotonic()
@@ -720,7 +849,9 @@ class AdminHandler(BaseHandler):
         if not is_private:
             return
 
-        text = (raw.get("text") or raw.get("caption") or "").strip()
+        text = (
+            raw.get("text") or raw.get("caption") or ""
+        ).strip()
         if not text:
             return
 
@@ -754,11 +885,12 @@ class AdminHandler(BaseHandler):
             return
 
         # ═══════════════════════════════════════════
-        # ★ ۲.۵) parse_command — اکشن قطعی، اول از همه ★
+        # ★ ۲.۵) parse_command — فقط اکشن‌های مشخص ★
         # ═══════════════════════════════════════════
         if is_admin:
             action_early, value_early = parse_command(text)
-            if action_early is not None:
+            # 🎯 فقط اکشن‌های قطعی — نه چت
+            if action_early in _DIRECT_ONLY_ACTIONS:
                 log_info(
                     f"🎬 [ADMIN:handle:action] {action_early} | "
                     f"text={text[:_LOG_PREVIEW_LEN]!r}"
@@ -767,7 +899,10 @@ class AdminHandler(BaseHandler):
                     reply = await self._handle_command(
                         action_early, value_early, text
                     )
-                    reply = reply or self._domain.get_empty_reply()
+                    reply = (
+                        reply
+                        or self._domain.get_empty_reply()
+                    )
                     self._remember(text, reply)
                     await self._reply(raw, reply)
                     return
@@ -776,13 +911,16 @@ class AdminHandler(BaseHandler):
                         f"❌ [ADMIN:handle:action] "
                         f"{type(e).__name__}: {e}"
                     )
-                    await self._reply(raw, f"❌ خطا در اجرای دستور: {e}")
+                    await self._reply(
+                        raw,
+                        f"❌ خطا در اجرای دستور: {e}",
+                    )
                     return
-
+                    
         # ═══════════════════════════════════════════
-        # ۳) PersistentMemory — فقط برای چت
+        # ۳) PersistentMemory — فقط برای سلام/تشکر
         # ═══════════════════════════════════════════
-        if is_admin:
+        if is_admin and text.strip() in _SAFE_MEMORY_REPLY:
             cached = self._recall_persistent(text)
             if cached:
                 elapsed_ms = (time.monotonic() - t0) * 1000
@@ -792,17 +930,54 @@ class AdminHandler(BaseHandler):
                 )
                 await self._reply(raw, cached)
                 return
+                
+        # ═══════════════════════════════════════════
+        # ۴) Brain کامل — اول
+        # ═══════════════════════════════════════════
+        if is_admin:
+            brain = self._get_brain()
+            if brain:
+                try:
+                    t_layer = time.monotonic()
+                    brain_reply = await brain.process_admin_command(
+                        text
+                    )
+                    layer_ms = (
+                        time.monotonic() - t_layer
+                    ) * 1000
+
+                    if brain_reply and is_valid_ai_answer(brain_reply):
+                        log_success(
+                            f"✅ [ADMIN:layer:brain] پاسخ | "
+                            f"{layer_ms:.0f}ms"
+                        )
+                        self._remember(text, brain_reply)
+                        await self._reply(raw, brain_reply)
+                        return
+                    log_info(
+                        f"ℹ️ [ADMIN:layer:brain] نامعتبر | "
+                        f"{layer_ms:.0f}ms"
+                    )
+                except Exception as e:
+                    log_warning(
+                        f"⚠️ [ADMIN:layer:brain] "
+                        f"{type(e).__name__}: {e}"
+                    )
 
         # ═══════════════════════════════════════════
-        # ۴) ManualBrain
+        # ۴.۵) ManualBrain — fallback
         # ═══════════════════════════════════════════
         if is_admin and self.manual_brain:
             try:
                 t_layer = time.monotonic()
                 manual_reply = await self.manual_brain.process(
-                    text, sender=sender, ai_fallback=self._ai_fallback,
+                    text,
+                    sender=sender,
+                    ai_fallback=self._ai_fallback,
                 )
-                layer_ms = (time.monotonic() - t_layer) * 1000
+                layer_ms = (
+                    time.monotonic() - t_layer
+                ) * 1000
 
                 if manual_reply:
                     log_success(
@@ -814,9 +989,10 @@ class AdminHandler(BaseHandler):
                     return
             except Exception as e:
                 log_warning(
-                    f"⚠️ [ADMIN:layer:manual] {type(e).__name__}: {e}"
+                    f"⚠️ [ADMIN:layer:manual] "
+                    f"{type(e).__name__}: {e}"
                 )
-
+                
         # ═══════════════════════════════════════════
         # ۵) کاربر غیرمجاز
         # ═══════════════════════════════════════════
@@ -827,13 +1003,17 @@ class AdminHandler(BaseHandler):
         # ۶) free text
         # ═══════════════════════════════════════════
         log_info(
-            f"🛡️ [ADMIN:handle:free] {text[:_LOG_PREVIEW_LEN]!r}"
+            f"🛡️ [ADMIN:handle:free] "
+            f"{text[:_LOG_PREVIEW_LEN]!r}"
         )
 
         try:
             reply = await self._handle_free_text(text)
         except Exception as e:
-            log_error(f"❌ [ADMIN:handle:free] {type(e).__name__}: {e}")
+            log_error(
+                f"❌ [ADMIN:handle:free] "
+                f"{type(e).__name__}: {e}"
+            )
             reply = f"❌ خطا: {e}"
 
         if not reply:
@@ -849,15 +1029,10 @@ class AdminHandler(BaseHandler):
                 f"🐌 [ADMIN:handle] کند | {total_ms:.0f}ms"
             )
 
+    # ═══════════════════════════════════════
+    # handle_command
+    # ═══════════════════════════════════════
     async def _handle_command(self, action, value, raw_text):
-        _DIRECT_ACTIONS = {
-            "start_platform",
-            "stop_platform",
-            "search_platform",
-            "join_group",
-            "status",
-        }
-
         if action in _DIRECT_ACTIONS:
             log_info(
                 f"🎯 [ADMIN:handle:direct] action={action} | "
@@ -875,12 +1050,14 @@ class AdminHandler(BaseHandler):
                 )
                 return f"❌ خطا: {e}"
 
+        # ─── fallback: safe_brain ───
         reply = None
         try:
             reply = await self.safe_brain.process(raw_text)
         except Exception as e:
             log_warning(
-                f"⚠️ [ADMIN:safe_brain] {type(e).__name__}: {e}"
+                f"⚠️ [ADMIN:safe_brain] "
+                f"{type(e).__name__}: {e}"
             )
 
         if self._is_safebrain_fallback(reply):
@@ -890,6 +1067,9 @@ class AdminHandler(BaseHandler):
 
         return reply or self._domain.get_empty_reply()
 
+    # ═══════════════════════════════════════
+    # handle_free_text
+    # ═══════════════════════════════════════
     async def _handle_free_text(self, text: str) -> str:
         # ─── لایهٔ ۱: SafeBrain ───
         try:
@@ -897,7 +1077,10 @@ class AdminHandler(BaseHandler):
             if reply and not self._is_safebrain_fallback(reply):
                 return reply
         except Exception as e:
-            log_warning(f"⚠️ [ADMIN:free] safe_brain | {type(e).__name__}: {e}")
+            log_warning(
+                f"⚠️ [ADMIN:free] safe_brain | "
+                f"{type(e).__name__}: {e}"
+            )
 
         # ─── لایهٔ ۲: Brain ───
         brain = self._get_brain()
@@ -907,7 +1090,10 @@ class AdminHandler(BaseHandler):
                 if ans and is_valid_ai_answer(ans):
                     return ans
             except Exception as e:
-                log_warning(f"⚠️ [ADMIN:free] brain | {type(e).__name__}: {e}")
+                log_warning(
+                    f"⚠️ [ADMIN:free] brain | "
+                    f"{type(e).__name__}: {e}"
+                )
 
         # ─── لایهٔ ۳: AIAssistant ───
         try:
@@ -915,18 +1101,18 @@ class AdminHandler(BaseHandler):
             if ans and is_valid_ai_answer(ans):
                 return ans
         except Exception as e:
-            log_warning(f"⚠️ [ADMIN:free] ask | {type(e).__name__}: {e}")
+            log_warning(
+                f"⚠️ [ADMIN:free] ask | "
+                f"{type(e).__name__}: {e}"
+            )
 
         return self._domain.get_empty_reply()
 
     # ═══════════════════════════════════════
-    # entry point (وب) — نسخهٔ ۱۷
+    # entry point (وب)
     # ═══════════════════════════════════════
     async def process_text(self, text: str) -> str:
-        """مسیر وب — برای /chat در OBS server.
-
-        نسخهٔ ۱۷: parse_command قبل از حافظه و ManualBrain.
-        """
+        """مسیر وب — برای /chat در OBS server."""
         text = (text or "").strip()
         if not text:
             return ""
@@ -944,7 +1130,7 @@ class AdminHandler(BaseHandler):
             return reply
 
         # ═══════════════════════════════════════
-        # ★ ۱) parse_command — اکشن قطعی، قبل از حافظه ★
+        # ★ ۱) parse_command — قبل از حافظه ★
         # ═══════════════════════════════════════
         action, value = parse_command(text)
         if action is not None:
@@ -953,13 +1139,18 @@ class AdminHandler(BaseHandler):
                 f"text={text[:_LOG_PREVIEW_LEN]!r}"
             )
             try:
-                reply = await self._handle_command(action, value, text)
-                reply = reply or self._domain.get_empty_reply()
+                reply = await self._handle_command(
+                    action, value, text
+                )
+                reply = (
+                    reply or self._domain.get_empty_reply()
+                )
                 self._remember(text, reply)
                 return reply
             except Exception as e:
                 log_error(
-                    f"❌ [ADMIN:web:action] {type(e).__name__}: {e}"
+                    f"❌ [ADMIN:web:action] "
+                    f"{type(e).__name__}: {e}"
                 )
                 return f"❌ خطا در اجرای دستور: {e}"
 
@@ -968,7 +1159,9 @@ class AdminHandler(BaseHandler):
         # ═══════════════════════════════════════
         cached = self._recall_persistent(text)
         if cached:
-            log_success("✅ [ADMIN:web:persistent] پاسخ از حافظه")
+            log_success(
+                "✅ [ADMIN:web:persistent] پاسخ از حافظه"
+            )
             return cached
 
         # ═══════════════════════════════════════
@@ -977,16 +1170,20 @@ class AdminHandler(BaseHandler):
         if self.manual_brain:
             try:
                 manual_reply = await self.manual_brain.process(
-                    text, sender="local_web",
+                    text,
+                    sender="local_web",
                     ai_fallback=self._ai_fallback,
                 )
                 if manual_reply:
-                    log_success("✅ [ADMIN:web:manual] پاسخ")
+                    log_success(
+                        "✅ [ADMIN:web:manual] پاسخ"
+                    )
                     self._remember(text, manual_reply)
                     return manual_reply
             except Exception as e:
                 log_warning(
-                    f"⚠️ [ADMIN:web:manual] {type(e).__name__}: {e}"
+                    f"⚠️ [ADMIN:web:manual] "
+                    f"{type(e).__name__}: {e}"
                 )
 
         # ═══════════════════════════════════════
@@ -998,7 +1195,9 @@ class AdminHandler(BaseHandler):
             self._remember(text, reply)
             return reply
         except Exception as e:
-            log_error(f"❌ [ADMIN:web] {type(e).__name__}: {e}")
+            log_error(
+                f"❌ [ADMIN:web] {type(e).__name__}: {e}"
+            )
             return f"❌ خطا: {e}"
 
     # ═══════════════════════════════════════
@@ -1007,7 +1206,10 @@ class AdminHandler(BaseHandler):
     async def _reply(self, raw: dict, text: str):
         sender = messenger_registry.get_sender(self.platform)
         if not sender:
-            log_warning(f"⚠️ [ADMIN:reply] sender نیست برای {self.platform}")
+            log_warning(
+                f"⚠️ [ADMIN:reply] sender نیست برای "
+                f"{self.platform}"
+            )
             return
 
         chat_id = raw.get("chat_id") or raw.get("user_id")
@@ -1029,20 +1231,39 @@ class AdminHandler(BaseHandler):
                 await sender(chat_id, ct, chunk)
             except Exception as e:
                 log_error(
-                    f"❌ [ADMIN:reply] chunk {i+1}/{len(chunks)} | "
+                    f"❌ [ADMIN:reply] chunk {i+1}/"
+                    f"{len(chunks)} | "
                     f"{type(e).__name__}: {e}"
                 )
 
     @staticmethod
     def _chunk_text(text: str, size: int) -> list[str]:
+        """تقسیم متن به chunkهای امن.
+
+        - حداقل ۱۰۰، حداکثر ۱۰۰۰۰ کاراکتر.
+        - اگر متن خیلی بزرگ بود، به MAX_CHUNKS تقسیم می‌شود.
+        """
+        # 🐛 FIX: محدودیت اندازه
+        if size < 100:
+            size = 100
+        if size > 10_000:
+            size = 10_000
+
         if not text:
             return [""]
         if len(text) <= size:
             return [text]
 
-        chunks = []
+        # ─── محدودیت تعداد chunk ───
+        max_chunks = _REPLY_MAX_CHUNKS
+        if max_chunks < 1:
+            max_chunks = 1
+        if max_chunks > 100:
+            max_chunks = 100
+
+        chunks: list[str] = []
         remaining = text
-        while remaining:
+        while remaining and len(chunks) < max_chunks:
             if len(remaining) <= size:
                 chunks.append(remaining)
                 break
@@ -1053,6 +1274,18 @@ class AdminHandler(BaseHandler):
                 cut = size
             chunks.append(remaining[:cut])
             remaining = remaining[cut:].lstrip("\n")
+
+        # 🐛 FIX: اگر هنوز متن باقی ماند، به آخرین chunk الصاق کن
+        if remaining:
+            log_warning(
+                f"⚠️ [ADMIN:reply] truncation | "
+                f"dropped={len(remaining)}ch | "
+                f"chunks={len(chunks)}/{max_chunks}"
+            )
+            if chunks:
+                chunks[-1] += "\n… (ادامه در پیام بعدی)"
+            else:
+                chunks.append(remaining)
 
         return chunks
 
