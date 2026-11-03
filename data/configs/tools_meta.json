@@ -1,0 +1,1660 @@
+{
+  "version": "1.0.0",
+  "description": "ابزارهای مجاز + تعاریف",
+  "allowed_tools": {
+    "read_file": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "read_all": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "read_chunk": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "read_lines": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "read_range": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "file_info": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "file_exists": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "file_hash": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "find_files": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "list_directory": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "analyze_code": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "audit_code": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "audit_file": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "grep_search": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "semantic_search": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "get_project_context": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "system_dashboard": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "get_system_info": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "list_processes": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "ping_host": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "clipboard_get": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "browse_web": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "web_search": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "zip_archive": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "git_status": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "git_diff": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "git_log": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "run_tests": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "run_tests_coverage": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "analyze_security": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "query_database": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "get_setting": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "get_access_summary": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "platform_status": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "generate_tests": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "code_review": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "plan_task": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "backup_project": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "write_file": {
+      "risk": "medium",
+      "require_confirm": true
+    },
+    "edit_file": {
+      "risk": "medium",
+      "require_confirm": true
+    },
+    "move_file": {
+      "risk": "medium",
+      "require_confirm": true
+    },
+    "fix_bug": {
+      "risk": "medium",
+      "require_confirm": true
+    },
+    "append_knowledge": {
+      "risk": "medium",
+      "require_confirm": false
+    },
+    "fix_fstrings": {
+      "risk": "medium",
+      "require_confirm": true
+    },
+    "git_commit": {
+      "risk": "medium",
+      "require_confirm": true
+    },
+    "git_branch": {
+      "risk": "medium",
+      "require_confirm": true
+    },
+    "set_setting": {
+      "risk": "medium",
+      "require_confirm": true
+    },
+    "toggle_platform": {
+      "risk": "medium",
+      "require_confirm": true
+    },
+    "change_poll_interval": {
+      "risk": "medium",
+      "require_confirm": true
+    },
+    "delete_file": {
+      "risk": "high",
+      "require_confirm": true
+    },
+    "kill_process": {
+      "risk": "high",
+      "require_confirm": true
+    },
+    "execute_command": {
+      "risk": "high",
+      "require_confirm": true
+    },
+    "execute_python": {
+      "risk": "high",
+      "require_confirm": true
+    },
+    "start_platform": {
+      "risk": "medium",
+      "require_confirm": true
+    },
+    "stop_platform": {
+      "risk": "medium",
+      "require_confirm": false
+    },
+    "platform_health": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "platform_diagnose": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "platform_run_once": {
+      "risk": "medium",
+      "require_confirm": true
+    },
+    "list_platforms": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "diagnose_platform": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "run_platform_as_user": {
+      "risk": "medium",
+      "require_confirm": true
+    },
+    "list_all_platforms": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "consolidation_run": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "brain_status": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "proactive_diagnosis": {
+      "risk": "low",
+      "require_confirm": false
+    },
+    "control_platform": {
+      "risk": "medium",
+      "require_confirm": true
+    },
+    "control_stats": {
+      "risk": "low",
+      "require_confirm": false
+    }
+  },
+  "tool_definitions": [
+    {
+      "type": "function",
+      "function": {
+        "name": "read_file",
+        "description": "خواندن یک فایل با پشتیبانی از chunk برای فایل‌های بزرگ. برای فایل‌های تا ۱۰۰KB کامل می‌خواند. برای بزرگ‌تر، خودکار chunk می‌کند و به شماره تکه ارجاع می‌دهد (chunk=0, 1, 2, ...). شماره خط هم نشان می‌دهد.\nخروجی: متن فایل با شماره خط یا پیام خطا",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "مسیر فایل"
+            },
+            "chunk": {
+              "type": "integer",
+              "description": "شمارهٔ تکه (0 = اول)",
+              "default": 0
+            },
+            "chunk_size": {
+              "type": "integer",
+              "description": "اندازهٔ هر تکه به کاراکتر",
+              "default": 100000
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "read_all",
+        "description": "خواندن کامل یک فایل (بدون chunk). برای فایل‌های بزرگ ممکن است بریده شود. برای خواندن تکه‌تکه از read_file با chunk استفاده کن.\nخروجی: متن کامل فایل",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "مسیر فایل"
+            },
+            "max_chars": {
+              "type": "integer",
+              "description": "سقف کاراکتر (پیش‌فرض 2M)"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "read_chunk",
+        "description": "خواندن یک تکهٔ مشخص از فایل. معادل read_file با پارامتر chunk.\nخروجی: متن تکه با شماره خط",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "مسیر فایل"
+            },
+            "chunk": {
+              "type": "integer",
+              "description": "شمارهٔ تکه (0-based)"
+            }
+          },
+          "required": [
+            "path",
+            "chunk"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "read_lines",
+        "description": "خواندن بازهٔ مشخصی از خطوط فایل. برای خواندن تابع/کلاس خاص عالی است. مثال: خطوط ۱۰۰ تا ۲۰۰ یک فایل.\nخروجی: خطوط با شماره",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "مسیر فایل"
+            },
+            "start_line": {
+              "type": "integer",
+              "description": "خط شروع (1-based)",
+              "default": 1
+            },
+            "end_line": {
+              "type": "integer",
+              "description": "خط پایان",
+              "default": 100
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "read_range",
+        "description": "خواندن بازهٔ مشخصی از کاراکترها. برای فایل‌های باینری/بزرگ مفید است.\nخروجی: بازهٔ کاراکتر",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "مسیر فایل"
+            },
+            "start_char": {
+              "type": "integer",
+              "description": "شروع (0-based)",
+              "default": 0
+            },
+            "end_char": {
+              "type": "integer",
+              "description": "پایان",
+              "default": 100000
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "file_info",
+        "description": "اطلاعات یک فایل بدون خواندن کامل: حجم، تعداد خطوط، آخرین تغییر. مفید برای تصمیم‌گیری قبل از خواندن.\nخروجی: حجم، خطوط، mtime",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "مسیر فایل"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "file_exists",
+        "description": "چک می‌کند فایل یا پوشه وجود دارد یا نه.\nخروجی: ✅ یا ❌",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "مسیر"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "file_hash",
+        "description": "محاسبهٔ MD5 hash یک فایل — برای چک تغییرات.\nخروجی: MD5 hex",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "مسیر فایل"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "find_files",
+        "description": "جستجوی فایل با glob pattern. مثال: `*.py`، `**/*.json`، `test_*.py`.\nخروجی: لیست فایل‌ها با حجم",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "pattern": {
+              "type": "string",
+              "description": "الگوی glob",
+              "default": "*.py"
+            },
+            "root": {
+              "type": "string",
+              "description": "پوشهٔ شروع",
+              "default": "."
+            },
+            "max_results": {
+              "type": "integer",
+              "description": "حداکثر نتیجه",
+              "default": 100
+            }
+          },
+          "required": [
+            "pattern"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "list_directory",
+        "description": "لیست محتویات یک پوشه. با recursive=True زیرپوشه‌ها هم اسکن می‌شوند. با pattern می‌توان فیلتر کرد.\nخروجی: لیست فایل‌ها و پوشه‌ها",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "مسیر پوشه",
+              "default": "."
+            },
+            "recursive": {
+              "type": "boolean",
+              "description": "اسکن زیرپوشه‌ها",
+              "default": false
+            },
+            "pattern": {
+              "type": "string",
+              "description": "فیلتر glob (مثل *.py)",
+              "default": ""
+            }
+          },
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "write_file",
+        "description": "نوشتن یا بازنویسی یک فایل (نیاز به تأیید). ⚠️ روی فایل‌های دانشی (bot_knowledge.md, persona.md, system.md, ai_system_prompt.md) قفل است — از append_knowledge استفاده کن.\nخروجی: ✅ موفق / ❌ خطا",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "content": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "content"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "edit_file",
+        "description": "ویرایش جراحی در یک فایل (نیاز به تأیید). فقط اولین occurrence را جایگزین می‌کند.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "old_text": {
+              "type": "string"
+            },
+            "new_text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "old_text",
+            "new_text"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "delete_file",
+        "description": "حذف امن یک فایل با بکاپ (نیاز به تأیید).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "move_file",
+        "description": "جابجایی/تغییر نام (نیاز به تأیید).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "source": {
+              "type": "string"
+            },
+            "destination": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "source",
+            "destination"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "append_knowledge",
+        "description": "افزودن دانش جدید به data/prompts/bot_knowledge.md — فقط append، هرگز overwrite نمی‌کند، بکاپ خودکار. برای یادگیری خودکار استفاده کن.\nخروجی: ✅ موفق / ℹ️ تکراری / ❌ خطا",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "content": {
+              "type": "string",
+              "description": "متن دانشی که باید اضافه شود (حداکثر ۱۰۰۰۰ کاراکتر)"
+            },
+            "section": {
+              "type": "string",
+              "description": "عنوان بخش — پیش‌فرض: «یاد گرفته‌شده‌ها»",
+              "default": "یاد گرفته‌شده‌ها"
+            }
+          },
+          "required": [
+            "content"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "audit_code",
+        "description": "بررسی کامل کد پایتون با pyflakes + flake8 (+ vulture + bandit). پیدا کردن: import اضافه، متغیر استفاده‌نشده، اسم تعریف‌نشده، f-string بی‌placeholder، غلط تایپی، مشکلات منطقی. خروجی: dict ساختاریافته با دسته‌بندی.\nخروجی: dict با summary + details + raw_output",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "paths": {
+              "type": "string",
+              "description": "مسیرها با فاصله (پیش‌فرض: core/ handlers/ collectors/ analyzers/ main.py)",
+              "default": "core/ handlers/ collectors/ analyzers/ main.py"
+            },
+            "include_flake8": {
+              "type": "boolean",
+              "description": "بررسی با flake8 (پیش‌فرض True)",
+              "default": true
+            },
+            "include_vulture": {
+              "type": "boolean",
+              "description": "بررسی کد بلااستفاده (کندتر)",
+              "default": false
+            },
+            "include_bandit": {
+              "type": "boolean",
+              "description": "بررسی امنیت (کندتر)",
+              "default": false
+            }
+          },
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "audit_file",
+        "description": "بررسی یک فایل پایتون خاص با pyflakes + flake8.\nخروجی: dict با summary + details",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file_path": {
+              "type": "string",
+              "description": "مسیر فایل (مثلاً: core/brain/main.py)"
+            },
+            "include_flake8": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "required": [
+            "file_path"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "fix_fstrings",
+        "description": "درست کردن f-string های بی‌placeholder (f\"...\" → \"...\"). ⚠️ فایل‌ها را تغییر می‌دهد — قبلش بکاپ بگیر. با dry_run=True فقط نشان می‌دهد.\nخروجی: dict با files_fixed + fixes",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "paths": {
+              "type": "string",
+              "description": "مسیرها با فاصله",
+              "default": "core/ handlers/ collectors/ analyzers/ main.py"
+            },
+            "dry_run": {
+              "type": "boolean",
+              "description": "اگه True، فقط نشون بده (پیش‌فرض)",
+              "default": true
+            }
+          },
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "git_status",
+        "description": "نمایش وضعیت Git",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "git_diff",
+        "description": "نمایش تغییرات Git",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "git_commit",
+        "description": "ثبت commit (نیاز به تأیید)",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "message"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "git_log",
+        "description": "نمایش تاریخچه",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "n": {
+              "type": "integer",
+              "default": 10
+            }
+          },
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "git_branch",
+        "description": "ایجاد/تغییر برنچ",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "action": {
+              "type": "string",
+              "enum": [
+                "create",
+                "switch"
+              ]
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "execute_command",
+        "description": "اجرای دستور سیستمی (نیاز به تأیید)",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "command"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "execute_python",
+        "description": "اجرای پایتون در sandbox (نیاز به تأیید)",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "code"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_system_info",
+        "description": "اطلاعات سیستم",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "list_processes",
+        "description": "لیست پردازه‌ها",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "limit": {
+              "type": "integer",
+              "default": 20
+            }
+          },
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "kill_process",
+        "description": "پایان دادن به پردازه (نیاز به تأیید)",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "pid": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "pid"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "ping_host",
+        "description": "تست اتصال به هاست",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "host": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "host"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "system_dashboard",
+        "description": "داشبورد سیستم (CPU/RAM/Disk)",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "run_tests",
+        "description": "اجرای تست‌ها",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "run_tests_coverage",
+        "description": "تست با پوشش کد",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "analyze_security",
+        "description": "بررسی امنیت با bandit",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "analyze_code",
+        "description": "تحلیل استاتیک با AST (تعداد توابع، کلاس‌ها، importها)",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "semantic_search",
+        "description": "جستجوی معنایی در کدبیس (نیاز به ChromaDB)",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string"
+            },
+            "n_results": {
+              "type": "integer",
+              "default": 5
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "grep_search",
+        "description": "جستجو با regex در فایل‌های پروژه",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "pattern": {
+              "type": "string"
+            },
+            "file_pattern": {
+              "type": "string",
+              "default": "*.py"
+            }
+          },
+          "required": [
+            "pattern"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "query_database",
+        "description": "کوئری SELECT روی دیتابیس (فقط خواندن)",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string"
+            },
+            "limit": {
+              "type": "integer",
+              "default": 50
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "browse_web",
+        "description": "خواندن متن یک صفحه وب",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "url"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "web_search",
+        "description": "جستجوی وب با DuckDuckGo",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string"
+            },
+            "num_results": {
+              "type": "integer",
+              "default": 5
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "clipboard_get",
+        "description": "خواندن کلیپ‌بورد",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "zip_archive",
+        "description": "فشرده‌سازی/باز کردن ZIP",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "source": {
+              "type": "string"
+            },
+            "dest": {
+              "type": "string"
+            },
+            "action": {
+              "type": "string",
+              "enum": [
+                "compress",
+                "extract"
+              ],
+              "default": "compress"
+            }
+          },
+          "required": [
+            "source"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "generate_tests",
+        "description": "تولید تست خودکار با AI",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "code_review",
+        "description": "بازبینی کد با AI",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "fix_bug",
+        "description": "رفع خودکار باگ (نیاز به تأیید)",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "error"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "plan_task",
+        "description": "برنامه‌ریزی چندمرحله‌ای",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "task": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "task"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_project_context",
+        "description": "اطلاعات پروژه",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "backup_project",
+        "description": "بکاپ کامل پروژه (zip)",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "destination": {
+              "type": "string",
+              "description": "نام فایل خروجی"
+            }
+          },
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_setting",
+        "description": "خواندن تنظیمات از .env یا config",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "key"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "set_setting",
+        "description": "تغییر تنظیمات (نیاز به تأیید)",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "key",
+            "value"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "toggle_platform",
+        "description": "روشن/خاموش کردن پلتفرم (نیاز به تأیید)",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "platform": {
+              "type": "string"
+            },
+            "enabled": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "platform",
+            "enabled"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "platform_status",
+        "description": "وضعیت پلتفرم",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "platform": {
+              "type": "string",
+              "default": "all"
+            }
+          },
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "change_poll_interval",
+        "description": "تغییر فاصلهٔ poll (نیاز به تأیید)",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "platform": {
+              "type": "string"
+            },
+            "seconds": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "platform",
+            "seconds"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_access_summary",
+        "description": "خلاصهٔ دسترسی‌ها",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "start_platform",
+        "description": "شروع یک پلتفرم — مثل کاربر وارد می‌شود و وصل می‌شود. نیاز به تأیید. مثال: start_platform(platform='bale')\nخروجی: ✅ موفق / ❌ خطا",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "platform": {
+              "type": "string",
+              "enum": [
+                "bale",
+                "eitaa",
+                "rubika",
+                "telegram",
+                "whatsapp",
+                "linkedin",
+                "instagram",
+                "youtube",
+                "web"
+              ],
+              "description": "نام پلتفرم"
+            }
+          },
+          "required": [
+            "platform"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "stop_platform",
+        "description": "قطع اتصال یک پلتفرم — اتصال را می‌بندد ولی خاموش نمی‌کند. مثال: stop_platform(platform='bale')",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "platform": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "platform"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "platform_health",
+        "description": "چک سلامت یک پلتفرم — وضعیت، اتصال، خطا، session. مثال: platform_health(platform='bale')\nخروجی: گزارش کامل",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "platform": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "platform"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "platform_diagnose",
+        "description": "عیب‌یابی عمیق یک پلتفرم — چک همه چیز: کلکتور، session، playwright، chrome، خطاهای اخیر. مثال: platform_diagnose(platform='bale')\nخروجی: گزارش عیب‌یابی",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "platform": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "platform"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "platform_run_once",
+        "description": "یک چرخهٔ کامل: connect → fetch → disconnect. مثال: platform_run_once(platform='bale', hours=24)\nخروجی: گزارش چرخه",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "platform": {
+              "type": "string"
+            },
+            "hours": {
+              "type": "integer",
+              "description": "بازهٔ زمانی به ساعت",
+              "default": 24
+            }
+          },
+          "required": [
+            "platform"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "list_platforms",
+        "description": "لیست همهٔ پلتفرم‌ها و وضعیتشان\nخروجی: لیست پلتفرم‌ها",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "diagnose_platform",
+        "description": "ریشه‌یابی کامل یک پلتفرم — چرا وصل نشد؟ چک می‌کند: session، last_poll، خطاها، شبکه، مرورگر.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "platform": {
+              "type": "string",
+              "enum": [
+                "bale",
+                "eitaa",
+                "rubika",
+                "telegram",
+                "whatsapp",
+                "linkedin",
+                "instagram",
+                "youtube",
+                "web"
+              ]
+            }
+          },
+          "required": [
+            "platform"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "run_platform_as_user",
+        "description": "اجرای پلتفرم مثل کاربر واقعی. action=start/stop/restart/run_once/status",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "platform": {
+              "type": "string"
+            },
+            "action": {
+              "type": "string",
+              "enum": [
+                "start",
+                "stop",
+                "restart",
+                "run_once",
+                "status"
+              ],
+              "default": "start"
+            },
+            "headless": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "required": [
+            "platform"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "list_all_platforms",
+        "description": "لیست همه پلتفرم‌ها با وضعیت",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "control_platform",
+        "description": "کنترل پلتفرم — فقط با دستور صریح مدیر.\nپلتفرم‌ها: bale | eitaa | rubika\nکارها: search | join | leave | send | forward | pin | delete_message\n\nمحدودیت‌ها:\n- روزی ۱۰ کار\n- ساعتی ۳ کار\n- ۳-۸ ثانیه صبر\n- فقط ۹ صبح - ۱۱ شب\n- تأیید برای کارهای خطرناک",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "platform": {
+              "type": "string",
+              "enum": [
+                "bale",
+                "eitaa",
+                "rubika"
+              ]
+            },
+            "action": {
+              "type": "string",
+              "enum": [
+                "search",
+                "join",
+                "leave",
+                "send",
+                "forward",
+                "pin",
+                "delete_message"
+              ]
+            },
+            "query": {
+              "type": "string",
+              "description": "برای search"
+            },
+            "link": {
+              "type": "string",
+              "description": "برای join/leave"
+            },
+            "chat": {
+              "type": "string",
+              "description": "برای send"
+            },
+            "text": {
+              "type": "string",
+              "description": "برای send"
+            },
+            "message_id": {
+              "type": "string",
+              "description": "برای delete/pin"
+            }
+          },
+          "required": [
+            "platform",
+            "action"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "control_stats",
+        "description": "آمار کارهای یک پلتفرم",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "platform": {
+              "type": "string",
+              "enum": [
+                "bale",
+                "eitaa",
+                "rubika"
+              ]
+            }
+          },
+          "required": [
+            "platform"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "consolidation_run",
+        "description": "اجرای دستی خواب مغز — Working به LongTerm منتقل می‌شه.\nخروجی: گزارش اجرا",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "brain_status",
+        "description": "وضعیت کامل مغز — حافظه‌ها، ابزارها، client.\nخروجی: گزارش کامل",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "proactive_diagnosis",
+        "description": "تشخیص خودکار سلامت سیستم — حافظه، client، پلتفرم‌ها.\nخروجی: گزارش تشخیص",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      }
+    }
+  ]
+}

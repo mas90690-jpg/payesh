@@ -1,0 +1,220 @@
+# ======================================================================
+#  .gitignore — Lead Monitor (Srooyesh)
+#  نسخه: 1.1.0
+#
+#  🎯 استراتژی:
+#     • storage/  → کامل ignore (session، DB، media، reports، logs،
+#                    حافظهٔ AI، بکاپها — حساس و/یا runtime)
+#     • data/     → تحت بکاپ (✅ commit میشود) — شامل runtime:
+#                    keywords_custom.json، learned_rules.json،
+#                    candidate_rules.json، rule_stats.json،
+#                    my_formulas.json، sources/*.txt
+#     • .env      → هرگز (فقط .env.example track میشود)
+#     • storage/  → حتی اگر .gitkeep داشته باشد، بهکار نمیآید
+# ======================================================================
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  ۱) Python — bytecode، build، cache
+# ──────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+*.egg
+.eggs/
+build/
+dist/
+sdist/
+wheels/
+.python-version
+
+# ──────────────────────────────────────────────────────────────────────
+#  ۲) ابزارهای تست و lint
+# ──────────────────────────────────────────────────────────────────────
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+nosetests.xml
+junit.xml
+*.cover
+.hypothesis/
+.ipynb_checkpoints/
+
+# ──────────────────────────────────────────────────────────────────────
+#  ۳) Virtual environment
+# ──────────────────────────────────────────────────────────────────────
+venv/
+env/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+
+# ──────────────────────────────────────────────────────────────────────
+#  ۴) Pip / build tools
+# ──────────────────────────────────────────────────────────────────────
+pip-log.txt
+pip-delete-this-directory.txt
+Pipfile.lock
+poetry.lock
+
+# ──────────────────────────────────────────────────────────────────────
+#  ۵) Secrets — هرگز commit نشود
+#     (هماهنگ با backup_service._SENSITIVE_STEMS + _ALLOWED_SAMPLE_SUFFIXES)
+# ──────────────────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+*.jks
+*.keystore
+secrets.json
+credentials.json
+auth.json
+known_hosts
+.netrc
+.git-credentials
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+
+# ──────────────────────────────────────────────────────────────────────
+#  ۶) Storage — کل پوشه (حساس + runtime)
+#
+#     شامل:
+#       storage/sessions/    → نشست Playwright/rubpy/telethon
+#       storage/database/    → messages.db + WAL/SHM + report_cache.json
+#       storage/media/       → عکس/فایل پیامهای کلیدواژهدار
+#       storage/logs/        → app.jsonl
+#       storage/offset/      → seen_ids، chat_offsets، state.json
+#       storage/reports/     → گزارشهای تولیدشده
+#       storage/backups/     → پشتیبانهای zip
+#       storage/brain/       → حافظه و کش Brain
+#       storage/safe_brain/  → حافظه و کش SafeBrain
+#       storage/pycache/     → pycache_prefix
+#       storage/bot.pid      → PID فایل
+#       storage/requests.jsonl → درخواستهای قابلیت
+#       storage/ai_memory.jsonl → حافظهٔ گفتگو
+# ──────────────────────────────────────────────────────────────────────
+storage/
+
+# ──────────────────────────────────────────────────────────────────────
+#  ۷) SQLite side files (برای وقتی کسی DB را از جای دیگر هم بیاورد)
+# ──────────────────────────────────────────────────────────────────────
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# ──────────────────────────────────────────────────────────────────────
+#  ۸) Logs / PIDs / temp / backup قدیمی کد
+# ──────────────────────────────────────────────────────────────────────
+# فقط در ریشه — تا فایلهای docs/tests دستنخورده بمانند
+/*.log
+/*.pid
+# *.bale حذف شد (پترن اشتباه — هیچ فایل .bale در پروژه نیست)
+*.tmp
+*.bak
+*.orig
+*.rej
+*~
+*_old.py
+*_backup.py
+*_copy.py
+*.swp
+
+# ──────────────────────────────────────────────────────────────────────
+#  ۹) IDE
+# ──────────────────────────────────────────────────────────────────────
+.vscode/
+!.vscode/settings.json.example
+!.vscode/extensions.json.example
+.idea/
+*.iml
+*.sublime-project
+*.sublime-workspace
+*.code-workspace
+.spyderproject
+.spyproject
+.ropeproject
+
+# ──────────────────────────────────────────────────────────────────────
+#  ۱۰) OS
+# ──────────────────────────────────────────────────────────────────────
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# ──────────────────────────────────────────────────────────────────────
+#  ۱۱) Node (آیندهنگرانه — اگر ابزار فرانت اضافه شد)
+# ──────────────────────────────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ──────────────────────────────────────────────────────────────────────
+#  ۱۲) Docker (اگر build محلی ساخت)
+# ──────────────────────────────────────────────────────────────────────
+.dockerignore
+docker-compose.override.yml
+*.dockerfile.local
+
+# ──────────────────────────────────────────────────────────────────────
+#  ۱۳) ⚠️ نکات مهم
+#
+#  ✅  data/ کاملاً track میشود — شامل:
+#        data/products.py
+#        data/products_en.py
+#        data/paths.py
+#        data/runtime/
+#          ├── keywords_custom.json    ← کلیدواژههای دستی شما
+#          ├── candidate_rules.json    ← قوانین یادگرفتهشدهٔ AI
+#          ├── learned_rules.json      ← قوانین دستی «یاد بگیر»
+#          ├── rule_stats.json         ← آمار استفاده
+#          ├── my_formulas.json        ← فرمولهای SQL شما
+#          └── unknown_questions.jsonl ← سؤالات ناشناخته
+#        data/sources/
+#          ├── glossary.txt            ← واژهنامهٔ شما
+#          ├── target_groups.txt       ← گروههای هدف
+#          ├── linkedin_searches.txt
+#          └── web_sources.txt
+#        data/configs/
+#        data/prompts/
+#        data/schemas/
+#
+#     ⚠️  اگر خواستید فقط keywords_custom.json و targets را
+#         track کنید و بقیهٔ runtime را نه، این را اضافه کنید:
+#
+#         data/runtime/*
+#         !data/runtime/keywords_custom.json
+#
+#     ولی برای «بکاپ کامل دادهها» همانطور که الان هست،
+#     هیچکدام را ignore نکنید.
+# ──────────────────────────────────────────────────────────────────────backups_before_fix/ 
+
+backups_before_fix/

@@ -1,0 +1,29 @@
+{
+  "version": "1.0.0",
+  "description": "دستورات سریع (بدون AI)",
+  "commands": {
+    "/status": "status",
+    "وضعیت": "status",
+    "status": "status",
+    "آمار": "status",
+    "/stats": "stats",
+    "stats": "stats",
+    "/help": "help",
+    "راهنما": "help",
+    "help": "help",
+    "/راهنما": "help",
+    "کمک": "help",
+    "/clear": "clear",
+    "پاک": "clear",
+    "clear": "clear",
+    "/restart": "restart",
+    "ری‌استارت": "restart",
+    "restart": "restart",
+    "/logs": "logs",
+    "لاگ": "logs",
+    "logs": "logs",
+    "/health": "health",
+    "سلامت": "health",
+    "health": "health"
+  }
+}

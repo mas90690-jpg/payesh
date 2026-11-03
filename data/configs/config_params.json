@@ -1,0 +1,9 @@
+{
+  "version": "1.0.0",
+  "description": "پارامترهای config (خواندنی)",
+  "params": [
+    "ADMIN_ENABLED",
+    "ADMIN_PLATFORM",
+    "ADMIN_IDS"
+  ]
+}

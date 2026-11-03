@@ -1,0 +1,23 @@
+{
+  "version": "1.0.0",
+  "description": "پیام‌های خطا",
+  "errors": {
+    "empty_keyword": "کدام کلیدواژه؟ داخل « » بنویس.",
+    "add_keyword_hint": "کلیدواژه را داخل « » بنویس.",
+    "remove_keyword_hint": "کدام کلیدواژه را حذف کنم؟ داخل « » بنویس.",
+    "param_not_allowed": "این پارامتر مجاز نیست.",
+    "set_param_format": "قالب: set PARAM=VALUE",
+    "key_not_set": "(تنظیم‌نشده)",
+    "empty_stats": "(فعلاً آماری در دسترس نیست)",
+    "keyword_added": "✅ «{kw}» اضافه شد (چند ثانیهٔ دیگر خودکار فعال می‌شود).",
+    "keyword_removed": "🗑️ «{kw}» حذف شد.",
+    "keyword_exists": "«{kw}» از قبل هست.",
+    "keyword_not_found": "«{kw}» در لیست کلیدواژه‌های سفارشی نیست.",
+    "save_failed": "❌ ذخیره ناموفق.",
+    "not_allowed_action": "⛔ اکشن '{action}' غیرمجاز است.",
+    "blocked_security": "⛔ درخواست مسدود شد: {reason}",
+    "fallback_ai_offline": "🤖 WinDoctor: هوش مصنوعی در دسترس نیست.",
+    "request_saved": "📝 درخواست قابلیت جدید ثبت شد.",
+    "request_save_failed": "❌ خطا در ثبت: {err}"
+  }
+}

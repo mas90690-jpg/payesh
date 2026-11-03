@@ -1,0 +1,15 @@
+# ======================================================================
+#  لیست منابع وب برای رصد
+#  هر خط:  حالت | لینک | (اختیاری) پارامتر
+# ======================================================================
+
+# حالتها:
+#   page  | لینک                      → فقط همان یک صفحه (تیترها)
+#   news  | لینکِ صفحهٔ اخبار | limit=N → وارد خودِ خبرها میشود و متن کامل را میخواند
+#   site  | لینک | depth=N            → کل سایت تا عمق مشخص
+
+# --- لینکهای خودت را اینجا اضافه کن ---
+news | https://www.rovensanext.com/en/news | limit=20
+news | https://www.yara.com/news-and-media | limit=20
+news | https://www.tessenderlo.com/news-press-releases | limit=20
+news | https://www.rijkzwaan.com/news-and-media | limit=20

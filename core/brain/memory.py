@@ -1,0 +1,755 @@
+"""حافظه و کش Brain — SmartCache, APIMemory, BrainMemory,
+PersistentMemory, Semantic.
+
+نسخهٔ ۴ (این نسخه):
+  - 🎯 NEW: `PersistentMemory` — حافظهٔ پایدار SQLite + FTS5:
+      * `remember(category, key, value)` — ذخیره
+      * `recall(query, category, limit)` — جستجو با FTS
+      * `get_context(query, n)` — ساخت context برای AI
+      * `count(category)` — تعداد
+      * `forget(days, min_importance)` — فراموشی انتخابی
+      * `get_stats()` — آمار کامل
+      * `close()` — بستن تمیز
+      * auto-cleanup وقتی از سقف گذشت
+  - 🎯 NEW: `get_persistent_memory()` — singleton
+  - 🎯 NEW: `reset_persistent_memory()` — برای تست
+  - 🎯 همهٔ مقادیر از `constants.py` (env-based)
+  - ✅ حفظ همهٔ FIXهای نسخهٔ ۳.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import glob
+import hashlib
+import json
+import os
+import sys
+import threading
+import time
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any
+# ═══════════════════════════════════════════════════════════
+# 🆕 Alias — brain_memory به‌عنوان منبع اصلی
+# ═══════════════════════════════════════════════════════════
+from core.brain.brain_memory import (
+    BrainMemory as _BrainMemoryNew,
+)
+from core.brain.brain_memory import (
+    PersistentMemory as _PersistentMemoryNew,
+)
+from core.brain.brain_memory import (
+    get_persistent_memory as _get_persistent_new,
+)
+from core.brain.brain_memory import (
+    reset_persistent_memory as _reset_persistent_new,
+)
+from core.brain.constants import (
+    CACHE_DIR,
+    CACHE_SAVE_INTERVAL_S,
+    CACHE_TTL_DAYS,
+    COMPRESS_THRESHOLD,
+    CONTEXT_API_N,
+    CONTEXT_CHROMA_N,
+    CONTEXT_RECENT,
+    LOG_PREVIEW_LEN,
+    MAX_FILE_SIZE_BYTES,
+    MAX_PENDING_TASKS,
+    MAX_SHORT_TERM,
+    MEMORY_DIR,
+    PERSISTENT_DB_PATH,
+    PERSISTENT_MAX_ROWS,
+    PERSISTENT_MEMORY_ENABLED,
+    PROJECT_BASE,
+)
+from core.kernel.logger import (
+    log_error,
+    log_info,
+    log_success,
+    log_warning,
+)
+
+# Alias عمومی
+BrainMemory = _BrainMemoryNew
+PersistentMemory = _PersistentMemoryNew
+get_persistent_memory = _get_persistent_new
+reset_persistent_memory = _reset_persistent_new
+
+# ═══════════════════════════════════════════════════════════
+# 🆕 Alias — brain_memory به‌عنوان منبع اصلی
+# ═══════════════════════════════════════════════════════════
+
+# Alias عمومی — هر کسی `from core.brain.memory import BrainMemory` بزنه،
+# همون brain_memory.BrainMemory رو می‌گیره
+BrainMemory = _BrainMemoryNew
+PersistentMemory = _PersistentMemoryNew
+get_persistent_memory = _get_persistent_new
+reset_persistent_memory = _reset_persistent_new
+
+# ═══════════════════════════════════════════
+# helpers
+# ═══════════════════════════════════════════
+
+
+def _env_int(
+    name: str,
+    default: int,
+    min_val: int | None = None,
+    max_val: int | None = None,
+) -> int:
+    """خواندن int از env — با sanitize."""
+    try:
+        v = int(os.getenv(name, str(default)))
+    except (ValueError, TypeError):
+        return default
+    if min_val is not None and v < min_val:
+        return min_val
+    if max_val is not None and v > max_val:
+        return max_val
+    return v
+
+
+def _env_float(
+    name: str,
+    default: float,
+    min_val: float | None = None,
+    max_val: float | None = None,
+) -> float:
+    """خواندن float از env — با sanitize."""
+    try:
+        v = float(os.getenv(name, str(default)))
+    except (ValueError, TypeError):
+        return default
+    if min_val is not None and v < min_val:
+        return min_val
+    if max_val is not None and v > max_val:
+        return max_val
+    return v
+
+
+# 🎯 سقف‌های env-based
+_MAX_PENDING_TASKS = MAX_PENDING_TASKS
+_MAX_SHORT_TERM = MAX_SHORT_TERM
+_COMPRESS_THRESHOLD = COMPRESS_THRESHOLD
+_CONTEXT_RECENT = CONTEXT_RECENT
+_CONTEXT_API_N = CONTEXT_API_N
+_CONTEXT_CHROMA_N = CONTEXT_CHROMA_N
+
+# 🎯 Persistent Memory thresholds
+_PERSISTENT_MEMORY_ENABLED = PERSISTENT_MEMORY_ENABLED
+_PERSISTENT_DB_PATH = PERSISTENT_DB_PATH
+_PERSISTENT_MAX_ROWS = PERSISTENT_MAX_ROWS
+
+
+# ═══════════════════════════════════════════
+# SmartCache
+# ═══════════════════════════════════════════
+class SmartCache:
+    """کش با TTL، throttle save، و atomic write.
+
+    thread-safe: با `threading.Lock` محافظت می‌شود.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        ttl_days: int = CACHE_TTL_DAYS,
+        max_size: int = 5000,
+    ):
+        self.filepath = CACHE_DIR / f"{name}.json"
+        self.ttl = timedelta(days=ttl_days)
+        self.max_size = max_size
+        self.cache: dict[str, dict] = {}
+        self._lock = threading.Lock()
+        self._hits = 0
+        self._misses = 0
+        self._last_save = 0.0
+        self._dirty = False
+        self.load()
+
+    def _key(self, text: str, model: str = "") -> str:
+        return hashlib.sha256(f"{text}|{model}".encode()).hexdigest()
+
+    def get(self, text: str, model: str = "") -> str | None:
+        """خواندن از کش — با چک TTL."""
+        key = self._key(text, model)
+        with self._lock:
+            entry = self.cache.get(key)
+            if entry is None:
+                self._misses += 1
+                return None
+            try:
+                age = (
+                    datetime.now()  # noqa: DTZ005
+                    - datetime.fromtimestamp(entry["timestamp"])  # noqa: DTZ006
+                )
+                if age >= self.ttl:
+                    # expired — حذف
+                    del self.cache[key]
+                    self._misses += 1
+                    return None
+                self._hits += 1
+                return entry["answer"]
+            except Exception as e:
+                log_warning(
+                    f"⚠️ [BRAIN:cache:{self.filepath.stem}] "
+                    f"get entry | {type(e).__name__}: {e}"
+                )
+                self._misses += 1
+                return None
+
+    def set(self, text: str, answer: str, model: str = "") -> None:
+        """ذخیره در کش — با LRU eviction."""
+        if not text or not answer:
+            return
+        key = self._key(text, model)
+        with self._lock:
+            self.cache[key] = {
+                "answer": answer,
+                "timestamp": time.time(),
+            }
+            if len(self.cache) > self.max_size:
+                # LRU eviction: نگه‌داشتن 80٪ جدیدترین
+                try:
+                    sorted_items = sorted(
+                        self.cache.items(),
+                        key=lambda x: x[1].get("timestamp", 0),
+                    )
+                    keep_n = int(self.max_size * 0.8)
+                    self.cache = dict(sorted_items[-keep_n:])
+                except Exception as e:
+                    log_warning(
+                        f"⚠️ [BRAIN:cache:{self.filepath.stem}] "
+                        f"eviction | {type(e).__name__}: {e}"
+                    )
+            self._dirty = True
+
+        # throttle save
+        now = time.time()
+        if now - self._last_save >= CACHE_SAVE_INTERVAL_S:
+            self.save()
+
+    def flush(self) -> None:
+        """ذخیره اجباری در دیسک."""
+        with self._lock:
+            dirty = self._dirty
+        if dirty:
+            self.save()
+
+    def load(self) -> None:
+        """بارگذاری از دیسک."""
+        if not self.filepath.exists():
+            return
+        try:
+            with self._lock:
+                data = json.loads(self.filepath.read_text(encoding="utf-8"))
+                self.cache = data if isinstance(data, dict) else {}
+            log_info(
+                f"💾 [BRAIN:cache:{self.filepath.stem}] "
+                f"{len(self.cache)} مدخل بارگذاری شد"
+            )
+        except json.JSONDecodeError as e:
+            log_warning(
+                f"⚠️ [BRAIN:cache:{self.filepath.stem}] "
+                f"JSON نامعتبر | line={e.lineno} col={e.colno} | "
+                f"{e.msg} — کش خالی شد"
+            )
+            self.cache = {}
+        except Exception as e:
+            log_warning(
+                f"⚠️ [BRAIN:cache:{self.filepath.stem}] "
+                f"بارگذاری | {type(e).__name__}: {e}"
+            )
+            self.cache = {}
+
+    def save(self) -> None:
+        """ذخیره atomic + fsync + mkdir."""
+        try:
+            with self._lock:
+                data = json.dumps(self.cache, ensure_ascii=False, indent=2)
+                self._last_save = time.time()
+                self._dirty = False
+
+            # mkdir قبل از write
+            self.filepath.parent.mkdir(parents=True, exist_ok=True)
+
+            tmp = self.filepath.with_suffix(".tmp")
+            with open(str(tmp), "w", encoding="utf-8") as f:
+                f.write(data)
+                try:
+                    f.flush()
+                    os.fsync(f.fileno())
+                except (AttributeError, OSError) as e:
+                    log_warning(
+                        f"⚠️ [core.brain.memory] {
+                            type(e).__name__}: {e}")
+            tmp.replace(self.filepath)
+
+            # fsync دایرکتوری — فقط POSIX (روی ویندوز os.open روی دایرکتوری
+            # PermissionError می‌دهد)
+            if sys.platform != "win32":
+                try:
+                    if hasattr(os, "O_DIRECTORY"):
+                        dir_fd = os.open(
+                            str(self.filepath.parent), os.O_DIRECTORY)
+                    else:
+                        dir_fd = os.open(
+                            str(self.filepath.parent), os.O_RDONLY)
+                    try:
+                        os.fsync(dir_fd)
+                    finally:
+                        os.close(dir_fd)
+                except (AttributeError, OSError) as e:
+                    log_warning(
+                        f"⚠️ [core.brain.memory] {
+                            type(e).__name__}: {e}")
+        except Exception as e:
+            log_warning(
+                f"⚠️ [BRAIN:cache:{self.filepath.stem}] "
+                f"ذخیره ناموفق | {type(e).__name__}: {e}"
+            )
+
+    def clear(self) -> None:
+        """پاک کردن کش."""
+        with self._lock:
+            self.cache = {}
+            self._hits = 0
+            self._misses = 0
+            self._dirty = True
+        self.save()
+        log_info(f"🗑️ [BRAIN:cache:{self.filepath.stem}] پاک شد")
+
+    def stats(self) -> dict[str, Any]:
+        """آمار کش — JSON-safe."""
+        with self._lock:
+            total = self._hits + self._misses
+            return {
+                "entries": len(self.cache),
+                "file": str(self.filepath),
+                "hits": self._hits,
+                "misses": self._misses,
+                "hit_rate": (round(self._hits / total, 3) if total else 0.0),
+                "dirty": self._dirty,
+            }
+
+    def get_stats(self) -> dict[str, Any]:
+        return self.stats()
+
+
+# ═══════════════════════════════════════════
+# APIMemory
+# ═══════════════════════════════════════════
+class APIMemory:
+    """حافظه از طریق API (جایگزین ChromaDB)."""
+
+    def __init__(self, api_url: str, api_key: str = "", timeout: int = 30):
+        self.api_url = api_url.rstrip("/")
+        self.api_key = api_key
+        self.timeout = timeout
+        self._session = None
+        self._session_lock = asyncio.Lock()
+        log_info(
+            f"🧠 [BRAIN:apimem:init] url={self.api_url} | "
+            f"key={'✅' if api_key else '❌'} | "
+            f"timeout={timeout}s"
+        )
+
+    async def _ensure_session(self):
+        """ساخت session با lock (بدون race)."""
+        if self._session is not None:
+            return
+        async with self._session_lock:
+            if self._session is not None:
+                return
+            try:
+                import aiohttp
+
+                headers = {"Content-Type": "application/json"}
+                if self.api_key:
+                    headers["Authorization"] = f"Bearer {self.api_key}"
+                self._session = aiohttp.ClientSession(
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=self.timeout),
+                )
+                log_info("🔗 [BRAIN:apimem:session] session ساخته شد")
+            except Exception as e:
+                log_warning(
+                    f"⚠️ [BRAIN:apimem:session] {
+                        type(e).__name__}: {e}")
+                self._session = None
+
+    async def _post(self, endpoint: str, data: dict) -> dict:
+        """POST امن — با چک session."""
+        try:
+            await self._ensure_session()
+        except Exception as e:
+            log_warning(
+                f"⚠️ [BRAIN:apimem:_post] ensure_session | {
+                    type(e).__name__}: {e}")
+            return {"error": "session_unavailable"}
+
+        if self._session is None:
+            return {"error": "session_unavailable"}
+
+        t0 = time.monotonic()
+        try:
+            async with self._session.post(
+                f"{self.api_url}/{endpoint}", json=data
+            ) as resp:
+                elapsed_ms = (time.monotonic() - t0) * 1000
+                if resp.status >= 400:
+                    try:
+                        body = (await resp.text())[:LOG_PREVIEW_LEN]
+                    except Exception:
+                        body = ""
+                    log_warning(
+                        f"⚠️ [BRAIN:apimem:{endpoint}] "
+                        f"HTTP {resp.status} | {elapsed_ms:.0f}ms | "
+                        f"body={body!r}"
+                    )
+                    return {"error": f"HTTP {resp.status}"}
+                return await resp.json()
+        except TimeoutError:
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            log_error(
+                f"⏰ [BRAIN:apimem:{endpoint}] "
+                f"Timeout {self.timeout}s | {elapsed_ms:.0f}ms"
+            )
+            return {"error": "timeout"}
+        except Exception as e:
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            log_warning(
+                f"⚠️ [BRAIN:apimem:{endpoint}] "
+                f"{type(e).__name__}: {e} | {elapsed_ms:.0f}ms"
+            )
+            return {"error": str(e)}
+
+    async def add(
+        self,
+        role: str,
+        content: str,
+        metadata: dict | None = None,
+    ) -> dict:
+        return await self._post(
+            "add",
+            {
+                "role": role,
+                "content": content,
+                "metadata": metadata or {},
+            },
+        )
+
+    async def search(self, query: str, n: int = 5) -> list[dict]:
+        result = await self._post("search", {"query": query, "n": n})
+        if isinstance(result, list):
+            return result
+        if isinstance(result, dict) and "results" in result:
+            return result["results"]
+        return []
+
+    async def get_context(self, query: str = "", n: int = 5) -> list[dict]:
+        result = await self._post("context", {"query": query, "n": n})
+        if isinstance(result, list):
+            return result
+        if isinstance(result, dict) and "context" in result:
+            return result["context"]
+        return []
+
+    async def clear(self) -> dict:
+        return await self._post("clear", {})
+
+    async def close(self) -> None:
+        """idempotent close."""
+        session = self._session
+        self._session = None
+        if session is not None:
+            try:
+                await session.close()
+                log_info("🔌 [BRAIN:apimem:close] session بسته شد")
+            except Exception as e:
+                log_warning(f"⚠️ [BRAIN:apimem:close] {type(e).__name__}: {e}")
+
+
+# ═══════════════════════════════════════════
+# 🆕 PersistentMemory — حافظهٔ پایدار SQLite + FTS5
+# ═══════════════════════════════════════════
+class ProjectSemanticSearch:
+    # ─── Singleton در سطح کلاس ───
+    _model = None
+    _client = None
+    _collection = None
+    _lock = threading.Lock()
+
+    def __init__(self):
+        # 🐛 FIX: لود در background — نه در __init__
+        # تا boot معطل نماند.
+        self._init_started = False
+        self._init_done = threading.Event()
+        threading.Thread(
+            target=self._init_safe,
+            name="sem_init",
+            daemon=True,
+        ).start()
+
+    def _init_safe(self) -> None:
+        """نسخهٔ امن _init — با try/except و event."""
+        try:
+            self._init()
+        except Exception as e:
+            log_warning(f"⚠️ [SEM:init:bg] {e}")
+        finally:
+            self._init_done.set()
+
+    def wait_ready(self, timeout: float = 120.0) -> bool:
+        """منتظر آماده شدن — با timeout."""
+        return self._init_done.wait(timeout=timeout)
+
+    def _init(self) -> None:
+        """لود یک‌باره مدل و کلاینت — نه هر بار."""
+        if self._init_started:
+            return
+        with ProjectSemanticSearch._lock:
+            if self._init_started:
+                return
+            self._init_started = True
+
+            log_info("⏳ [SEM:init] لود ChromaDB (مدل lazy)...")
+            try:
+                import chromadb
+                from chromadb.utils import embedding_functions
+
+                _codebase_path = MEMORY_DIR / "codebase"
+                # 🐛 FIX: codebase را بساز (نه اینکه رد کن)
+                _codebase_path.mkdir(parents=True, exist_ok=True)
+
+                _model_dir = Path(
+                    os.getenv(
+                        "BRAIN_MODEL_DIR",
+                        str(Path(PROJECT_BASE) / "storage" / "models"),
+                    )
+                )
+
+                ProjectSemanticSearch._client = chromadb.PersistentClient(
+                    path=str(_codebase_path),
+                    settings=chromadb.Settings(
+                        anonymized_telemetry=False,
+                    ),
+                )
+                # 🆕 FIX PERF: مدل را lazy لود کن — فقط اولین search
+                # اینجا فقط مسیر را ذخیره می‌کنیم
+                ProjectSemanticSearch._model_dir = _model_dir
+                ProjectSemanticSearch._collection = (
+                    ProjectSemanticSearch._client.get_or_create_collection(
+                        name="code_embeddings",
+                    )
+                )
+                log_success("✅ [SEM:init] ChromaDB فعال (مدل lazy)")
+                
+            except Exception as e:
+                log_warning(f"⚠️ [SEM:init] غیرفعال | {e}")
+                ProjectSemanticSearch._model = None
+
+    @property
+    def collection(self):
+        """سازگاری با کد قدیمی."""
+        return ProjectSemanticSearch._collection
+
+    def _ensure_model_loaded(self) -> None:
+        """🆕 lazy load مدل — فقط اولین بار که search صدا زده شد."""
+        if ProjectSemanticSearch._model is not None:
+            return
+        with ProjectSemanticSearch._lock:
+            if ProjectSemanticSearch._model is not None:
+                return
+            try:
+                from chromadb.utils import embedding_functions
+                _dir = getattr(ProjectSemanticSearch, "_model_dir", None)
+                if _dir is None:
+                    log_warning("⚠️ [SEM:lazy] _model_dir تنظیم نشده")
+                    return
+                log_info("⏳ [SEM:lazy] لود مدل (اولین search)...")
+                t0 = time.monotonic()
+                ProjectSemanticSearch._model = (
+                    embedding_functions.SentenceTransformerEmbeddingFunction(
+                        model_name=str(_dir / "all-MiniLM-L6-v2"),
+                        device="cpu",
+                        model_kwargs={"local_files_only": True},
+                        cache_folder=str(_dir),
+                    )
+                )
+                if ProjectSemanticSearch._collection is not None:
+                    ProjectSemanticSearch._collection._embedding_function = (
+                        ProjectSemanticSearch._model
+                    )
+                elapsed_ms = (time.monotonic() - t0) * 1000
+                log_success(
+                    f"✅ [SEM:lazy] مدل لود شد | {elapsed_ms:.0f}ms"
+                )
+            except Exception as e:
+                log_warning(f"⚠️ [SEM:lazy] {type(e).__name__}: {e}")
+                ProjectSemanticSearch._model = None
+                
+    def _sync_search(self, query: str, n: int) -> list[dict]:
+        """جستجوی همگام — در ترد جداگانه اجرا می‌شود."""
+        if not ProjectSemanticSearch._collection:
+            return []
+
+        # 🆕 FIX PERF: مدل را lazy لود کن
+        if ProjectSemanticSearch._model is None:
+            self._ensure_model_loaded()
+        if ProjectSemanticSearch._model is None:
+            return []  # مدل لود نشد — بی‌صدا skip
+
+        try:
+            results = ProjectSemanticSearch._collection.query(
+                query_texts=[query], n_results=n
+            )
+            docs = results.get("documents") or [[]]
+            metas = results.get("metadatas") or [[]]
+            if not docs or not docs[0]:
+                return []
+            return [
+                {
+                    "path": (m.get("path", "?") if isinstance(m, dict) else "?"),
+                    "content": str(d)[:500],
+                }
+                for d, m in zip(docs[0], metas[0], strict=False)
+            ]
+        except Exception as e:
+            log_warning(f"⚠️ [SEM:search] {e}")
+            return []
+
+    async def search_async(self, query: str, n: int = 5) -> list[dict]:
+        """نسخه async — Event Loop را قفل نمی‌کند."""
+        return await asyncio.to_thread(self._sync_search, query, n)
+
+    def index_files(self, patterns: list[str] | None = None) -> int:
+        """ایندکس فایل‌های پروژه در ChromaDB."""
+        if not ProjectSemanticSearch._collection:
+            return 0
+        if patterns is None:
+            patterns = [
+                "**/*.py",
+                "**/*.txt",
+                "**/*.md",
+                "**/*.json",
+            ]
+        total = 0
+        failed = 0
+        skipped = 0
+        existing_ids = set()
+        try:
+            existing = ProjectSemanticSearch._collection.get()
+            existing_ids = set(existing.get("ids", []))
+        except Exception as e:
+            log_warning(f"⚠️ [core.brain.memory] {type(e).__name__}: {e}")
+        project = Path(PROJECT_BASE)
+        for pattern in patterns:
+            try:
+                files = glob.glob(
+                    pattern, root_dir=str(project), recursive=True)
+            except Exception as e:
+                log_warning(f"⚠️ [SEM:index] glob {pattern} | {e}")
+                continue
+            # 🐛 FIX: فیلتر venv، .venv، __pycache__، site-packages
+            _EXCLUDE = (
+                "venv",
+                ".venv",
+                "__pycache__",
+                "site-packages",
+                "node_modules",
+                ".git",
+                "sessions",
+                "cache",
+                "hf_cache",
+                "models",
+                "offset",
+                "logs",
+                "reports",
+                "test_reports",
+                "scripts",
+                "backups",
+                "backup",
+                "storage_backup",
+                "storage",
+            )
+
+            files = [
+                f
+                for f in files
+                if not any(
+                    f.replace("\\", "/").startswith(p + "/")
+                    or f"/{p}/" in f.replace("\\", "/")
+                    for p in _EXCLUDE
+                )
+            ]
+
+            # 🆕 skip فایل‌های zip و bak
+            files = [
+                f
+                for f in files
+                if not f.endswith((".zip", ".bak", ".pyc", ".log"))
+            ]
+
+            for fpath in files:
+                try:
+                    full = project / fpath
+                    if not full.is_file():
+                        continue
+                    if full.stat().st_size >= MAX_FILE_SIZE_BYTES:
+                        continue
+                    content = full.read_text(encoding="utf-8", errors="ignore")
+                    content_hash = hashlib.sha256(content.encode()).hexdigest()
+                    doc_id = f"file_{
+                        hashlib.sha256(
+                            fpath.encode()).hexdigest()}"
+
+                    # چک تغییر
+                    if doc_id in existing_ids:
+                        try:
+                            old = ProjectSemanticSearch._collection.get(ids=[
+                                                                        doc_id])
+                            old_meta = (
+                                old.get("metadatas", [{}])[0]
+                                if old.get("metadatas")
+                                else {}
+                            )
+                            old_hash = old_meta.get("content_hash", "")
+                            if old_hash == content_hash:
+                                skipped += 1
+                                continue
+                            ProjectSemanticSearch._collection.delete(ids=[
+                                                                     doc_id])
+                            log_info(f"🔄 [SEM:index] به‌روزرسانی | {fpath}")
+                        except Exception as e:
+                            log_warning(
+                                f"⚠️ [core.brain.memory] {
+                                    type(e).__name__}: {e}")
+                    ProjectSemanticSearch._collection.add(
+                        documents=[content],
+                        metadatas=[{"path": str(fpath), "content_hash": content_hash}],
+                        ids=[doc_id],
+                    )
+                    total += 1
+                except Exception as e:
+                    failed += 1
+                    if failed <= 3:
+                        log_warning(f"⚠️ [SEM:index] {fpath} | {e}")
+        log_success(
+            f"✅ [SEM:index] {total} ایندکس شد | skipped={skipped} | failed={failed}")
+        return total
+
+
+# ═══════════════════════════════════════════
+# __all__
+# ═══════════════════════════════════════════
+__all__ = [
+    "APIMemory",
+    "BrainMemory",  # alias به brain_memory.BrainMemory
+    "PersistentMemory",  # حفظ برای سازگاری
+    "ProjectSemanticSearch",
+    "SmartCache",
+    "get_persistent_memory",
+    "reset_persistent_memory",
+]

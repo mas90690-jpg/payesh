@@ -1,0 +1,203 @@
+{
+  "version": "1.0.0",
+  "description": "Selectorهای پلتفرم‌ها",
+  "platforms": {
+    "bale": {
+      "base": "https://web.bale.ai",
+      "search_url": "https://web.bale.ai/search?q={q}",
+      "chat_url": "https://web.bale.ai/chat/{id}",
+      "result_item": ".peer-item, [data-peer-id], .search-result",
+      "result_name": ".peer-title, .name, .title",
+      "result_link": "a",
+      "join_btn": "button, .btn, [role='button']",
+      "join_texts": [
+        "عضو شو",
+        "عضویت",
+        "Join"
+      ],
+      "leave_texts": [
+        "ترک گروه",
+        "ترک",
+        "Leave"
+      ],
+      "input": "textarea, [contenteditable='true']",
+      "message": ".message-item, .chat-message, [data-mid]"
+    },
+    "eitaa": {
+      "base": "https://web.eitaa.com",
+      "search_url": "https://web.eitaa.com/#/search?q={q}",
+      "chat_url": "https://web.eitaa.com/#/chat/{id}",
+      "result_item": ".peer-item, .dialog-item, [data-peer-id]",
+      "result_name": ".peer-title, .name",
+      "result_link": "a",
+      "join_btn": "button, .btn",
+      "join_texts": [
+        "عضو شو",
+        "عضویت",
+        "Join"
+      ],
+      "leave_texts": [
+        "ترک گروه",
+        "ترک",
+        "Leave"
+      ],
+      "input": "textarea, [contenteditable='true']",
+      "message": ".message-item, .chat-message"
+    },
+    "rubika": {
+      "base": "https://web.rubika.ir",
+      "search_url": "https://web.rubika.ir/#/search?q={q}",
+      "chat_url": "https://web.rubika.ir/#/chat/{id}",
+      "result_item": ".peer-item, .chat-item, [data-peer-id]",
+      "result_name": ".peer-title, .name",
+      "result_link": "a",
+      "join_btn": "button, .btn",
+      "join_texts": [
+        "عضو شو",
+        "عضویت",
+        "Join"
+      ],
+      "leave_texts": [
+        "ترک",
+        "Leave"
+      ],
+      "input": "textarea, [contenteditable='true']",
+      "message": ".message-item, .chat-message"
+    },
+    "telegram": {
+      "base": "https://web.telegram.org/k/",
+      "search_url": "https://web.telegram.org/k/#search?q={q}",
+      "chat_url": "https://web.telegram.org/k/#@{id}",
+      "result_item": ".chat-item, .peer-item, .ListItem",
+      "result_name": ".peer-title, .title, .name",
+      "result_link": "a",
+      "join_btn": "button, .btn",
+      "join_texts": [
+        "Join",
+        "عضویت",
+        "JOIN"
+      ],
+      "leave_texts": [
+        "Leave",
+        "ترک"
+      ],
+      "input": ".input-message-input, [contenteditable='true']",
+      "message": ".message, .Message, [data-mid]"
+    },
+    "whatsapp": {
+      "base": "https://web.whatsapp.com",
+      "search_url": "https://web.whatsapp.com/",
+      "chat_url": "https://web.whatsapp.com/",
+      "result_item": "[data-testid='cell-frame-container']",
+      "result_name": "[data-testid='cell-frame-title']",
+      "result_link": "a",
+      "join_btn": "button, .btn",
+      "join_texts": [
+        "Join",
+        "عضویت"
+      ],
+      "leave_texts": [
+        "Leave",
+        "ترک"
+      ],
+      "input": "[contenteditable='true'][data-tab]",
+      "message": "[data-testid='msg-container']"
+    },
+    "linkedin": {
+      "base": "https://www.linkedin.com",
+      "search_url": "https://www.linkedin.com/search/results/groups/?keywords={q}",
+      "chat_url": "https://www.linkedin.com/messaging/thread/{id}",
+      "result_item": ".search-result, .entity-result",
+      "result_name": ".entity-result__title-text, .result-title",
+      "result_link": "a",
+      "join_btn": "button",
+      "join_texts": [
+        "Join",
+        "Request to join",
+        "عضویت"
+      ],
+      "leave_texts": [
+        "Leave",
+        "ترک"
+      ],
+      "input": "[contenteditable='true']",
+      "message": ".msg-s-message-list__event"
+    },
+    "instagram": {
+      "base": "https://www.instagram.com",
+      "search_url": "https://www.instagram.com/web/search/topsearch/?q={q}",
+      "chat_url": "https://www.instagram.com/direct/t/{id}",
+      "result_item": "._aaq5, .x1lliihq",
+      "result_name": "._aarf, .x1lliihq",
+      "result_link": "a",
+      "join_btn": "button",
+      "join_texts": [
+        "Follow",
+        "عضویت"
+      ],
+      "leave_texts": [
+        "Unfollow",
+        "ترک"
+      ],
+      "input": "[contenteditable='true']",
+      "message": "._acd2"
+    },
+    "youtube": {
+      "base": "https://www.youtube.com",
+      "search_url": "https://www.youtube.com/results?search_query={q}",
+      "chat_url": "https://www.youtube.com/watch?v={id}",
+      "result_item": "ytd-channel-renderer, ytd-video-renderer",
+      "result_name": "#channel-title, #video-title",
+      "result_link": "a",
+      "join_btn": "button, ytd-subscribe-button-renderer",
+      "join_texts": [
+        "Subscribe",
+        "عضویت"
+      ],
+      "leave_texts": [
+        "Unsubscribe",
+        "ترک"
+      ],
+      "input": "ytd-commentbox #contenteditable-root",
+      "message": "ytd-comment-thread-renderer"
+    },
+    "facebook": {
+      "base": "https://www.facebook.com",
+      "search_url": "https://www.facebook.com/search/groups/?q={q}",
+      "chat_url": "https://www.facebook.com/messages/t/{id}",
+      "result_item": "[role='article'], .x1yztbdb",
+      "result_name": "span, a",
+      "result_link": "a",
+      "join_btn": "[role='button']",
+      "join_texts": [
+        "Join",
+        "عضویت"
+      ],
+      "leave_texts": [
+        "Leave",
+        "ترک"
+      ],
+      "input": "[contenteditable='true'][role='textbox']",
+      "message": "[role='article']"
+    },
+    "web": {
+      "base": "",
+      "search_url": "",
+      "chat_url": "",
+      "result_item": "a",
+      "result_name": "a",
+      "result_link": "a",
+      "join_btn": "button",
+      "join_texts": [
+        "Join",
+        "عضویت"
+      ],
+      "leave_texts": [
+        "Leave",
+        "ترک"
+      ],
+      "input": "input, textarea",
+      "message": "p, div"
+    }
+  }
+}

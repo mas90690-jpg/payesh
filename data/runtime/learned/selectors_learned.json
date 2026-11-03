@@ -1,0 +1,27 @@
+{
+  "version": "1.0.0",
+  "description": "Selectorهای یادگرفته‌شده (هوش خودش کشف می‌کند)",
+  "selectors": {
+    "bale": {
+      "search_icon_strategy": "parent_click",
+      "search_icon_coords": {
+        "x": 930,
+        "y": 160
+      },
+      "search_input": {
+        "selector": "[data-testid=\"textfield-single-line-input\"]",
+        "attr": "data-testid",
+        "value": "textfield-single-line-input",
+        "tag": "INPUT"
+      },
+      "results_container": null,
+      "results_count": 0,
+      "url": "https://web.bale.ai/chat",
+      "learned_at": "2026-10-27T11:33:20",
+      "fallbacks_tried": [
+        "parent_click"
+      ]
+    }
+  },
+  "updated_at": "2026-10-27T11:33:20"
+}

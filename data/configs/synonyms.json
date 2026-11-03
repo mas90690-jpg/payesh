@@ -1,0 +1,64 @@
+{
+  "version": "1.3.0",
+  "description": "مترادف‌های پلتفرم‌ها — منبع یکتا. نسخهٔ ۱.۳: youtube اضافه شد.",
+
+  "platforms": {
+    "eitaa": [
+      "ایتا",
+      "ایتاوب",
+      "eitaa"
+    ],
+    "bale": [
+      "بله",
+      "بله‌وب",
+      "bale"
+    ],
+    "rubika": [
+      "روبیکا",
+      "rubika"
+    ],
+    "telegram": [
+      "تلگرام",
+      "telegram",
+      "tg"
+    ],
+    "whatsapp": [
+      "واتساپ",
+      "واتس‌اپ",
+      "واتس اپ",
+      "whatsapp",
+      "wa"
+    ],
+    "web": [
+      "وب",
+      "سایت",
+      "web",
+      "site"
+    ],
+    "linkedin": [
+      "لینکدین",
+      "linkedin",
+      "li"
+    ],
+    "instagram": [
+      "اینستاگرام",
+      "اینستا",
+      "اینستگرام",
+      "instagram",
+      "insta",
+      "ig"
+    ],
+    "youtube": [
+      "یوتیوب",
+      "youtube",
+      "yt"
+    ],
+    "facebook": [
+      "فیسبوک",
+      "فیس بوک",
+      "فیس‌بوک",
+      "facebook",
+      "fb"
+    ]	
+  }
+}

@@ -1,0 +1,101 @@
+{
+  "test_read": {
+    "sql": "SELECT * FROM messages",
+    "type": "read",
+    "created_at": "2026-10-25T15:03:46.744920",
+    "updated_at": "2026-10-27T14:01:04.828576",
+    "created_by": "admin",
+    "run_count": 0,
+    "last_run": null
+  },
+  "test_write": {
+    "sql": "DELETE FROM messages WHERE id='x'",
+    "type": "write",
+    "created_at": "2026-10-25T15:03:46.896620",
+    "updated_at": "2026-10-27T14:01:05.044441",
+    "created_by": "admin",
+    "run_count": 0,
+    "last_run": null
+  },
+  "a": {
+    "sql": "SELECT 1",
+    "type": "read",
+    "created_at": "2026-10-25T15:03:47.384427",
+    "updated_at": "2026-10-27T14:01:05.415112",
+    "created_by": "admin",
+    "run_count": 0,
+    "last_run": null
+  },
+  "b": {
+    "sql": "SELECT 2",
+    "type": "read",
+    "created_at": "2026-10-25T15:03:47.421130",
+    "updated_at": "2026-10-27T14:01:05.445834",
+    "created_by": "admin",
+    "run_count": 0,
+    "last_run": null
+  },
+  "show_me": {
+    "sql": "SELECT 1",
+    "type": "read",
+    "created_at": "2026-10-25T15:03:47.520626",
+    "updated_at": "2026-10-27T14:01:05.523740",
+    "created_by": "admin",
+    "run_count": 0,
+    "last_run": null
+  },
+  "read_q": {
+    "sql": "SELECT 1 as n",
+    "type": "read",
+    "created_at": "2026-10-25T15:03:47.626690",
+    "updated_at": "2026-10-27T14:01:05.645426",
+    "created_by": "admin",
+    "run_count": 0,
+    "last_run": null
+  },
+  "write_q": {
+    "sql": "DELETE FROM messages WHERE id='x'",
+    "type": "write",
+    "created_at": "2026-10-25T15:03:47.741907",
+    "updated_at": "2026-10-27T14:01:05.767312",
+    "created_by": "admin",
+    "run_count": 0,
+    "last_run": null
+  },
+  "write_q2": {
+    "sql": "DELETE FROM messages WHERE id='x'",
+    "type": "write",
+    "created_at": "2026-10-25T15:03:47.814492",
+    "updated_at": "2026-10-27T14:01:05.849304",
+    "created_by": "admin",
+    "run_count": 8,
+    "last_run": "2026-10-27T14:01:05.880708"
+  },
+  "write_q3": {
+    "sql": "DELETE FROM messages WHERE id='x'",
+    "type": "write",
+    "created_at": "2026-10-25T15:03:47.937899",
+    "updated_at": "2026-10-27T14:01:05.959527",
+    "created_by": "admin",
+    "run_count": 0,
+    "last_run": null
+  },
+  "pending": {
+    "sql": "DELETE FROM messages WHERE id='x'",
+    "type": "write",
+    "created_at": "2026-10-25T15:03:48.033092",
+    "updated_at": "2026-10-27T14:01:06.029218",
+    "created_by": "admin",
+    "run_count": 0,
+    "last_run": null
+  },
+  "x": {
+    "sql": "SELECT 1",
+    "type": "read",
+    "created_at": "2026-10-25T15:03:48.123512",
+    "updated_at": "2026-10-27T14:01:06.116302",
+    "created_by": "admin",
+    "run_count": 0,
+    "last_run": null
+  }
+}

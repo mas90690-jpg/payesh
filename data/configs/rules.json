@@ -1,0 +1,320 @@
+{
+  "version": "1.0.0",
+  "updated_at": "2026-09-19T10:00:00Z",
+  "rules": [
+    {
+      "name": "today_count",
+      "priority": 50,
+      "triggers": ["امروز چند سرنخ", "چند سرنخ امروز", "سرنخ امروز", ["امروز", "سرنخ"]],
+      "action": {
+        "type": "sql",
+        "query": "leads_today_count",
+        "template": "📊 امروز: {v} سرنخ"
+      }
+    },
+    {
+      "name": "yesterday_count",
+      "priority": 50,
+      "triggers": ["دیروز چند سرنخ", "چند سرنخ دیروز", ["دیروز", "سرنخ"]],
+      "action": {
+        "type": "sql",
+        "query": "leads_yesterday_count",
+        "template": "📊 دیروز: {v} سرنخ"
+      }
+    },
+    {
+      "name": "week_count",
+      "priority": 50,
+      "triggers": ["این هفته", "هفت روز", "۷ روز", "یک هفته"],
+      "action": {
+        "type": "sql",
+        "query": "leads_week_count",
+        "template": "📊 ۷ روز اخیر: {v} سرنخ"
+      }
+    },
+    {
+      "name": "month_count",
+      "priority": 50,
+      "triggers": ["این ماه", "۳۰ روز", "سی روز", "یک ماه"],
+      "action": {
+        "type": "sql",
+        "query": "leads_month_count",
+        "template": "📊 ۳۰ روز اخیر: {v} سرنخ"
+      }
+    },
+    {
+      "name": "hour24_count",
+      "priority": 50,
+      "triggers": ["۲۴ ساعت", "۲۴ ساعت اخیر", "بیست و چهار ساعت"],
+      "action": {
+        "type": "sql",
+        "query": "leads_24h_count",
+        "template": "📊 ۲۴ ساعت اخیر: {v} سرنخ"
+      }
+    },
+    {
+      "name": "total_count",
+      "priority": 50,
+      "triggers": ["کل سرنخ", "همه سرنخ", "مجموع سرنخ", "تمام سرنخ"],
+      "action": {
+        "type": "sql",
+        "query": "leads_total_count",
+        "template": "📊 کل سرنخ‌ها: {v}"
+      }
+    },
+    {
+      "name": "hot_today",
+      "priority": 50,
+      "triggers": ["امروز چند داغ", "داغ امروز", ["امروز", "داغ"]],
+      "action": {
+        "type": "sql",
+        "query": "hot_today_count",
+        "template": "🔥 امروز داغ: {v} سرنخ"
+      }
+    },
+    {
+      "name": "total_hot",
+      "priority": 50,
+      "triggers": ["کل داغ", "همه داغ", "مجموع داغ"],
+      "action": {
+        "type": "sql",
+        "query": "hot_total_count",
+        "template": "🔥 کل داغ: {v} سرنخ"
+      }
+    },
+    {
+      "name": "by_platform",
+      "priority": 50,
+      "triggers": ["تفکیک پلتفرم", "به تفکیک", "هر پلتفرم"],
+      "action": {
+        "type": "callable",
+        "function": "by_platform"
+      }
+    },
+    {
+      "name": "top_platform",
+      "priority": 50,
+      "triggers": ["کدام پلتفرم بیشتر", "پرسرنخ‌ترین پلتفرم", "بیشترین پلتفرم"],
+      "action": {
+        "type": "callable",
+        "function": "top_platform"
+      }
+    },
+    {
+      "name": "top_group",
+      "priority": 50,
+      "triggers": ["پرسرنخ‌ترین گروه", "کدام گروه بیشتر", "بیشترین گروه"],
+      "action": {
+        "type": "callable",
+        "function": "top_group"
+      }
+    },
+    {
+      "name": "last_lead",
+      "priority": 60,
+      "triggers": ["آخرین سرنخ", "جدیدترین سرنخ", "تازه‌ترین سرنخ", "اخرین سرنخ"],
+      "action": {
+        "type": "callable",
+        "function": "last_lead"
+      }
+    },
+    {
+      "name": "first_lead",
+      "priority": 60,
+      "triggers": ["اولین سرنخ", "قدیمی‌ترین سرنخ"],
+      "action": {
+        "type": "callable",
+        "function": "first_lead"
+      }
+    },
+    {
+      "name": "keyword_count",
+      "priority": 50,
+      "triggers": ["چند کلیدواژه", "تعداد کلیدواژه", "کلیدواژه چند"],
+      "action": {
+        "type": "callable",
+        "function": "keyword_count"
+      }
+    },
+    {
+      "name": "keyword_list",
+      "priority": 50,
+      "triggers": ["لیست کلیدواژه", "کلیدواژه‌ها چی", "کلیدواژه‌ها هستند"],
+      "action": {
+        "type": "callable",
+        "function": "keyword_list"
+      }
+    },
+    {
+      "name": "how_it_works",
+      "priority": 30,
+      "triggers": ["چطور کار می‌کنی", "چگونه کار می‌کنی", "چطوری کار می‌کنی"],
+      "action": {
+        "type": "text",
+        "text_key": "how_it_works"
+      }
+    },
+    {
+      "name": "what_can_you_do",
+      "priority": 30,
+      "triggers": ["چه کارهایی می‌کنی", "چیکار می‌کنی", "قابلیت‌ها", "چی بلدی"],
+      "action": {
+        "type": "text",
+        "text_key": "what_can_you_do"
+      }
+    },
+    {
+      "name": "who_are_you",
+      "priority": 30,
+      "triggers": ["تو کی هستی", "شما کی هستید", "اسمت چیه"],
+      "action": {
+        "type": "text",
+        "text_key": "who_are_you"
+      }
+    },
+    {
+      "name": "today_by_platform",
+      "priority": 50,
+      "triggers": ["امروز از هر پلتفرم", "امروز به تفکیک", "امروز چند از", "امروز هر پلتفرم", "امروز تفکیک"],
+      "action": {
+        "type": "callable",
+        "function": "today_by_platform"
+      }
+    },
+    {
+      "name": "platform_status",
+      "priority": 50,
+      "triggers": ["کار می‌کند", "وصل است", "وصل نیست", "فعال است"],
+      "action": {
+        "type": "callable",
+        "function": "platform_status"
+      }
+    },
+    {
+      "name": "top_keywords_30d",
+      "priority": 50,
+      "triggers": ["داغ‌ترین کلیدواژه", "پرتکرارترین کلیدواژه", "کلیدواژه‌های داغ"],
+      "action": {
+        "type": "callable",
+        "function": "top_keywords"
+      }
+    },
+    {
+      "name": "top_groups_30d",
+      "priority": 50,
+      "triggers": ["پرسرنخ‌ترین گروه", "بهترین گروه", "گروه‌های برتر"],
+      "action": {
+        "type": "callable",
+        "function": "top_groups"
+      }
+    },
+    {
+      "name": "target_group_list",
+      "priority": 50,
+      "triggers": ["گروه‌های هدف", "لیست گروه هدف", "چه گروه‌هایی"],
+      "action": {
+        "type": "callable",
+        "function": "target_group_list"
+      }
+    },
+    {
+      "name": "custom_keyword_list",
+      "priority": 50,
+      "triggers": ["کلیدواژه‌های سفارشی", "کلیدواژه‌های دستی", "اضافه‌شده‌ها"],
+      "action": {
+        "type": "callable",
+        "function": "custom_keyword_list"
+      }
+    },
+    {
+      "name": "recent_logs",
+      "priority": 50,
+      "triggers": ["لاگ‌ها", "اخرین لاگ", "log"],
+      "action": {
+        "type": "callable",
+        "function": "recent_logs"
+      }
+    },
+    {
+      "name": "error_count",
+      "priority": 50,
+      "triggers": ["چند خطا", "تعداد خطا", "خطاها"],
+      "action": {
+        "type": "callable",
+        "function": "error_count"
+      }
+    },
+    {
+      "name": "recent_reports",
+      "priority": 50,
+      "triggers": ["اخرین گزارش", "گزارش‌ها", "لیست گزارش"],
+      "action": {
+        "type": "callable",
+        "function": "recent_reports"
+      }
+    },
+    {
+      "name": "system_snapshot",
+      "priority": 40,
+      "triggers": ["خلاصه", "همه چیز", "گزارش کامل", "وضعیت کلی"],
+      "action": {
+        "type": "callable",
+        "function": "system_snapshot"
+      }
+    },
+    {
+      "name": "status_simple",
+      "priority": 60,
+      "triggers": ["وضعیت", "آمار", "اوضاع"],
+      "action": {
+        "type": "callable",
+        "function": "system_snapshot"
+      }
+    },
+    {
+      "name": "compare_days",
+      "priority": 50,
+      "triggers": ["امروز نسبت به دیروز", "مقایسه امروز دیروز", "بهتر از دیروز"],
+      "action": {
+        "type": "callable",
+        "function": "compare_days"
+      }
+    },
+    {
+      "name": "today_hourly",
+      "priority": 50,
+      "triggers": ["امروز ساعتی", "تفکیک ساعتی"],
+      "action": {
+        "type": "callable",
+        "function": "today_hourly"
+      }
+    },
+    {
+      "name": "hot_recent",
+      "priority": 50,
+      "triggers": ["سرنخ داغ", "سرنخ‌های داغ", "داغ‌ها"],
+      "action": {
+        "type": "callable",
+        "function": "hot_recent"
+      }
+    },
+    {
+      "name": "high_score",
+      "priority": 50,
+      "triggers": ["سرنخ قوی", "امتیاز بالا", "سرنخ‌های خوب"],
+      "action": {
+        "type": "callable",
+        "function": "high_score"
+      }
+    },
+    {
+      "name": "silent_groups",
+      "priority": 50,
+      "triggers": ["گروه‌های ساکت", "گروه‌های خاموش", "گروه‌های بی‌فعالیت"],
+      "action": {
+        "type": "callable",
+        "function": "silent_groups"
+      }
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "version": "1.1.0",
+  "queries": {
+    "leads_today_count": {
+      "sql": "SELECT COUNT(*) FROM messages WHERE keywords!='' AND date(timestamp)=date('now', 'localtime')",
+      "description": "تعداد سرنخ‌های امروز (به وقت محلی)"
+    },
+    "leads_yesterday_count": {
+      "sql": "SELECT COUNT(*) FROM messages WHERE keywords!='' AND date(timestamp)=date('now', 'localtime', '-1 day')",
+      "description": "تعداد سرنخ‌های دیروز (به وقت محلی)"
+    },
+    "leads_week_count": {
+      "sql": "SELECT COUNT(*) FROM messages WHERE keywords!='' AND timestamp >= datetime('now', 'localtime', '-7 days')",
+      "description": "تعداد سرنخ‌های ۷ روز اخیر"
+    },
+    "leads_month_count": {
+      "sql": "SELECT COUNT(*) FROM messages WHERE keywords!='' AND timestamp >= datetime('now', 'localtime', '-30 days')",
+      "description": "تعداد سرنخ‌های ۳۰ روز اخیر"
+    },
+    "leads_24h_count": {
+      "sql": "SELECT COUNT(*) FROM messages WHERE keywords!='' AND timestamp >= datetime('now', 'localtime', '-1 day')",
+      "description": "تعداد سرنخ‌های ۲۴ ساعت اخیر"
+    },
+    "leads_total_count": {
+      "sql": "SELECT COUNT(*) FROM messages WHERE keywords!=''",
+      "description": "تعداد کل سرنخ‌ها"
+    },
+    "hot_today_count": {
+      "sql": "SELECT COUNT(*) FROM messages WHERE keywords!='' AND opportunity_type='داغ' AND date(timestamp)=date('now', 'localtime')",
+      "description": "تعداد سرنخ داغ امروز (به وقت محلی)"
+    },
+    "hot_total_count": {
+      "sql": "SELECT COUNT(*) FROM messages WHERE keywords!='' AND opportunity_type='داغ'",
+      "description": "تعداد کل سرنخ داغ"
+    }
+  }
+}

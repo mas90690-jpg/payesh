@@ -1,0 +1,21 @@
+{
+  "keywords": {
+    "تست": {
+      "tier": "T1"
+    },
+    "ترویگو": {
+      "tier": "T1"
+    },
+    "آبامکتین": {
+      "tier": "T1"
+    },
+    "Tervigo": {
+      "tier": "T1"
+    },
+    "Abamectin": {
+      "tier": "T1"
+    }
+  },
+  "version": 2,
+  "updated_at": "2026-10-31"
+}

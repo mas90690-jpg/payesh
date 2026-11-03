@@ -1,0 +1,13 @@
+{
+  "version": "1.0.0",
+  "description": "تنظیمات LearningEngine",
+  "max_interaction_history": 200,
+  "max_plans": 100,
+  "max_response_len": 500,
+  "max_user_input_len": 500,
+  "plan_max_tokens": 1500,
+  "tests_max_content_chars": 6000,
+  "tests_max_tokens": 2500,
+  "web_max_results": 5,
+  "web_search_timeout": 10
+}

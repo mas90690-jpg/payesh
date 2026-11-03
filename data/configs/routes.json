@@ -1,0 +1,148 @@
+{
+  "version": "1.0.0",
+  "description": "نگاشت کلیدواژه → ابزارها",
+  "routes": {
+    "وضعیت": [
+      "brain_status",
+      "system_dashboard"
+    ],
+    "آمار": [
+      "brain_status",
+      "system_dashboard"
+    ],
+    "خواب": [
+      "consolidation_run"
+    ],
+    "consolidation": [
+      "consolidation_run"
+    ],
+    "دانش": [
+      "semantic_search"
+    ],
+    "چی می‌دونی": [
+      "semantic_search"
+    ],
+    "پلتفرم": [
+      "list_platforms",
+      "diagnose_platform"
+    ],
+    "ابزار": [
+      "brain_status"
+    ],
+    "ابزارها": [
+      "brain_status"
+    ],
+    "ابزارهای من": [
+      "brain_status"
+    ],
+    "چند ابزار": [
+      "brain_status"
+    ],
+    "چند تا ابزار": [
+      "brain_status"
+    ],
+    "تعداد ابزار": [
+      "brain_status"
+    ],
+    "tool": [
+      "brain_status"
+    ],
+    "tools": [
+      "brain_status"
+    ],
+    "brain": [
+      "brain_status"
+    ],
+    "brain_status": [
+      "brain_status"
+    ],
+    "مغز": [
+      "brain_status"
+    ],
+    "وضعیت مغز": [
+      "brain_status",
+      "system_dashboard"
+    ],
+    "بله": [
+      "platform_health",
+      "diagnose_platform"
+    ],
+    "ایتا": [
+      "platform_health",
+      "diagnose_platform"
+    ],
+    "روبیکا": [
+      "platform_health",
+      "diagnose_platform"
+    ],
+    "تلگرام": [
+      "platform_health",
+      "diagnose_platform"
+    ],
+    "وصل نمی": [
+      "diagnose_platform",
+      "platform_health"
+    ],
+    "کار نمی": [
+      "diagnose_platform",
+      "platform_health"
+    ],
+    "خطا": [
+      "diagnose_platform",
+      "logs"
+    ],
+    "باگ": [
+      "audit_code",
+      "audit_file"
+    ],
+    "کد": [
+      "read_file",
+      "grep_search",
+      "analyze_code"
+    ],
+    "فایل": [
+      "read_file",
+      "file_info"
+    ],
+    "بخوان": [
+      "read_file"
+    ],
+    "بگرد": [
+      "find_files",
+      "grep_search"
+    ],
+    "cpu": [
+      "system_dashboard"
+    ],
+    "ram": [
+      "system_dashboard"
+    ],
+    "دیسک": [
+      "system_dashboard"
+    ],
+    "پردازه": [
+      "list_processes"
+    ],
+    "جستجو": [
+      "web_search"
+    ],
+    "سایت": [
+      "browse_web"
+    ],
+    "تست": [
+      "run_tests"
+    ],
+    "دیتابیس": [
+      "query_database"
+    ],
+    "sql": [
+      "query_database"
+    ],
+    "پروژه": [
+      "get_project_context"
+    ],
+    "ساختار": [
+      "list_directory"
+    ]
+  }
+}

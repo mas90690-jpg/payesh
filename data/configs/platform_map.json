@@ -1,0 +1,42 @@
+{
+  "version": "1.0.0",
+  "description": "نگاشت پلتفرم → کلاس کلکتور",
+  "platforms": {
+    "bale": [
+      "collectors.bale",
+      "BaleCollector"
+    ],
+    "eitaa": [
+      "collectors.eitaa",
+      "EitaaCollector"
+    ],
+    "rubika": [
+      "collectors.rubika",
+      "RubikaCollector"
+    ],
+    "telegram": [
+      "collectors.telegram",
+      "TelegramWebCollector"
+    ],
+    "whatsapp": [
+      "collectors.whatsapp",
+      "WhatsAppCollector"
+    ],
+    "linkedin": [
+      "collectors.linkedin",
+      "LinkedInCollector"
+    ],
+    "instagram": [
+      "collectors.instagram",
+      "InstagramCollector"
+    ],
+    "youtube": [
+      "collectors.youtube",
+      "YouTubeCollector"
+    ],
+    "web": [
+      "collectors.web",
+      "WebCollector"
+    ]
+  }
+}
