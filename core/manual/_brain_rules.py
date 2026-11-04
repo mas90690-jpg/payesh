@@ -391,8 +391,8 @@ class BrainRulesMixin:
         if not logs:
             return "📭 لاگی نیست."
         return "🗒️ آخرین لاگ‌ها:\n" + "\n".join(
-            f"[{l.get('level', '')}] {l.get('msg', '')[:90]}"
-            for l in logs
+            f"[{entry.get('level', '')}] {entry.get('msg', '')[:90]}"
+            for entry in logs
         )
 
     def _builtin_error_count(

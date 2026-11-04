@@ -25,6 +25,7 @@
     برای ریست `_in_progress`.
   - ✅ حفظ همهٔ FIXهای نسخهٔ ۵.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -46,7 +47,8 @@ from core.kernel.logger import (
 # helpers
 # ═══════════════════════════════════════════
 def _env_int(
-    name: str, default: int,
+    name: str,
+    default: int,
     min_val: int | None = None,
     max_val: int | None = None,
 ) -> int:
@@ -62,9 +64,7 @@ def _env_int(
     return v
 
 
-def _resolve_retention_value(
-    value: Any, default: int = 0
-) -> int:
+def _resolve_retention_value(value: Any, default: int = 0) -> int:
     """تبدیل type-safe مقدار RETENTION."""
     try:
         return max(0, int(value))
@@ -77,6 +77,7 @@ def _resolve_retention_value(
 # ═══════════════════════════════════════════
 try:
     from data import paths as _data_paths
+
     MEDIA_DIR: str = str(_data_paths.MEDIA_DIR)
     REPORTS_DIR: str = str(_data_paths.REPORTS_DIR)
     STORAGE_DIR: str = str(_data_paths.STORAGE_DIR)
@@ -86,6 +87,7 @@ except Exception:
         REPORTS_DIR as _CFG_REPORTS,
         STORAGE_DIR as _CFG_STORAGE,
     )
+
     MEDIA_DIR = str(_CFG_MEDIA)
     REPORTS_DIR = str(_CFG_REPORTS)
     STORAGE_DIR = str(_CFG_STORAGE)
@@ -108,17 +110,22 @@ _MIN_INTERVAL_HOURS = max(
 _MAX_INTERVAL_HOURS = max(
     _MIN_INTERVAL_HOURS,
     _env_int(
-        "CLEANUP_MAX_INTERVAL_HOURS", 720,
+        "CLEANUP_MAX_INTERVAL_HOURS",
+        720,
         min_val=_MIN_INTERVAL_HOURS,
     ),
 )
 _SLOW_STEP_MS = _env_int(
-    "CLEANUP_SLOW_STEP_MS", 5000,
-    min_val=100, max_val=600_000,
+    "CLEANUP_SLOW_STEP_MS",
+    5000,
+    min_val=100,
+    max_val=600_000,
 )
 _SLEEP_CHUNK_S = _env_int(
-    "CLEANUP_SLEEP_CHUNK_S", 5,
-    min_val=1, max_val=60,
+    "CLEANUP_SLEEP_CHUNK_S",
+    5,
+    min_val=1,
+    max_val=60,
 )
 
 CLEANUP_TYPE_MEDIA = "media"
@@ -131,25 +138,30 @@ CLEANUP_TYPE_REPORTS = "reports"
 # ⚠️ توجه: اینجا فقط cache موقت می‌آید. حافظهٔ Brain (learned_patterns,
 # plans) از این لیست حذف شده — چون state است، نه cache.
 
+
 def _build_cache_dirs() -> list[str]:
     """پوشه‌های cache موقت — امن برای پاک کردن."""
     dirs: list[str] = []
     try:
-        dirs.extend([
-            str(_data_paths.SAFE_BRAIN_CACHE_DIR),
-            str(_data_paths.SAFE_BRAIN_MEMORY_DIR),
-            str(_data_paths.BRAIN_CACHE_DIR),
-            str(_data_paths.BRAIN_MEMORY_DIR),
-            str(_data_paths.PYCACHE_DIR),
-        ])
+        dirs.extend(
+            [
+                str(_data_paths.SAFE_BRAIN_CACHE_DIR),
+                str(_data_paths.SAFE_BRAIN_MEMORY_DIR),
+                str(_data_paths.BRAIN_CACHE_DIR),
+                str(_data_paths.BRAIN_MEMORY_DIR),
+                str(_data_paths.PYCACHE_DIR),
+            ]
+        )
     except Exception:
-        dirs.extend([
-            os.path.join(STORAGE_DIR, "safe_brain", "cache"),
-            os.path.join(STORAGE_DIR, "safe_brain", "memory"),
-            os.path.join(STORAGE_DIR, "brain", "cache"),
-            os.path.join(STORAGE_DIR, "brain", "memory"),
-            os.path.join(STORAGE_DIR, "pycache"),
-        ])
+        dirs.extend(
+            [
+                os.path.join(STORAGE_DIR, "safe_brain", "cache"),
+                os.path.join(STORAGE_DIR, "safe_brain", "memory"),
+                os.path.join(STORAGE_DIR, "brain", "cache"),
+                os.path.join(STORAGE_DIR, "brain", "memory"),
+                os.path.join(STORAGE_DIR, "pycache"),
+            ]
+        )
     seen: set[str] = set()
     out: list[str] = []
     for d in dirs:
@@ -169,9 +181,7 @@ def _build_cache_files() -> list[str]:
     try:
         files.append(str(_data_paths.REPORT_CACHE))
     except Exception:
-        files.append(
-            os.path.join(STORAGE_DIR, "database", "report_cache.json")
-        )
+        files.append(os.path.join(STORAGE_DIR, "database", "report_cache.json"))
     seen: set[str] = set()
     out: list[str] = []
     for f in files:
@@ -186,8 +196,12 @@ _CACHE_FILES: list[str] = _build_cache_files()
 
 # پوشه‌هایی که در scan __pycache__ نباید بره داخلشون
 _SKIP_DIRS_FOR_PYCACHE: tuple[str, ...] = (
-    "venv", ".venv", "env", ".env",
-    ".git", "node_modules",
+    "venv",
+    ".venv",
+    "env",
+    ".env",
+    ".git",
+    "node_modules",
     os.path.join("storage", "sessions"),
     os.path.join("storage", "backups"),
 )
@@ -232,8 +246,7 @@ class CleanupService:
             min(_MAX_INTERVAL_HOURS, raw_interval),
         )
 
-        log_success(
-            f"✅ [CLEANUP:init] آماده | " f"media={
+        log_success(f"✅ [CLEANUP:init] آماده | " f"media={
                 self.keep_media_days}روز | " f"reports={
                 self.keep_reports_days}روز | " f"messages=" f"{
                 'همیشه' if self.keep_messages_days == 0 else str(
@@ -290,14 +303,10 @@ class CleanupService:
         """حجم پوشه به کیلوبایت (بدون symlink loop)."""
         total = 0
         try:
-            for root, _, files in os.walk(
-                path, followlinks=False
-            ):
+            for root, _, files in os.walk(path, followlinks=False):
                 for f in files:
                     try:
-                        total += os.path.getsize(
-                            os.path.join(root, f)
-                        )
+                        total += os.path.getsize(os.path.join(root, f))
                     except Exception:
                         pass
         except Exception:
@@ -318,22 +327,14 @@ class CleanupService:
     # _delete_old_files
     # ═══════════════════════════════════════════
     @staticmethod
-    def _delete_old_files(
-        folder: str, days: int, label: str
-    ) -> int:
+    def _delete_old_files(folder: str, days: int, label: str) -> int:
         """حذف فایل‌های قدیمی‌تر از `days` روز."""
         if days <= 0:
-            log_info(
-                f"ℹ️ [CLEANUP:files:{label}] "
-                f"days={days} ≤ 0 — رد شد"
-            )
+            log_info(f"ℹ️ [CLEANUP:files:{label}] " f"days={days} ≤ 0 — رد شد")
             return 0
 
         if not os.path.isdir(folder):
-            log_warning(
-                f"⚠️ [CLEANUP:files:{label}] "
-                f"پوشه نیست: {folder}"
-            )
+            log_warning(f"⚠️ [CLEANUP:files:{label}] " f"پوشه نیست: {folder}")
             return 0
 
         t0 = time.monotonic()
@@ -345,9 +346,7 @@ class CleanupService:
         errors = 0
         newest_mtime = 0.0
 
-        for root, _, files in os.walk(
-            folder, followlinks=False
-        ):
+        for root, _, files in os.walk(folder, followlinks=False):
             for name in files:
                 path = os.path.join(root, name)
                 scanned += 1
@@ -371,8 +370,7 @@ class CleanupService:
 
         elapsed_ms = (time.monotonic() - t0) * 1000
         newest_age_days = (
-            (time.time() - newest_mtime) / 86400
-            if newest_mtime > 0 else 0.0
+            (time.time() - newest_mtime) / 86400 if newest_mtime > 0 else 0.0
         )
 
         if removed > 0 or errors > 0:
@@ -445,10 +443,7 @@ class CleanupService:
                             pass
             except Exception as e:
                 stats["errors"] += 1
-                log_warning(
-                    f"⚠️ [CLEANUP:caches] "
-                    f"{type(e).__name__}: {e} | {d}"
-                )
+                log_warning(f"⚠️ [CLEANUP:caches] " f"{type(e).__name__}: {e} | {d}")
 
         # ─── ۲) پاک فایل‌های تک cache (report_cache فقط) ───
         for f in _CACHE_FILES:
@@ -461,8 +456,7 @@ class CleanupService:
                 except Exception as e:
                     stats["errors"] += 1
                     log_warning(
-                        f"⚠️ [CLEANUP:caches] "
-                        f"{type(e).__name__}: {e} | {f}"
+                        f"⚠️ [CLEANUP:caches] " f"{type(e).__name__}: {e} | {f}"
                     )
 
         # ─── ۳) پاک storage/pycache ───
@@ -499,13 +493,9 @@ class CleanupService:
                 )
 
         # ─── ۴) پاک __pycache__ تو کل پروژه ───
-        project_root = os.path.abspath(
-            os.path.join(STORAGE_DIR, os.pardir)
-        )
+        project_root = os.path.abspath(os.path.join(STORAGE_DIR, os.pardir))
 
-        for root, dirs, _ in os.walk(
-            project_root, followlinks=False
-        ):
+        for root, dirs, _ in os.walk(project_root, followlinks=False):
             if CleanupService._should_skip_pycache_dir(root):
                 dirs[:] = []
                 continue
@@ -536,9 +526,7 @@ class CleanupService:
             f"{elapsed_ms:.0f}ms"
         )
         if elapsed_ms > _SLOW_STEP_MS:
-            log_warning(
-                f"🐌 [CLEANUP:caches] کند | {elapsed_ms:.0f}ms"
-            )
+            log_warning(f"🐌 [CLEANUP:caches] کند | {elapsed_ms:.0f}ms")
         return stats
 
     # ═══════════════════════════════════════════
@@ -548,9 +536,7 @@ class CleanupService:
         """یک دور پاک‌سازی کامل — با گارد اجرای هم‌زمان."""
         # 🎯 گارد: اگر run_once دیگری در حال اجراست، رد کن
         if self._in_progress:
-            log_warning(
-                "⚠️ [CLEANUP:run] قبلاً در حال اجراست — رد شد"
-            )
+            log_warning("⚠️ [CLEANUP:run] قبلاً در حال اجراست — رد شد")
             return dict(self._last_stats)
 
         if not self._running:
@@ -574,39 +560,33 @@ class CleanupService:
             try:
                 t_step = time.monotonic()
                 stats["media"] = self._delete_old_files(
-                    MEDIA_DIR, self.keep_media_days,
+                    MEDIA_DIR,
+                    self.keep_media_days,
                     CLEANUP_TYPE_MEDIA,
                 )
                 step_ms = (time.monotonic() - t_step) * 1000
                 log_info(f"   ✔ media | {step_ms:.0f}ms")
             except Exception as e:
-                log_error(
-                    f"❌ [CLEANUP:run:media] "
-                    f"{type(e).__name__}: {e}"
-                )
+                log_error(f"❌ [CLEANUP:run:media] " f"{type(e).__name__}: {e}")
 
             # ─── ۲) reports ───
             try:
                 t_step = time.monotonic()
                 stats["reports"] = self._delete_old_files(
-                    REPORTS_DIR, self.keep_reports_days,
+                    REPORTS_DIR,
+                    self.keep_reports_days,
                     CLEANUP_TYPE_REPORTS,
                 )
                 step_ms = (time.monotonic() - t_step) * 1000
                 log_info(f"   ✔ reports | {step_ms:.0f}ms")
             except Exception as e:
-                log_error(
-                    f"❌ [CLEANUP:run:reports] "
-                    f"{type(e).__name__}: {e}"
-                )
+                log_error(f"❌ [CLEANUP:run:reports] " f"{type(e).__name__}: {e}")
 
             # ─── ۳) db ───
             if self.db and self.keep_messages_days > 0:
                 try:
                     t_step = time.monotonic()
-                    result = await self.db.delete_old_messages(
-                        self.keep_messages_days
-                    )
+                    result = await self.db.delete_old_messages(self.keep_messages_days)
                     step_ms = (time.monotonic() - t_step) * 1000
 
                     # 🐛 FIX: فقط اگر int بود، استفاده کن؛ وگرنه ۰
@@ -621,10 +601,7 @@ class CleanupService:
                         f"result={result} | {step_ms:.0f}ms"
                     )
                 except Exception as e:
-                    log_error(
-                        f"❌ [CLEANUP:run:db] "
-                        f"{type(e).__name__}: {e}"
-                    )
+                    log_error(f"❌ [CLEANUP:run:db] " f"{type(e).__name__}: {e}")
             elif not self.db:
                 log_info("ℹ️ [CLEANUP:run:db] db ندارد")
             else:
@@ -640,22 +617,17 @@ class CleanupService:
                 cache_stats = self._cleanup_caches()
                 step_ms = (time.monotonic() - t_step) * 1000
                 stats["cache_files"] = cache_stats.get("ai_files", 0)
-                stats["pycache_dirs"] = (
-                    cache_stats.get("pycache_storage", 0)
-                    + cache_stats.get("pycache_global", 0)
-                )
+                stats["pycache_dirs"] = cache_stats.get(
+                    "pycache_storage", 0
+                ) + cache_stats.get("pycache_global", 0)
                 log_info(f"   ✔ caches | {step_ms:.0f}ms")
             except Exception as e:
-                log_error(
-                    f"❌ [CLEANUP:run:caches] "
-                    f"{type(e).__name__}: {e}"
-                )
+                log_error(f"❌ [CLEANUP:run:caches] " f"{type(e).__name__}: {e}")
 
             self._last_stats = dict(stats)
             elapsed_ms = (time.monotonic() - t_all) * 1000
             log_success(
-                f"🏁 [CLEANUP:run] کامل | "
-                f"{elapsed_ms:.0f}ms | stats={stats}"
+                f"🏁 [CLEANUP:run] کامل | " f"{elapsed_ms:.0f}ms | stats={stats}"
             )
             return stats
 
@@ -670,10 +642,7 @@ class CleanupService:
         """حلقهٔ periodic با بیداری سریع در stop."""
         self._stop_event = asyncio.Event()
 
-        log_info(
-            f"▶️ [CLEANUP:periodic] شروع | "
-            f"هر {self.interval_hours}ساعت"
-        )
+        log_info(f"▶️ [CLEANUP:periodic] شروع | " f"هر {self.interval_hours}ساعت")
         iteration = 0
         total_sleep_s = self.interval_hours * 3600
 
@@ -689,10 +658,7 @@ class CleanupService:
                     f"next={self.interval_hours}h"
                 )
             except asyncio.CancelledError:
-                log_info(
-                    f"🛑 [CLEANUP:periodic] cancel "
-                    f"(iter#{iteration})"
-                )
+                log_info(f"🛑 [CLEANUP:periodic] cancel " f"(iter#{iteration})")
                 raise
             except Exception as e:
                 log_error(
@@ -728,10 +694,7 @@ class CleanupService:
 
                 remaining_s -= chunk
 
-        log_info(
-            f"🛑 [CLEANUP:periodic] حلقه متوقف شد | "
-            f"iterations={iteration}"
-        )
+        log_info(f"🛑 [CLEANUP:periodic] حلقه متوقف شد | " f"iterations={iteration}")
 
     # ═══════════════════════════════════════════
     # manual
@@ -805,10 +768,7 @@ async def start_cleanup_service(db=None) -> CleanupService:
     try:
         svc = CleanupService(db)
     except Exception as e:
-        log_error(
-            f"❌ [CLEANUP:start] ساخت ناموفق | "
-            f"{type(e).__name__}: {e}"
-        )
+        log_error(f"❌ [CLEANUP:start] ساخت ناموفق | " f"{type(e).__name__}: {e}")
         raise
 
     try:
@@ -817,8 +777,7 @@ async def start_cleanup_service(db=None) -> CleanupService:
             name="cleanup_periodic",
         )
         svc._pending_tasks.append(task)
-        log_success(
-            f"✅ [CLEANUP:start] حلقه راه افتاد | " f"media={
+        log_success(f"✅ [CLEANUP:start] حلقه راه افتاد | " f"media={
                 svc.keep_media_days}روز | " f"reports={
                 svc.keep_reports_days}روز | " f"messages=" f"{
                 'همیشه' if svc.keep_messages_days == 0 else str(
@@ -826,10 +785,7 @@ async def start_cleanup_service(db=None) -> CleanupService:
                 'روز'} | " f"interval={
                 svc.interval_hours}ساعت")
     except Exception as e:
-        log_error(
-            f"❌ [CLEANUP:start] create_task | "
-            f"{type(e).__name__}: {e}"
-        )
+        log_error(f"❌ [CLEANUP:start] create_task | " f"{type(e).__name__}: {e}")
     return svc
 
 

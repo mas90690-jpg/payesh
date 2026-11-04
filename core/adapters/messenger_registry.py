@@ -28,6 +28,7 @@
   - 🎯 `__all__` export.
   - ✅ حفظ همهٔ رفتار نسخهٔ ۲.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -48,7 +49,8 @@ from core.kernel.logger import (
 # helpers
 # ═══════════════════════════════════════════
 def _env_int(
-    name: str, default: int,
+    name: str,
+    default: int,
     min_val: int | None = None,
     max_val: int | None = None,
 ) -> int:
@@ -65,7 +67,8 @@ def _env_int(
 
 
 def _env_float(
-    name: str, default: float,
+    name: str,
+    default: float,
     min_val: float | None = None,
     max_val: float | None = None,
 ) -> float:
@@ -85,12 +88,16 @@ def _env_float(
 # ثابت‌ها
 # ═══════════════════════════════════════════
 _SLOW_SEND_MS = _env_int(
-    "MSGR_SLOW_SEND_MS", 3000,
-    min_val=100, max_val=60_000,
+    "MSGR_SLOW_SEND_MS",
+    3000,
+    min_val=100,
+    max_val=60_000,
 )
 _NOTIFY_TIMEOUT_S = _env_float(
-    "MSGR_NOTIFY_TIMEOUT_S", 30.0,
-    min_val=1.0, max_val=300.0,
+    "MSGR_NOTIFY_TIMEOUT_S",
+    30.0,
+    min_val=1.0,
+    max_val=300.0,
 )
 
 
@@ -139,16 +146,11 @@ def register_sender(
         True اگر ثبت شد، False اگر پارامتر نامعتبر بود.
     """
     if not platform:
-        log_warning(
-            "⚠️ [MSGR:register] platform خالیه — رد شد"
-        )
+        log_warning("⚠️ [MSGR:register] platform خالیه — رد شد")
         return False
 
     if sender is None:
-        log_warning(
-            f"⚠️ [MSGR:register] sender خالیه | "
-            f"platform={platform}"
-        )
+        log_warning(f"⚠️ [MSGR:register] sender خالیه | " f"platform={platform}")
         return False
 
     if not callable(sender):
@@ -164,9 +166,8 @@ def register_sender(
         return False
 
     try:
-        func_name = (
-            getattr(sender, "__qualname__", None)
-            or getattr(sender, "__name__", "?")
+        func_name = getattr(sender, "__qualname__", None) or getattr(
+            sender, "__name__", "?"
         )
     except Exception:
         func_name = "?"
@@ -183,8 +184,7 @@ def register_sender(
         )
     else:
         log_success(
-            f"✅ [MSGR:register] {platform_key} | "
-            f"func={func_name} | total={total}"
+            f"✅ [MSGR:register] {platform_key} | " f"func={func_name} | total={total}"
         )
     return True
 
@@ -208,10 +208,7 @@ def unregister_sender(platform: str) -> bool:
         else:
             return False
 
-    log_info(
-        f"🗑️ [MSGR:unregister] {platform_key} | "
-        f"remaining={total}"
-    )
+    log_info(f"🗑️ [MSGR:unregister] {platform_key} | " f"remaining={total}")
     return True
 
 
@@ -273,6 +270,7 @@ def _get_admin_config() -> tuple[list[str], str]:
             ADMIN_IDS,
             ADMIN_PLATFORM,
         )
+
         if not ADMIN_ENABLED:
             return [], ""
         return (
@@ -280,10 +278,7 @@ def _get_admin_config() -> tuple[list[str], str]:
             str(ADMIN_PLATFORM or "bale").strip().lower(),
         )
     except Exception as e:
-        log_warning(
-            f"⚠️ [MSGR:notify] config | "
-            f"{type(e).__name__}: {e}"
-        )
+        log_warning(f"⚠️ [MSGR:notify] config | " f"{type(e).__name__}: {e}")
         return [], ""
 
 
@@ -308,16 +303,11 @@ async def notify_admins(text: str) -> bool:
     admin_ids, platform = _get_admin_config()
 
     if not admin_ids:
-        log_warning(
-            "⚠️ [MSGR:notify] admin_ids خالی است — "
-            "پیام ارسال نشد"
-        )
+        log_warning("⚠️ [MSGR:notify] admin_ids خالی است — " "پیام ارسال نشد")
         return False
 
     if not platform:
-        log_warning(
-            "⚠️ [MSGR:notify] ADMIN_PLATFORM خالی است"
-        )
+        log_warning("⚠️ [MSGR:notify] ADMIN_PLATFORM خالی است")
         return False
 
     # ─── sender ───
@@ -344,9 +334,7 @@ async def notify_admins(text: str) -> bool:
             )
             sent += 1
             a_ms = (time.monotonic() - t_a) * 1000
-            log_info(
-                f"  ✅ [MSGR:notify] → {aid} | {a_ms:.0f}ms"
-            )
+            log_info(f"  ✅ [MSGR:notify] → {aid} | {a_ms:.0f}ms")
         except TimeoutError:
             failed += 1
             a_ms = (time.monotonic() - t_a) * 1000
@@ -365,8 +353,7 @@ async def notify_admins(text: str) -> bool:
     elapsed_ms = (time.monotonic() - t0) * 1000
     if sent > 0:
         log_success(
-            f"✅ [MSGR:notify] sent={sent} failed={failed} | "
-            f"{elapsed_ms:.0f}ms"
+            f"✅ [MSGR:notify] sent={sent} failed={failed} | " f"{elapsed_ms:.0f}ms"
         )
     else:
         log_warning(
@@ -396,9 +383,7 @@ def __getattr__(name: str) -> Any:
     """🎯 دسترسی legacy به `_senders` (فقط برای debug)."""
     if name == "_SENDERS":
         return get_registered_platforms()
-    raise AttributeError(
-        f"module 'messenger_registry' has no attribute {name!r}"
-    )
+    raise AttributeError(f"module 'messenger_registry' has no attribute {name!r}")
 
 
 # ═══════════════════════════════════════════

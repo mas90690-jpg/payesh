@@ -16,6 +16,7 @@
   - 🎯 `__all__` export.
   - ✅ حفظ همهٔ رفتار نسخهٔ ۱.
 """
+
 from __future__ import annotations
 
 import copy
@@ -79,7 +80,7 @@ class _QueryResult:
         except (TypeError, ValueError):
             size = 1
         end = min(self._i + size, len(self._rows))
-        result = copy.deepcopy(self._rows[self._i:end])
+        result = copy.deepcopy(self._rows[self._i : end])
         self._i = end
         return result
 
@@ -106,8 +107,7 @@ class _QueryResult:
             "remaining": max(0, len(self._rows) - self._i),
             "has_more": self._i < len(self._rows),
             "rows_preview": [
-                dict(r) if isinstance(r, dict) else str(r)
-                for r in self._rows[:3]
+                dict(r) if isinstance(r, dict) else str(r) for r in self._rows[:3]
             ],
         }
 
@@ -116,7 +116,7 @@ class _QueryResult:
     # ═══════════════════════════════════════════
     def __iter__(self):
         """🎯 iteration sync — از cursor فعلی."""
-        return iter(self._rows[self._i:])
+        return iter(self._rows[self._i :])
 
     def __len__(self) -> int:
         """تعداد کل ردیف‌ها (نه باقی‌مانده)."""
@@ -127,10 +127,7 @@ class _QueryResult:
         return bool(self._rows)
 
     def __repr__(self) -> str:
-        return (
-            f"<_QueryResult total={len(self._rows)} "
-            f"i={self._i}>"
-        )
+        return f"<_QueryResult total={len(self._rows)} " f"i={self._i}>"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -162,9 +159,7 @@ class BaseDatabase(ABC):
     # Write
     # ═══════════════════════════════════════════
     @abstractmethod
-    async def save_message(
-        self, message: dict[str, Any]
-    ) -> int: ...
+    async def save_message(self, message: dict[str, Any]) -> int: ...
 
     @abstractmethod
     async def save_lead(self, lead: dict[str, Any]) -> int: ...
@@ -175,14 +170,10 @@ class BaseDatabase(ABC):
     ) -> None: ...
 
     @abstractmethod
-    async def update_lead_score(
-        self, lead_id: str, score: int
-    ) -> None: ...
+    async def update_lead_score(self, lead_id: str, score: int) -> None: ...
 
     @abstractmethod
-    async def update_last_poll(
-        self, platform: str, timestamp: datetime
-    ) -> None: ...
+    async def update_last_poll(self, platform: str, timestamp: datetime) -> None: ...
 
     @abstractmethod
     async def set_chat_offset(
@@ -193,22 +184,16 @@ class BaseDatabase(ABC):
     async def update_daily_stats(self) -> None: ...
 
     @abstractmethod
-    async def delete_old_messages(
-        self, days: int = 30
-    ) -> None: ...
+    async def delete_old_messages(self, days: int = 30) -> None: ...
 
     # ═══════════════════════════════════════════
     # Read
     # ═══════════════════════════════════════════
     @abstractmethod
-    async def get_last_poll(
-        self, platform: str
-    ) -> datetime | None: ...
+    async def get_last_poll(self, platform: str) -> datetime | None: ...
 
     @abstractmethod
-    async def get_chat_offset(
-        self, platform: str, chat_id: str
-    ) -> str | None: ...
+    async def get_chat_offset(self, platform: str, chat_id: str) -> str | None: ...
 
     @abstractmethod
     async def get_high_score_leads(
@@ -221,19 +206,13 @@ class BaseDatabase(ABC):
     ) -> list[dict]: ...
 
     @abstractmethod
-    async def get_keyword_stats(
-        self, limit: int = 20
-    ) -> list[tuple[str, int]]: ...
+    async def get_keyword_stats(self, limit: int = 20) -> list[tuple[str, int]]: ...
 
     @abstractmethod
-    async def get_group_stats(
-        self, limit: int = 20
-    ) -> list[tuple[str, int]]: ...
+    async def get_group_stats(self, limit: int = 20) -> list[tuple[str, int]]: ...
 
     @abstractmethod
-    async def get_daily_stats(
-        self, days: int = 7
-    ) -> list[dict]: ...
+    async def get_daily_stats(self, days: int = 7) -> list[dict]: ...
 
     @abstractmethod
     async def search(
@@ -244,9 +223,7 @@ class BaseDatabase(ABC):
     ) -> list[dict]: ...
 
     @abstractmethod
-    async def get_important_messages(
-        self, limit: int = 50
-    ) -> list[dict]: ...
+    async def get_important_messages(self, limit: int = 50) -> list[dict]: ...
 
     @abstractmethod
     async def get_total_count(self) -> dict[str, int]: ...
@@ -261,9 +238,7 @@ class BaseDatabase(ABC):
     # Generic
     # ═══════════════════════════════════════════
     @abstractmethod
-    async def execute(
-        self, query: str, params: ParamsType = ()
-    ) -> _QueryResult: ...
+    async def execute(self, query: str, params: ParamsType = ()) -> _QueryResult: ...
 
     # ═══════════════════════════════════════════
     # Helpers
