@@ -17,7 +17,6 @@ import importlib
 import time
 from typing import Any
 
-from core.brain.constants import LOG_PREVIEW_LEN
 from core.kernel.logger import (
     log_error,
     log_info,
@@ -30,15 +29,15 @@ from core.kernel.logger import (
 # نگاشت پلتفرم → کلاس
 # ═══════════════════════════════════════════
 _PLATFORM_MAP: dict[str, tuple[str, str]] = {
-    "bale":      ("collectors.bale",      "BaleCollector"),
-    "eitaa":     ("collectors.eitaa",     "EitaaCollector"),
-    "rubika":    ("collectors.rubika",    "RubikaCollector"),
-    "telegram":  ("collectors.telegram",  "TelegramWebCollector"),
-    "whatsapp":  ("collectors.whatsapp",  "WhatsAppCollector"),
-    "linkedin":  ("collectors.linkedin",  "LinkedInCollector"),
+    "bale": ("collectors.bale", "BaleCollector"),
+    "eitaa": ("collectors.eitaa", "EitaaCollector"),
+    "rubika": ("collectors.rubika", "RubikaCollector"),
+    "telegram": ("collectors.telegram", "TelegramWebCollector"),
+    "whatsapp": ("collectors.whatsapp", "WhatsAppCollector"),
+    "linkedin": ("collectors.linkedin", "LinkedInCollector"),
     "instagram": ("collectors.instagram", "InstagramCollector"),
-    "youtube":   ("collectors.youtube",   "YouTubeCollector"),
-    "web":       ("collectors.web",       "WebCollector"),
+    "youtube": ("collectors.youtube", "YouTubeCollector"),
+    "web": ("collectors.web", "WebCollector"),
 }
 
 
@@ -397,12 +396,11 @@ class PlatformMixin:
                     f"  ⚠️ session: وجود ندارد ({session_dir})"
                 )
                 lines.append(
-                    f"      💡 باید login.py اجرا کنی"
+                    "      💡 باید login.py اجرا کنی"
                 )
 
         # ─── ۵) Playwright ───
         try:
-            import playwright
             lines.append("  ✅ playwright نصب است")
         except ImportError:
             lines.append("  ❌ playwright نصب نیست")
@@ -548,7 +546,7 @@ class PlatformMixin:
                 await collector.disconnect()
             except Exception:
                 pass
-                
+
     # ═══════════════════════════════════════════
     # 🆕 ریشه‌یابی — چرا پلتفرم وصل نشد؟
     # ═══════════════════════════════════════════
@@ -626,7 +624,7 @@ class PlatformMixin:
                         )
                     else:
                         report.append(
-                            f"  ⏱️  Last poll: ❌ {mins/60:.1f} ساعت پیش"
+                            f"  ⏱️  Last poll: ❌ {mins / 60:.1f} ساعت پیش"
                         )
                 else:
                     report.append("  ⏱️  Last poll: ❌ هیچ")
@@ -685,7 +683,7 @@ class PlatformMixin:
             from config import CHROME_PATH
             import os as _os
             if CHROME_PATH and _os.path.exists(CHROME_PATH):
-                report.append(f"  🌐 مرورگر: ✅ Chrome موجود")
+                report.append("  🌐 مرورگر: ✅ Chrome موجود")
             else:
                 report.append(
                     "  🌐 مرورگر: ⚠️ CHROME_PATH تنظیم نشده"
@@ -831,7 +829,7 @@ class PlatformMixin:
                 collector.connect(), timeout=120
             )
             if not ok:
-                return f"❌ connect ناموفق"
+                return "❌ connect ناموفق"
 
             t_conn = time.monotonic() - t0
 
@@ -885,22 +883,10 @@ class PlatformMixin:
             )
         return f"⚪ {platform} — غیرفعال"
 
-    async def _list_all_platforms(self) -> str:
-        """لیست همه پلتفرم‌ها."""
-        pm = await PlatformManager.get()
-        active = await pm.list_active()
-
-        lines = ["📋 پلتفرم‌ها:"]
-        for p in _PLATFORM_MAP.keys():
-            if p in active:
-                lines.append(f"  🟢 {p} — فعال")
-            else:
-                lines.append(f"  ⚪ {p} — غیرفعال")
-        return "\n".join(lines)  
-
     # ═══════════════════════════════════════════
     # 🆕 کنترل پلتفرم — فقط با دستور
     # ═══════════════════════════════════════════
+
     async def _control_platform(
         self,
         platform: str = "",
@@ -960,11 +946,26 @@ class PlatformMixin:
             return f"❌ کنترلر {platform} ساخته نشد"
 
         # ─── اجرا ───
-        try:
-            method = getattr(controller, action, None)
-            if method is None:
-                return f"❌ کار «{action}» پیاده نشده"
+        # ─── نگاشت صریح action → method ───
+        _ACTION_METHODS: dict[str, str] = {
+            "search": "search",
+            "join": "join",
+            "leave": "leave",
+            "send": "send_message",
+            "forward": "forward_message",
+            "pin": "pin_message",
+            "delete_message": "delete_message",
+        }
 
+        method_name = _ACTION_METHODS.get(action)
+        if method_name is None:
+            return f"❌ کار «{action}» پیاده نشده"
+
+        method = getattr(controller, method_name, None)
+        if method is None:
+            return f"❌ متد «{method_name}» در کنترلر نیست"
+
+        try:
             # ساخت kwargs
             kwargs = {}
             if query:
@@ -1001,7 +1002,7 @@ class PlatformMixin:
             f"  امروز: {stats['today']}/{stats['max_day']}\n"
             f"  این ساعت: {stats['this_hour']}/{stats['max_hour']}\n"
             f"  ساعت کاری: {stats['work_hours']}"
-        )        
+        )
 
 
 # ═══════════════════════════════════════════

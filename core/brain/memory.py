@@ -512,6 +512,7 @@ class PersistentMemory:
             100,
             int(max_rows or _PERSISTENT_MAX_ROWS or 100_000),
         )
+        self._cleanup_counter = 0
 
         # ─── ساخت پوشه ───
         try:
@@ -700,6 +701,13 @@ class PersistentMemory:
     def _maybe_cleanup(self, conn) -> None:
         """اگر از سقف گذشت، قدیمی‌ترین‌ها را حذف کن."""
         try:
+            # 🎯 FIX: throttle — فقط هر ۵۰ insert یک بار
+            self._cleanup_counter = (
+                getattr(self, "_cleanup_counter", 0) + 1
+            )
+            if self._cleanup_counter % 50 != 0:
+                return
+
             row = conn.execute(
                 "SELECT COUNT(*) FROM memory"
             ).fetchone()
@@ -766,15 +774,23 @@ class PersistentMemory:
                 with sqlite3.connect(self.db_path) as conn:
                     conn.row_factory = sqlite3.Row
 
-                    # ─── FTS اول ───
                     if query and query.strip():
                         try:
+                            # sanitize برای FTS5: هر توکن را quote کن
+                            safe_tokens = [
+                                f'"{tok}"'
+                                for tok in query.split()
+                                if tok.strip()
+                            ]
+                            fts_query = " OR ".join(safe_tokens)
+                            if not fts_query:
+                                raise ValueError("empty fts query")
                             sql = """
                                 SELECT m.* FROM memory m
                                 JOIN memory_fts f ON m.id = f.rowid
                                 WHERE memory_fts MATCH ?
                             """
-                            params: list[Any] = [query]
+                            params: list[Any] = [fts_query]
                             if category:
                                 sql += " AND m.category = ?"
                                 params.append(category)

@@ -22,6 +22,7 @@
 """
 from __future__ import annotations
 
+import ast
 import os
 import re
 import subprocess
@@ -117,8 +118,12 @@ def _run_tool(
         dict با کلیدهای ok، count، output، error.
     """
     try:
-        # اگه به‌صورت module نصب شده، با python -m اجرا کن
-        cmd = [sys.executable, "-m", tool_name] + args
+        import shutil
+        exe = shutil.which(tool_name)
+        if exe:
+            cmd = [exe] + args
+        else:
+            cmd = [sys.executable, "-m", tool_name] + args
 
         r = subprocess.run(
             cmd,
@@ -214,7 +219,7 @@ def _categorize_flake8(output: str) -> dict[str, list[str]]:
     categories: dict[str, list[str]] = {
         "style": [],      # E، W
         "logic": [],      # F (pyflakes)
-        "complexity": [], # C
+        "complexity": [],  # C
         "other": [],
     }
 
@@ -487,28 +492,16 @@ def fix_fstrings(
     paths: str = "",
     dry_run: bool = True,
 ) -> dict[str, Any]:
-    """درست کردن f-string های بی‌placeholder.
-
-    ⚠️ این ابزار فایل‌ها رو تغییر می‌ده! قبلش بکاپ بگیر.
-
-    Args:
-        paths: مسیرها با فاصله.
-        dry_run: اگه True باشه، فقط نشون می‌ده (تغییر نمی‌ده).
-
-    Returns:
-        dict با لیست فایل‌های تغییر یافته.
-    """
+    """درست کردن f-string های بی‌placeholder با AST (نه regex)."""
     if not paths:
         paths = _DEFAULT_PATHS_STR
 
-    # ─── پیدا کردن ریشه پروژه ───
     try:
         from config import BASE_DIR
         cwd = Path(BASE_DIR)
     except Exception:
         cwd = Path.cwd()
 
-    # ─── پیدا کردن فایل‌ها ───
     files_to_check: list[Path] = []
     for path_str in paths.split():
         p = cwd / path_str
@@ -516,13 +509,6 @@ def fix_fstrings(
             files_to_check.append(p)
         elif p.is_dir():
             files_to_check.extend(p.rglob("*.py"))
-
-    # ─── regex برای f-string های بی‌placeholder ───
-    # الگو: f"..." یا f'...' که داخلشون {} نداره
-    # ⚠️ ساده و امن — فقط رشته‌های تک‌خطی
-    pattern = re.compile(
-        r'(?<![a-zA-Z0-9_])f(["\'])(?:(?!\1)[^{}\\]|\\.)*\1'
-    )
 
     results: dict[str, Any] = {
         "ok": True,
@@ -535,43 +521,51 @@ def fix_fstrings(
 
     for fpath in files_to_check:
         try:
-            content = fpath.read_text(encoding="utf-8")
-            original = content
-
-            # جایگزینی: f"..." → "..."
-            new_content = pattern.sub(
-                lambda m: f"{m.group(1)}{m.group(2)}",  # فقط quote
-                content,
-            )
-
-            if new_content == original:
+            source = fpath.read_text(encoding="utf-8")
+            try:
+                tree = ast.parse(source)
+            except SyntaxError as e:
+                results["errors"].append({
+                    "file": str(fpath.relative_to(cwd)),
+                    "error": f"SyntaxError: {e}",
+                })
                 continue
 
-            # شمارش تغییرات
-            count = len(pattern.findall(original))
+            fixable: list[ast.JoinedStr] = []
+            for node in ast.walk(tree):
+                if isinstance(node, ast.JoinedStr):
+                    has_format = any(
+                        isinstance(v, ast.FormattedValue)
+                        for v in node.values
+                    )
+                    if not has_format:
+                        fixable.append(node)
+
+            if not fixable:
+                continue
 
             if not dry_run:
-                # بکاپ
+                new_source = _strip_f_from_joinedstr(source, fixable)
+                if new_source == source:
+                    continue
                 try:
                     from core.brain.constants import BACKUP_DIR
                     from datetime import datetime as _dt
                     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
                     ts = _dt.now().strftime("%Y%m%d_%H%M%S_%f")
-                    backup = BACKUP_DIR / f"{fpath.stem}_{ts}.py"
-                    backup.write_text(original, encoding="utf-8")
+                    (BACKUP_DIR / f"{fpath.stem}_{ts}.py").write_text(
+                        source, encoding="utf-8"
+                    )
                 except Exception:
                     pass
-
-                # نوشتن
-                fpath.write_text(new_content, encoding="utf-8")
+                fpath.write_text(new_source, encoding="utf-8")
                 results["files_fixed"] += 1
 
             results["fixes"].append({
                 "file": str(fpath.relative_to(cwd)),
-                "count": count,
+                "count": len(fixable),
                 "applied": not dry_run,
             })
-
         except Exception as e:
             results["errors"].append({
                 "file": str(fpath),
@@ -592,9 +586,35 @@ def fix_fstrings(
     return results
 
 
+def _strip_f_from_joinedstr(
+    source: str, nodes: list[ast.JoinedStr]
+) -> str:
+    """حذف پیشوند f از JoinedStr های بدون placeholder.
+
+    از lineno/col_offset استفاده می‌کند.
+    multi-line را دست نمی‌زند (احتیاط).
+    """
+    lines = source.splitlines(keepends=True)
+    nodes_sorted = sorted(
+        nodes, key=lambda n: (n.lineno, n.col_offset), reverse=True
+    )
+    for node in nodes_sorted:
+        if node.lineno != node.end_lineno:
+            continue
+        line_idx = node.lineno - 1
+        if line_idx >= len(lines):
+            continue
+        line = lines[line_idx]
+        start = node.col_offset
+        if start < len(line) and line[start] in "fF":
+            lines[line_idx] = line[:start] + line[start + 1:]
+    return "".join(lines)
+
 # ═══════════════════════════════════════════════════════════
 # helper: گزارش خوانا
 # ═══════════════════════════════════════════════════════════
+
+
 def format_audit_report(result: dict[str, Any]) -> str:
     """تبدیل خروجی audit_code به متن خوانا.
 

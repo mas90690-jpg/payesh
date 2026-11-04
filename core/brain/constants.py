@@ -265,10 +265,9 @@ CHUNK_MAX_PER_FILE: int = _env_int(
 
 # آستانه‌ای که بالاتر از آن chunk_auto فعال می‌شود
 CHUNK_AUTO_THRESHOLD: int = _env_int(
-    "BRAIN_CHUNK_AUTO_THRESHOLD", 80_000,
-    min_val=10_000, max_val=5_000_000,
+    "BRAIN_CHUNK_AUTO_THRESHOLD", 20_000,
+    min_val=5_000, max_val=5_000_000,
 )
-
 
 # ═══════════════════════════════════════════════════════════
 # 🆕 Persistent Memory (حافظهٔ SQLite)
@@ -406,11 +405,19 @@ COMPRESS_THRESHOLD: int = _env_int(
 # ═══════════════════════════════════════════════════════════
 # مدل و provider (از config.AI)
 # ═══════════════════════════════════════════════════════════
-DEFAULT_MODEL: str = (
-    (AI or {}).get("model")
-    or _env_str("OLLAMA_MODEL", "qwen2.5:3b")
-    or "qwen2.5:3b"
-)
+_ai_model = (AI or {}).get("model") or ""
+_ai_priority = ((AI or {}).get("priority") or "auto").lower()
+
+if _ai_model and not _ai_model.startswith("ollama"):
+    DEFAULT_MODEL: str = _ai_model
+elif _ai_priority == "deepseek":
+    DEFAULT_MODEL: str = _env_str(
+        "DEEPSEEK_MODEL", "deepseek-chat"
+    )
+else:
+    DEFAULT_MODEL: str = (
+        _ai_model or _env_str("OLLAMA_MODEL", "qwen2.5:3b")
+    )
 
 DEFAULT_PROVIDER: str = (
     (AI or {}).get("priority")

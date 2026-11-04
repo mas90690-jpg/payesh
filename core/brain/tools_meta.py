@@ -132,24 +132,23 @@ _ALLOWED_TOOLS_RAW: dict[str, dict] = {
     # ═══ اجرا (high) ═══
     "execute_command": _tool("high", True),
     "execute_python": _tool("high", True),
-    
+
     # ═══ پلتفرم‌ها ═══
     "start_platform": _tool("medium", True),
     "stop_platform": _tool("medium", False),
     "platform_health": _tool("low"),
     "platform_diagnose": _tool("low"),
     "platform_run_once": _tool("medium", True),
-    "list_platforms": _tool("low"),   
+    "list_platforms": _tool("low"),
 
     # 🆕 اضافه کن:
     "diagnose_platform": _tool("low"),
     "run_platform_as_user": _tool("medium", True),
-    "list_all_platforms": _tool("low"),   
 
     # ═══ 🆕 کنترل پلتفرم ═══
     "control_platform": _tool("medium", True),
     "control_stats": _tool("low"),
-    
+
 }
 
 
@@ -218,6 +217,7 @@ def _td(
                 "type": "object",
                 "properties": props,
                 "required": list(required),
+                "additionalProperties": False,
             },
         },
     }
@@ -866,7 +866,7 @@ TOOL_DEFINITIONS: list[dict] = [
         ["platform", "seconds"],
     ),
     _td("get_access_summary", "خلاصهٔ دسترسی‌ها", {}, []),
-    
+
     # ═══ پلتفرم‌ها ═══
     _td(
         "start_platform",
@@ -938,7 +938,7 @@ TOOL_DEFINITIONS: list[dict] = [
         [],
         returns="لیست پلتفرم‌ها",
     ),
-    
+
     # ═══ 🆕 ریشه‌یابی ═══
     _td(
         "diagnose_platform",
@@ -977,12 +977,6 @@ TOOL_DEFINITIONS: list[dict] = [
         },
         ["platform"],
     ),
-    _td(
-        "list_all_platforms",
-        "لیست همه پلتفرم‌ها با وضعیت",
-        {},
-        [],
-    ), 
 
     # ═══ 🆕 کنترل پلتفرم — فقط با دستور ═══
     _td(
@@ -1043,13 +1037,47 @@ TOOL_DEFINITIONS: list[dict] = [
         },
         ["platform"],
     ),
-    
+
 ]
 
+# ═══════════════════════════════════════════════════════════
+# اعتبارسنجی sync — در import زمان اجرا می‌شود
+# ═══════════════════════════════════════════════════════════
+
+
+def _validate_tool_sync() -> list[str]:
+    """چک می‌کند دو منبع (allowed, definitions) هم‌خوان باشند."""
+    errors: list[str] = []
+    def_names = {td["function"]["name"] for td in TOOL_DEFINITIONS}
+    allowed_names = set(_ALLOWED_TOOLS_RAW)
+
+    only_in_defs = def_names - allowed_names
+    only_in_allowed = allowed_names - def_names
+
+    if only_in_defs:
+        errors.append(
+            f"در definitions ولی نه allowed: {sorted(only_in_defs)}"
+        )
+    if only_in_allowed:
+        errors.append(
+            f"در allowed ولی نه definitions: {sorted(only_in_allowed)}"
+        )
+    return errors
+
+
+_tool_sync_errors = _validate_tool_sync()
+if _tool_sync_errors:
+    import warnings
+    for _err in _tool_sync_errors:
+        warnings.warn(
+            f"[BRAIN:tools] ناهم‌خوانی: {_err}", stacklevel=2
+        )
 
 # ═══════════════════════════════════════════════════════════
 # API عمومی
 # ═══════════════════════════════════════════════════════════
+
+
 def build_tool_definitions() -> list[dict]:
     """🎯 FIX: برگرداندن deep-copy از TOOL_DEFINITIONS."""
     return copy.deepcopy(TOOL_DEFINITIONS)

@@ -134,13 +134,14 @@ class PersianBrainHandler:
 
             # ─── Windows-specific ───
             if platform.system() == "Windows":
-                # 🐛 FIX: `color` و `chcp` جدا در try/except
+                import subprocess as _sp
                 try:
-                    os.system("color")
-                except Exception:
-                    pass
-                try:
-                    os.system("chcp 65001 > nul 2>&1")
+                    _sp.run(
+                        ["chcp", "65001"],
+                        shell=False,
+                        capture_output=True,
+                        timeout=2,
+                    )
                 except Exception:
                     pass
 
@@ -232,18 +233,22 @@ def safe_path(
         )
         raise ValueError(f"⛔ مسیر نامعتبر: {e}")
 
-    # 🐛 FIX: case-insensitive check روی Windows
+    # 🐛 FIX: case-insensitive + normalize separator روی Windows
     try:
         full_str = str(full)
         base_str = str(base_resolved)
         if os.name == "nt":
-            full_str = full_str.lower()
-            base_str = base_str.lower()
+            # نرمال‌سازی جداکننده‌ها (forward → backslash)
+            full_str = full_str.replace("/", "\\").lower()
+            base_str = base_str.replace("/", "\\").lower()
+            _sep = "\\"
+        else:
+            _sep = "/"
 
         # چک پیشوند (با جداکننده)
         if not (
             full_str == base_str
-            or full_str.startswith(base_str + os.sep)
+            or full_str.startswith(base_str + _sep)
         ):
             log_warning(
                 f"⛔ [BRAIN:path] escape blocked | "

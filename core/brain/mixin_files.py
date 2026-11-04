@@ -308,9 +308,9 @@ class FilesMixin:
         end = min(start + cs, total_chars)
         piece = content[start:end]
 
-        # شماره خطوط این تکه
-        line_start = content[:start].count("\n") + 1
-        line_end = content[:end].count("\n") + 1
+        # شماره خطوط — بدون تخصیص رشتهٔ کپی
+        line_start = content.count("\n", 0, start) + 1
+        line_end = content.count("\n", 0, end) + 1
 
         # ─── header ───
         header = (
@@ -610,16 +610,19 @@ class FilesMixin:
         if not p.exists():
             return f"⚠️ فایل '{path}' وجود ندارد."
 
-        try:
+        def _compute() -> str:
             h = hashlib.md5(usedforsecurity=False)
             with open(p, "rb") as f:
-                for chunk in iter(
-                    lambda: f.read(8192), b""
-                ):
+                for chunk in iter(lambda: f.read(8192), b""):
                     h.update(chunk)
+            return h.hexdigest()
+
+        try:
+            import asyncio
+            md5 = await asyncio.to_thread(_compute)
             return (
                 f"🔐 {path}\n"
-                f"   MD5: {h.hexdigest()}"
+                f"   MD5: {md5}"
             )
         except Exception as e:
             return f"❌ خطا: {e}"
@@ -650,7 +653,9 @@ class FilesMixin:
 
         try:
             import glob
-            matches = glob.glob(
+            import asyncio
+            matches = await asyncio.to_thread(
+                glob.glob,
                 pattern,
                 root_dir=str(base),
                 recursive=True,
@@ -1115,7 +1120,9 @@ class FilesMixin:
         """افزودن به bot_knowledge.md — فقط append، هرگز overwrite.
 
         Args:
-            content: متن جدید (حداکثر ۱۰۰۰۰ کاراکتر).
+            content: متن جدید (حداکثر ۱۰۰۰۰ کاراکتر —
+                عمداً کمتر از write_file برای جلوگیری از
+                تورم دانشنامه).
             section: عنوان بخش.
 
         Returns:
@@ -1220,14 +1227,24 @@ class FilesMixin:
 
         # همزمان در MemoryStore
         try:
-            from core.adapters.memory_store import MemoryStore
-            store = MemoryStore()
-            store.add(
-                category="knowledge",
-                key=f"{section_clean}: {content_clean[:100]}",
-                value=content_clean,
-                importance=0.9,
-            )
+            from core.brain.memory import get_persistent_memory
+            pm = get_persistent_memory()
+            if pm is not None:
+                pm.remember(
+                    category="knowledge",
+                    key=f"{section_clean}: {content_clean[:100]}",
+                    value=content_clean,
+                    importance=0.9,
+                )
+            else:
+                from core.adapters.memory_store import MemoryStore
+                store = MemoryStore()
+                store.add(
+                    category="knowledge",
+                    key=f"{section_clean}: {content_clean[:100]}",
+                    value=content_clean,
+                    importance=0.9,
+                )
         except Exception as e:
             log_warning(f"⚠️ [BRAIN:append] memory_store | {e}")
 

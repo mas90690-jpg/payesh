@@ -350,7 +350,8 @@ class ReportsMixin:
             )
             if isinstance(report, dict):
                 return json.dumps(
-                    report, ensure_ascii=False, indent=2
+                    report, ensure_ascii=False, indent=2,
+                    default=str,
                 )[:_MAX_HEALTH_RESPONSE_LEN]
             return str(report)[:_MAX_HEALTH_RESPONSE_LEN]
         except TimeoutError:
@@ -408,9 +409,9 @@ class ReportsMixin:
             elif ago < 3600:
                 return (
                     f"📡 **{platform}**: "
-                    f"{ago/60:.0f} دقیقه"
+                    f"{ago / 60:.0f} دقیقه"
                 )
-            return f"📡 **{platform}**: {ago/3600:.1f} ساعت"
+            return f"📡 **{platform}**: {ago / 3600:.1f} ساعت"
         except Exception as e:
             log_error(
                 f"❌ [BRAIN:platform_status:{platform}] "
@@ -553,9 +554,14 @@ class ReportsMixin:
             return f"❌ خطا: {e}"
 
     def generate_report(self, days: int = 7) -> str:
-        """🎯 FIX: پارامتر days اعمال میشود (قبلاً بیاستفاده بود)."""
+        """گزارش Agent — آمار تجمعی (days فقط برای نمایش بازه است).
+
+        ⚠️ self.stats تجمعی از شروع است، نه بازه. برای بازه‌ای،
+        از learning_engine.successful_interactions (با timestamp)
+        استفاده کن.
+        """
         return (
-            f"📊 **گزارش Agent ({days} روز)**\n"
+            f"📊 **گزارش Agent (تجمعی — بازهٔ {days} روزه)**\n"
             f"دستورات: {self.stats['commands_processed']}\n"
             f"Agent: {self.stats['agents_run']}\n"
             f"خطاها: {self.stats['errors']}\n"

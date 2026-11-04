@@ -1,5 +1,6 @@
 """Brain — دستیار هوش مصنوعی پروژه."""
 from __future__ import annotations
+from core.adapters.memory_store import MemoryStore
 
 from core.brain.constants import (
     BACKUP_DIR,
@@ -51,5 +52,3 @@ __all__ = [
     "MAX_FILE_SIZE_BYTES", "MAX_CONTENT_LENGTH", "MAX_AGENT_STEPS",
     "MAX_CONTEXT_TOKENS", "CACHE_TTL_DAYS", "DEFAULT_MODEL", "MemoryStore",
 ]
-
-from core.adapters.memory_store import MemoryStore

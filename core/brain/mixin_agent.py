@@ -157,38 +157,24 @@ _LONG_TASK_LEN = _env_int(
 # ═══════════════════════════════════════════════════════════
 # 🎯 FIX: دستورات سریع — کامل‌تر
 # ═══════════════════════════════════════════════════════════
+# 🎯 فقط اسلش‌دار — DIRECT_COMMANDS بقیه را می‌گیرد
+# (جلوگیری از هم‌پوشانی با tools_meta._DIRECT_COMMANDS_RAW)
 _QUICK_COMMANDS: dict[str, str] = {
     # ─── status ───
     "/status": "status",
-    "وضعیت": "status",
-    "status": "status",
-    "آمار": "status",
     "/stats": "stats",
-    "stats": "stats",
     # ─── help ───
     "/help": "help",
-    "راهنما": "help",
-    "help": "help",
     "/راهنما": "help",
-    "کمک": "help",
     # ─── clear ───
     "/clear": "clear",
-    "پاک": "clear",
-    "clear": "clear",
     # ─── restart ───
     "/restart": "restart",
-    "ری‌استارت": "restart",
-    "restart": "restart",
     # ─── logs ───
     "/logs": "logs",
-    "لاگ": "logs",
-    "logs": "logs",
     # ─── health ───
     "/health": "health",
-    "سلامت": "health",
-    "health": "health",
 }
-
 
 class AgentMixin:
     """Agent loop و tool execution — به Brain اضافه می‌شود."""
@@ -389,7 +375,7 @@ class AgentMixin:
                 f"❌ [BRAIN:client] {type(e).__name__}: {e}"
             )
             self.client = None
-            
+
     # ═══════════════════════════════════════════
     # Background index
     # ═══════════════════════════════════════════
@@ -403,7 +389,7 @@ class AgentMixin:
                 f"{type(e).__name__}: {e}"
             )
             self._index_started = False  # 🎯 اجازهٔ retry
-            
+
     def _build_tools(self) -> list[dict]:
         """ساخت لیست تعریف ابزارها."""
         return build_tool_definitions()
@@ -667,8 +653,12 @@ class AgentMixin:
         try:
             # ─── cache ───
             try:
+                lessons_hash = hash(
+                    tuple(getattr(self, "_lessons", [])[:3])
+                )
+                cache_key = f"{mode}|{task}|{lessons_hash}"
                 cached = self.agent_cache.get(
-                    task, self.model
+                    cache_key, self.model
                 )
             except Exception as e:
                 log_warning(
@@ -744,6 +734,28 @@ class AgentMixin:
                         )
                     break
 
+                # 🎯 tool_choice: اگر تسک با ONLY شروع شد، ابزار اجباری
+                _tool_choice: Any = "auto"
+                _only_match = re.match(
+                    r"^ONLY\s+(\w+)", task.strip()
+                )
+                if _only_match:
+                    _forced = _only_match.group(1)
+                    if _forced in self.TOOL_MAP:
+                        _tool_choice = {
+                            "type": "function",
+                            "function": {"name": _forced},
+                        }
+                        log_info(
+                            f"🔒 [BRAIN:agent] tool_choice="
+                            f"{_forced} (اجباری)"
+                        )
+                    else:
+                        log_warning(
+                            f"⚠️ [BRAIN:agent] ONLY {_forced} "
+                            f"نامعتبر — auto"
+                        )
+
                 # ─── API call (با timeout) ───
                 try:
                     response = await asyncio.wait_for(
@@ -751,6 +763,7 @@ class AgentMixin:
                             model=selected_model,
                             messages=messages,
                             tools=self.tools_definition,
+                            tool_choice=_tool_choice,
                             temperature=_AGENT_TEMPERATURE,
                             max_tokens=_AGENT_MAX_TOKENS,
                         ),
@@ -839,8 +852,17 @@ class AgentMixin:
                         f"     🔧 [BRAIN:agent] {name} | "
                         f"args={str(args)[:LOG_PREVIEW_LEN]}"
                     )
-                    result = await self._execute_tool(name, args)
-                    result_str = str(result)
+                    # 🎯 FIX: tool message باید ALWAYS اضافه بشه
+                    try:
+                        result = await self._execute_tool(name, args)
+                        result_str = str(result)
+                    except Exception as e:
+                        log_error(
+                            f"❌ [BRAIN:agent] tool {name} "
+                            f"exception | {type(e).__name__}: {e}"
+                        )
+                        result_str = f"❌ خطا در {name}: {e}"
+
                     log_info(
                         f"     📤 [BRAIN:agent] {name} → "
                         f"{result_str[:LOG_PREVIEW_LEN]}"
@@ -885,7 +907,7 @@ class AgentMixin:
             # ─── cache ───
             try:
                 self.agent_cache.set(
-                    task, final_answer, self.model
+                    cache_key, final_answer, self.model
                 )
             except Exception as e:
                 log_warning(
@@ -1119,7 +1141,7 @@ class AgentMixin:
             return "⚠️ مغز در دسترس نیست (DeepSeek متصل نشد)."
 
         return self._offline_agent(text)
-        
+
     async def _handle_action(
         self, action: str, args: dict, original_text: str
     ) -> str | None:

@@ -54,7 +54,8 @@ class SystemMixin:
     # ─── Git ───
     async def _git_status(self) -> str:
         try:
-            r = subprocess.run(
+            r = await asyncio.to_thread(
+                subprocess.run,
                 ["git", "status", "--porcelain"],
                 capture_output=True, text=True, cwd=PROJECT_BASE,
             )
@@ -66,8 +67,9 @@ class SystemMixin:
     async def _git_diff(self, path: str = "") -> str:
         try:
             cmd = ["git", "diff"] + (["--", path] if path else [])
-            r = subprocess.run(
-                cmd, capture_output=True, text=True, cwd=PROJECT_BASE
+            r = await asyncio.to_thread(
+                subprocess.run,
+                cmd, capture_output=True, text=True, cwd=PROJECT_BASE,
             )
             return r.stdout[:MAX_CONTENT_LENGTH] or "✅ بدون تغییر"
         except Exception as e:
@@ -78,13 +80,15 @@ class SystemMixin:
         if self.read_only:
             return "⛔ حالت فقط‌خواندنی"
         try:
-            subprocess.run(
+            await asyncio.to_thread(
+                subprocess.run,
                 ["git", "add", "."],
                 cwd=PROJECT_BASE,
                 check=True,
                 capture_output=True,
             )
-            r = subprocess.run(
+            r = await asyncio.to_thread(
+                subprocess.run,
                 ["git", "commit", "-m", message],
                 capture_output=True, text=True, cwd=PROJECT_BASE,
             )
@@ -99,7 +103,8 @@ class SystemMixin:
 
     async def _git_log(self, n: int = 10) -> str:
         try:
-            r = subprocess.run(
+            r = await asyncio.to_thread(
+                subprocess.run,
                 ["git", "log", f"-{n}", "--oneline", "--decorate"],
                 capture_output=True, text=True, cwd=PROJECT_BASE,
             )
@@ -119,8 +124,9 @@ class SystemMixin:
                 if action == "create"
                 else ["git", "checkout", name]
             )
-            r = subprocess.run(
-                cmd, capture_output=True, text=True, cwd=PROJECT_BASE
+            r = await asyncio.to_thread(
+                subprocess.run,
+                cmd, capture_output=True, text=True, cwd=PROJECT_BASE,
             )
             return r.stdout[:2000] or f"✅ برنچ {name}"
         except Exception as e:
@@ -267,7 +273,8 @@ class SystemMixin:
             except (TypeError, ValueError):
                 timeout = int(DEFAULT_TIMEOUT_S)
 
-            r = subprocess.run(
+            r = await asyncio.to_thread(
+                subprocess.run,
                 tokens,
                 shell=False,
                 capture_output=True,
@@ -329,7 +336,7 @@ class SystemMixin:
             )
             lines = [
                 f"{p['pid']:>6}  {p['name'][:25]:<25} "
-                f"CPU:{p.get('cpu_percent',0):>5.1f}%"
+                f"CPU:{p.get('cpu_percent', 0):>5.1f}%"
                 for p in procs[:limit]
             ]
             return "\n".join(lines) or "📭 پردازه‌ای نیست."
@@ -365,7 +372,8 @@ class SystemMixin:
     async def _ping_host(self, host: str) -> str:
         try:
             param = "-n" if os.name == "nt" else "-c"
-            r = subprocess.run(
+            r = await asyncio.to_thread(
+                subprocess.run,
                 ["ping", param, "2", host],
                 capture_output=True, text=True, timeout=10,
             )
@@ -380,7 +388,8 @@ class SystemMixin:
             if path:
                 cmd.append(path)
             cmd += ["-v", "--tb=short", "-x"]
-            r = subprocess.run(
+            r = await asyncio.to_thread(
+                subprocess.run,
                 cmd, shell=False, capture_output=True, text=True,
                 timeout=TESTS_TIMEOUT_S, cwd=PROJECT_BASE,
             )
@@ -393,12 +402,13 @@ class SystemMixin:
             return "⏰ زمان تست به پایان رسید."
         except Exception as e:
             return f"❌ خطا: {e}"
-            
+
     async def _run_tests_with_coverage(self, path: str) -> str:
         try:
             cmd = [sys.executable, "-m", "pytest", path,
                    "--cov=.", "--cov-report=html"]
-            r = subprocess.run(
+            r = await asyncio.to_thread(
+                subprocess.run,
                 cmd, shell=False, capture_output=True, text=True,
                 timeout=PYTEST_COVERAGE_TIMEOUT_S, cwd=PROJECT_BASE,
             )
@@ -408,10 +418,11 @@ class SystemMixin:
             )
         except Exception as e:
             return f"❌ خطا: {e}"
-            
+
     async def _analyze_security(self, path: str) -> str:
         try:
-            r = subprocess.run(
+            r = await asyncio.to_thread(
+                subprocess.run,
                 ["bandit", "-r", path, "-f", "txt"],
                 capture_output=True, text=True,
                 timeout=BANDIT_TIMEOUT_S,
@@ -438,7 +449,8 @@ class SystemMixin:
             destination = f"Project_Backup_{ts}.zip"
         try:
             dest_path = self._safepath(destination)
-            shutil.make_archive(
+            await asyncio.to_thread(
+                shutil.make_archive,
                 str(dest_path).replace(".zip", ""),
                 "zip",
                 PROJECT_BASE,
@@ -506,7 +518,8 @@ class SystemMixin:
             f.write(full_code)
             tmp = f.name
         try:
-            r = subprocess.run(
+            r = await asyncio.to_thread(
+                subprocess.run,
                 [sys.executable, tmp],
                 capture_output=True, text=True,
                 timeout=PY_EXEC_TIMEOUT_S,
@@ -531,7 +544,10 @@ class SystemMixin:
     async def _analyze_code(self, path: str) -> str:
         p = self._safepath(path)
         try:
-            tree = ast.parse(p.read_text(encoding="utf-8"))
+            source = await asyncio.to_thread(
+                p.read_text, encoding="utf-8"
+            )
+            tree = ast.parse(source)
             funcs = [
                 n.name for n in ast.walk(tree)
                 if isinstance(n, ast.FunctionDef)
@@ -601,7 +617,8 @@ class SystemMixin:
             )
 
         try:
-            t0 = asyncio.get_event_loop().time()
+            import time as _time
+            t0 = _time.monotonic()
             # اجرا در thread جدا (چون subprocess blocking است)
             result = await asyncio.to_thread(
                 audit_code,
@@ -610,7 +627,7 @@ class SystemMixin:
                 include_vulture=include_vulture,
                 include_bandit=include_bandit,
             )
-            elapsed = asyncio.get_event_loop().time() - t0
+            elapsed = _time.monotonic() - t0
 
             # ─── گزارش خوانا ───
             report = format_audit_report(result)

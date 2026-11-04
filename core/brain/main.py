@@ -11,7 +11,7 @@
       * `file_exists`  → `_file_exists`
       * `file_hash`    → `_file_hash`
       * `find_files`   → `_find_files`
-  - 🎯 مجموع ابزارها: ۵۳ (قبلاً ۴۵)
+  - 🎯 مجموع ابزارها: 63 (قبلاً ۴۵)
   - ✅ حفظ همهٔ FIXهای نسخهٔ ۵:
       * `_lessons` قبل از `learning_engine`.
       * `l` → `item` (E741).
@@ -20,6 +20,7 @@
 """
 from __future__ import annotations
 from core.brain.mixin_platforms import PlatformMixin
+import os
 import threading
 import time
 from datetime import datetime
@@ -53,6 +54,7 @@ from core.brain.mixin_system import SystemMixin
 from core.brain.utils import PersianBrainHandler
 from core.kernel.event_bus import EventBus
 from core.kernel.logger import (
+    log_error,
     log_info,
     log_success,
     log_warning,
@@ -63,7 +65,7 @@ from core.kernel.logger import (
 # لیست ابزارهای موردانتظار (نام → نام متد)
 # ═══════════════════════════════════════════════════════════
 _TOOL_METHODS: dict[str, str] = {
-    # ═══ فایل (read) — ۹ ابزار ═══
+    # ═══ فایل (read) — ۱۰ ابزار ═══
     "read_file": "_read_file",
     "read_all": "_read_all",              # 🆕
     "read_chunk": "_read_chunk",          # 🆕
@@ -75,7 +77,7 @@ _TOOL_METHODS: dict[str, str] = {
     "find_files": "_find_files",          # 🆕
     "list_directory": "_list_directory",
 
-    # ═══ فایل (write) — ۴ ابزار ═══
+    # ═══ فایل (write) — ۵ ابزار ═══
     "write_file": "_write_file",
     "edit_file": "_edit_file",
     "append_knowledge": "_append_knowledge",
@@ -89,7 +91,7 @@ _TOOL_METHODS: dict[str, str] = {
     "git_log": "_git_log",
     "git_branch": "_git_branch",
 
-    # ═══ اجرا — ۴ ابزار ═══
+    # ═══ اجرا — ۵ ابزار ═══
     "execute_command": "_execute_command",
     "execute_python": "_execute_python",
     "run_tests": "_run_tests",
@@ -127,7 +129,7 @@ _TOOL_METHODS: dict[str, str] = {
     "plan_task": "_plan_task",
     "backup_project": "_backup_project",
 
-    # ═══ تنظیمات — ۵ ابزار ═══
+    # ═══ تنظیمات — ۶ ابزار ═══
     "get_setting": "_get_setting",
     "set_setting": "_set_setting",
     "toggle_platform": "_toggle_platform",
@@ -139,7 +141,7 @@ _TOOL_METHODS: dict[str, str] = {
     "audit_code": "_audit_code",
     "audit_file": "_audit_file",
     "fix_fstrings": "_fix_fstrings",
-    
+
     # ═══ پلتفرم‌ها ═══
     "start_platform": "_start_platform",
     "stop_platform": "_stop_platform",
@@ -151,11 +153,10 @@ _TOOL_METHODS: dict[str, str] = {
     # 🆕 اضافه کن:
     "diagnose_platform": "_diagnose_platform",
     "run_platform_as_user": "_run_platform_as_user",
-    "list_all_platforms": "_list_all_platforms",
-    
+
     # 🆕 کنترل پلتفرم
     "control_platform": "_control_platform",
-    "control_stats": "_control_stats",    
+    "control_stats": "_control_stats",
 }
 
 
@@ -280,6 +281,10 @@ class Brain(
         self.last_read_file: str | None = None
         self.tools_definition: list[dict] = self._build_tools()
 
+        # 🎯 FIX: ساخت lazy TOOL_MAP در init (نه import)
+        if not Brain.TOOL_MAP:
+            Brain.TOOL_MAP = _build_tool_map()
+
         self.stats: dict[str, Any] = {
             "commands_processed": 0,
             "agents_run": 0,
@@ -320,13 +325,7 @@ class Brain(
 # ساخت TOOL_MAP — با بررسی وجود هر متد
 # ═══════════════════════════════════════════════════════════
 def _build_tool_map() -> dict[str, Any]:
-    """🎯 ساخت TOOL_MAP با چک وجود هر متد.
-
-    اگر متدی در کلاس نباشد، به‌جای crash، warning می‌دهد.
-
-    Returns:
-        dict {tool_name: method}.
-    """
+    """ساخت TOOL_MAP با چک وجود هر متد."""
     tool_map: dict[str, Any] = {}
     missing: list[str] = []
 
@@ -336,12 +335,45 @@ def _build_tool_map() -> dict[str, Any]:
         else:
             missing.append(f"{tool_name}→{method_name}")
 
-    if missing:
+    # چک هم‌خوانی سه لیست
+    from core.brain.tools_meta import ALLOWED_TOOLS, TOOL_DEFINITIONS
+    allowed_names = set(ALLOWED_TOOLS)
+    def_names = {td["function"]["name"] for td in TOOL_DEFINITIONS}
+    method_names = set(_TOOL_METHODS)
+
+    if method_names - allowed_names:
         log_warning(
+            f"⚠️ [BRAIN:toolmap] در methods ولی نه allowed: "
+            f"{sorted(method_names - allowed_names)}"
+        )
+    if allowed_names - def_names:
+        log_warning(
+            f"⚠️ [BRAIN:toolmap] در allowed ولی نه definitions: "
+            f"{sorted(allowed_names - def_names)}"
+        )
+    if def_names - allowed_names:
+        log_warning(
+            f"⚠️ [BRAIN:toolmap] در definitions ولی نه allowed: "
+            f"{sorted(def_names - allowed_names)}"
+        )
+
+    if missing:
+        _msg = (
             f"⚠️ [BRAIN:toolmap] {len(missing)} ابزار یافت نشد | "
             f"missing={missing[:5]}"
             + (f"... +{len(missing) - 5}" if len(missing) > 5 else "")
         )
+        # 🎯 FIX: در حالت strict، خطا بالا بده (نه فقط warning)
+        _strict = os.getenv(
+            "BRAIN_STRICT_TOOLMAP", "false"
+        ).strip().lower() == "true"
+        if _strict:
+            log_error(_msg)
+            raise RuntimeError(
+                f"STRICT_TOOLMAP: {len(missing)} ابزار گمشده: "
+                f"{missing}"
+            )
+        log_warning(_msg)
 
     log_success(
         f"✅ [BRAIN:toolmap] {len(tool_map)}/{len(_TOOL_METHODS)} "
@@ -350,9 +382,8 @@ def _build_tool_map() -> dict[str, Any]:
     return tool_map
 
 
-# 🎯 TOOL_MAP را به کلاس متصل می‌کنیم (بعد از تعریف کلاس و mixinها)
-Brain.TOOL_MAP = _build_tool_map()
-
+# 🎯 TOOL_MAP به‌صورت lazy در Brain.__init__ پر می‌شود (نه در import)
+Brain.TOOL_MAP = {}
 
 # ═══════════════════════════════════════════════════════════
 # Singleton
@@ -394,10 +425,10 @@ def get_brain(
             )
         else:
             updated: list[str] = []
-            if event_bus and not _brain_instance.event_bus:
+            if event_bus is not None and _brain_instance.event_bus is None:
                 _brain_instance.set_event_bus(event_bus)
                 updated.append("event_bus")
-            if db and not _brain_instance.db:
+            if db is not None and _brain_instance.db is None:
                 _brain_instance.set_database(db)
                 updated.append("db")
             if full_access and not _brain_instance.full_access:

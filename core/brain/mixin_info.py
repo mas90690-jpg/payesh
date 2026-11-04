@@ -23,7 +23,6 @@
 from __future__ import annotations
 
 import asyncio
-import glob
 import os
 import re
 import time
@@ -124,61 +123,57 @@ class InfoMixin:
         if not getattr(self, "semantic_search", None):
             return "❌ semantic_search در دسترس نیست."
 
-        if not self.semantic_search.collection:
-            return "❌ حافظهٔ معنایی غیرفعال است."
-
-        # 🎯 fallback به MemoryStore جدید
-        if not self.semantic_search.collection:
+        # ─── مسیر ۱: ChromaDB (اگر فعال) ───
+        if self.semantic_search.collection:
             try:
-                from core.adapters.memory_store import MemoryStore
-                store = MemoryStore()
-                results = store.query(
-                    category="knowledge",
-                    query=query,
-                    limit=n_results,
+                t0 = time.monotonic()
+                res = self.semantic_search.search(query, n_results)
+                elapsed_ms = (time.monotonic() - t0) * 1000
+                log_info(
+                    f"🔍 [BRAIN:sem:search] "
+                    f"q={query[:LOG_PREVIEW_LEN]!r} | "
+                    f"hits={len(res)} | {elapsed_ms:.0f}ms"
                 )
-                if results:
-                    lines = []
-                    for r in results:
-                        lines.append(f"📄 {r.get('key', '?')}")
-                        lines.append(f"   {r.get('value', '')[:200]}...")
+                if res:
+                    lines: list[str] = []
+                    for r in res:
+                        path = r.get("path", "?")
+                        content = (r.get("content") or "")[:200]
+                        lines.append(f"📄 {path}")
+                        lines.append(f"   {content}...")
                     return "\n".join(lines)
             except Exception as e:
-                log_warning(f"⚠️ [BRAIN:sem:fallback] {e}")
-            return "❌ حافظهٔ معنایی غیرفعال است."
-            
+                log_warning(
+                    f"⚠️ [BRAIN:sem:search] "
+                    f"{type(e).__name__}: {e}"
+                )
 
+        # ─── مسیر ۲: fallback به MemoryStore ───
         try:
-            t0 = time.monotonic()
-            res = self.semantic_search.search(query, n_results)
-            elapsed_ms = (time.monotonic() - t0) * 1000
-        except Exception as e:
-            log_error(
-                f"❌ [BRAIN:sem:search] "
-                f"{type(e).__name__}: {e}"
+            from core.adapters.memory_store import MemoryStore
+            store = MemoryStore()
+            results = store.query(
+                category="knowledge",
+                query=query,
+                limit=n_results,
             )
-            return f"❌ خطا در جستجوی معنایی: {e}"
+            if results:
+                lines = []
+                for r in results:
+                    lines.append(f"📄 {r.get('key', '?')}")
+                    lines.append(
+                        f"   {r.get('value', '')[:200]}..."
+                    )
+                return "\n".join(lines)
+        except Exception as e:
+            log_warning(f"⚠️ [BRAIN:sem:fallback] {e}")
 
-        log_info(
-            f"🔍 [BRAIN:sem:search] "
-            f"q={query[:LOG_PREVIEW_LEN]!r} | "
-            f"hits={len(res)} | {elapsed_ms:.0f}ms"
-        )
-
-        if not res:
-            return "🔍 نتیجه‌ای یافت نشد."
-
-        lines: list[str] = []
-        for r in res:
-            path = r.get("path", "?")
-            content = (r.get("content") or "")[:200]
-            lines.append(f"📄 {path}")
-            lines.append(f"   {content}...")
-        return "\n".join(lines)
+        return "🔍 نتیجه‌ای یافت نشد."
 
     # ═══════════════════════════════════════════
     # Grep search
     # ═══════════════════════════════════════════
+
     async def _grep_search(
         self, pattern: str, file_pattern: str = "*.py"
     ) -> str:
@@ -204,12 +199,25 @@ class InfoMixin:
         files_failed = 0
         t0 = time.monotonic()
 
+        # 🎯 FIX: فیلتر پوشه‌های سنگین — ۳۰ برابر سریع‌تر
+        _EXCLUDE_PARTS = frozenset({
+            "venv", ".venv", "env", ".env",
+            "node_modules", ".git", ".mypy_cache",
+            ".pytest_cache", ".ruff_cache", ".benchmarks",
+            "__pycache__", "backups", "media", "sessions",
+        })
         try:
-            matched_files = glob.glob(
-                f"**/{file_pattern}",
-                root_dir=PROJECT_BASE,
-                recursive=True,
-            )
+            from pathlib import Path as _Path
+            _root = _Path(PROJECT_BASE)
+            matched_files = [
+                str(p.relative_to(_root))
+                for p in _root.rglob(file_pattern)
+                if p.is_file()
+                and not any(
+                    part in _EXCLUDE_PARTS
+                    for part in p.parts
+                )
+            ]
         except Exception as e:
             log_error(
                 f"❌ [BRAIN:grep] glob | "
@@ -428,20 +436,32 @@ class InfoMixin:
             )
             return f"❌ خطا در دریافت: {err}"
 
-        # ─── parse ───
+        # ─── parse (در thread جدا — جلوگیری از بلاک event loop) ───
+        def _do_parse(raw_html: str) -> tuple[str | None, str]:
+            try:
+                soup = BeautifulSoup(raw_html, "html.parser")
+                for tag in soup(
+                    ["script", "style", "nav", "footer", "header", "noscript"]
+                ):
+                    tag.decompose()
+                return soup.get_text(separator="\n", strip=True), ""
+            except Exception as e:
+                return None, f"{type(e).__name__}: {e}"
+
         try:
-            soup = BeautifulSoup(html, "html.parser")
-            for tag in soup(
-                ["script", "style", "nav", "footer", "header", "noscript"]
-            ):
-                tag.decompose()
-            text = soup.get_text(separator="\n", strip=True)
+            text, perr = await asyncio.to_thread(_do_parse, html)
         except Exception as e:
             log_error(
                 f"❌ [BRAIN:web:browse] parse | "
                 f"{type(e).__name__}: {e} | url={url}"
             )
             return f"❌ خطا در parse: {e}"
+
+        if text is None:
+            log_error(
+                f"❌ [BRAIN:web:browse] parse | {perr} | url={url}"
+            )
+            return f"❌ خطا در parse: {perr}"
 
         log_info(
             f"🌐 [BRAIN:web:browse] {url} | "
@@ -509,7 +529,12 @@ class InfoMixin:
 
             try:
                 dst.parent.mkdir(parents=True, exist_ok=True)
-                base = str(dst).replace(".zip", "")
+                # 🐛 FIX: فقط پسوند انتهایی و case-insensitive
+                dst_str = str(dst)
+                if dst_str.lower().endswith(".zip"):
+                    base = dst_str[:-4]
+                else:
+                    base = dst_str
                 shutil.make_archive(base, "zip", src)
                 log_success(
                     f"✅ [BRAIN:zip:compress] {source} → {dest}"

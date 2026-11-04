@@ -264,18 +264,29 @@ class LearningEngine:
             )
 
         self._save_learned_data()
-                # 🎯 ذخیره در MemoryStore جدید
+
+        # 🎯 ذخیره در MemoryStore جدید
         try:
-            store = MemoryStore()
-            store.add(
-                category="interactions",
-                key=user_input[:200],
-                value=response[:500],
-                importance=1.0 if success else 0.3,
-            )
+            from core.brain.memory import get_persistent_memory
+            pm = get_persistent_memory()
+            if pm is not None:
+                pm.remember(
+                    category="interactions",
+                    key=user_input[:200],
+                    value=response[:500],
+                    importance=1.0 if success else 0.3,
+                )
+            else:
+                store = MemoryStore()
+                store.add(
+                    category="interactions",
+                    key=user_input[:200],
+                    value=response[:500],
+                    importance=1.0 if success else 0.3,
+                )
         except Exception as e:
             log_warning(f"⚠️ [BRAIN:learn] memory_store | {e}")
-            
+
         log_info(
             f"📝 [BRAIN:learn] ثبت | success={success}"
         )
@@ -337,6 +348,19 @@ class LearningEngine:
     def to_memory_store(self) -> None:
         """ذخیرهٔ همهٔ الگوها در MemoryStore جدید."""
         try:
+            from core.brain.memory import get_persistent_memory
+            pm = get_persistent_memory()
+            if pm is not None:
+                for key, data in self.learned_patterns.items():
+                    count = data.get("count", 0)
+                    keywords = data.get("keywords", [])
+                    pm.remember(
+                        category="patterns",
+                        key=key,
+                        value=f"count={count}, keywords={keywords}",
+                        importance=min(1.0, count / 10.0),
+                    )
+                return
             store = MemoryStore()
             for key, data in self.learned_patterns.items():
                 count = data.get("count", 0)
@@ -349,10 +373,12 @@ class LearningEngine:
                 )
         except Exception as e:
             log_warning(f"⚠️ [BRAIN:learn] to_memory_store | {e}")
-            
+
 # ═══════════════════════════════════════════════════════════
 # TaskPlanner
 # ═══════════════════════════════════════════════════════════
+
+
 class TaskPlanner:
     """برنامه‌ریزی چندمرحله‌ای با AI."""
 
@@ -553,7 +579,7 @@ Provide only corrected code.
                 response = (
                     await self.agent.client
                     .chat.completions.create(
-                        model="deepseek-v4-pro",
+                        model=self.agent.model,
                         messages=[{
                             "role": "user",
                             "content": prompt,
@@ -627,7 +653,7 @@ Return only test code.
         try:
             response = (
                 await self.agent.client.chat.completions.create(
-                    model="deepseek-v4-pro",
+                    model=self.agent.model,
                     messages=[{
                         "role": "user",
                         "content": prompt,
@@ -779,7 +805,7 @@ Review this code (bugs, security, smells, perf):
         try:
             response = (
                 await self.agent.client.chat.completions.create(
-                    model="deepseek-v4-pro",
+                    model=self.agent.model,
                     messages=[{
                         "role": "user",
                         "content": prompt,
@@ -797,10 +823,12 @@ Review this code (bugs, security, smells, perf):
                 f"❌ [BRAIN:review] {type(e).__name__}: {e}"
             )
             return f"❌ خطا در بازبینی: {e}"
-            
+
 # ═══════════════════════════════════════════════════════════
 # ProductLearner — یادگیری خودکار محصولات
 # ═══════════════════════════════════════════════════════════
+
+
 class ProductLearner:
     """یادگیری خودکار محصولات جدید از گفتگو.
 
@@ -814,14 +842,21 @@ class ProductLearner:
         self._learn_file = (
             BRAIN_DIR / "products_learned.json"
         )
+        # 🎯 FIX: سقف‌های env-based
+        self._max_pending = _env_int(
+            "BRAIN_PRODUCT_MAX_PENDING", 5000,
+            min_val=100, max_val=100_000,
+        )
+        self._max_learned = _env_int(
+            "BRAIN_PRODUCT_MAX_LEARNED", 2000,
+            min_val=100, max_val=50_000,
+        )
         self._pending: dict[str, int] = {}
         self._lock = threading.RLock()
+        # 🎯 FIX: کش set برای O(1) lookup
+        self._base_lower: set[str] | None = None
+        self._learned_lower: set[str] = set()
         self._load()
-
-        log_info(
-            f"🧬 [BRAIN:product_learner] آماده | "
-            f"file={self._learn_file.name}"
-        )
 
     # ═══════════════════════════════════════════
     # load / save
@@ -853,6 +888,9 @@ class ProductLearner:
                 return
 
             self._learned = data
+            # 🎯 FIX: سقف را روی دادهٔ لودشده هم اعمال کن
+            self._enforce_learned_cap()
+            self._rebuild_learned_index()
             log_info(
                 f"📚 [BRAIN:product_learner] لود شد | "
                 f"learned={len(data.get('products', {}))} برند"
@@ -869,13 +907,49 @@ class ProductLearner:
                 "updated_at": None,
             }
 
-    def _save(self) -> bool:
-        """ذخیره با atomic + fsync."""
-        self._learned["updated_at"] = (
-            datetime.now().isoformat()
-        )
-        return _atomic_write_json(
-            self._learn_file, self._learned
+    # ═══════════════════════════════════════════
+    # 🎯 FIX: سقف‌ها و ایندکس
+    # ═══════════════════════════════════════════
+    def _rebuild_learned_index(self) -> None:
+        """ساخت set برای lookup O(1)."""
+        self._learned_lower = {
+            p.lower()
+            for products in self.get_learned().values()
+            for p in products
+        }
+
+    def _enforce_learned_cap(self) -> None:
+        """اگر از سقف گذشت، قدیمی‌ترها را حذف کن (FIFO)."""
+        products = self._learned.get("products", {})
+        if not isinstance(products, dict):
+            return
+        bucket = products.get("یادگرفته")
+        if not isinstance(bucket, list):
+            return
+        overflow = len(bucket) - self._max_learned
+        if overflow > 0:
+            del bucket[:overflow]  # قدیمی‌ترها اول
+            log_warning(
+                f"⚠️ [BRAIN:product_learner:cap] "
+                f"evicted={overflow} | "
+                f"max={self._max_learned}"
+            )
+
+    def _enforce_pending_cap(self) -> None:
+        """اگر pending از سقف گذشت، کم‌شمارش‌ترین‌ها را حذف کن."""
+        overflow = len(self._pending) - self._max_pending
+        if overflow <= 0:
+            return
+        # کم‌تکرارترین‌ها اول حذف می‌شوند
+        victims = sorted(
+            self._pending.items(), key=lambda kv: kv[1]
+        )[:overflow]
+        for k, _ in victims:
+            self._pending.pop(k, None)
+        log_warning(
+            f"⚠️ [BRAIN:product_learner:cap] "
+            f"pending evicted={overflow} | "
+            f"max={self._max_pending}"
         )
 
     # ═══════════════════════════════════════════
@@ -949,76 +1023,97 @@ class ProductLearner:
                     self._pending.get(cand, 0) + 1
                 )
 
+            # 🎯 FIX: سقف pending
+            self._enforce_pending_cap()
             # ─── چک یادگیری ───
             self._maybe_learn()
 
     def _is_in_base(self, product: str) -> bool:
-        """آیا توی products.py هست؟"""
-        try:
-            from data.products import ALL_PRODUCTS
-            from data.products_en import ALL_PRODUCTS_EN
-
-            p_low = product.lower()
-            for p in ALL_PRODUCTS:
-                if p.lower() == p_low:
-                    return True
-            for p in ALL_PRODUCTS_EN:
-                if p.lower() == p_low:
-                    return True
-        except Exception:
-            pass
-        return False
+        """آیا توی products.py هست؟ (کش‌شده، O(1))"""
+        if self._base_lower is None:
+            try:
+                from data.products import ALL_PRODUCTS
+                from data.products_en import ALL_PRODUCTS_EN
+                self._base_lower = {
+                    p.lower()
+                    for p in (*ALL_PRODUCTS, *ALL_PRODUCTS_EN)
+                }
+            except Exception as e:
+                log_warning(
+                    f"⚠️ [BRAIN:product_learner:base] "
+                    f"{type(e).__name__}: {e}"
+                )
+                self._base_lower = set()
+        return product.lower() in self._base_lower
 
     def _is_learned(self, product: str) -> bool:
-        """آیا قبلاً یاد گرفته شده؟"""
-        p_low = product.lower()
-        for products in self.get_learned().values():
-            for p in products:
-                if p.lower() == p_low:
-                    return True
-        return False
+        """آیا قبلاً یاد گرفته شده؟ (set، O(1))"""
+        return product.lower() in self._learned_lower
 
-    @staticmethod
-    def _extract_candidates(text: str) -> list[str]:
-        """استخراج کاندیدهای محصول از متن."""
-        # ─── کلمه‌های کلیدی ───
-        KEYWORDS = (
-            "کود", "سم", "قارچ‌کش", "حشره‌کش",
-            "علف‌کش", "کلسیم", "منیزیم", "روی",
-            "آهن", "مس", "منگنز", "بور",
-            "نیتروژن", "فسفر", "پتاسیم",
-            "مایع", "پودر", "گرانول",
-            "محلول", "کنسانتره",
-        )
+    # 🎯 FIX: کامپایل یک‌بار در سطح کلاس (نه در هر فراخوانی)
+    _KEYWORDS = (
+        "کود", "سم", "قارچ‌کش", "حشره‌کش",
+        "علف‌کش", "کلسیم", "منیزیم", "روی",
+        "آهن", "مس", "منگنز", "بور",
+        "نیتروژن", "فسفر", "پتاسیم",
+        "مایع", "پودر", "گرانول",
+        "محلول", "کنسانتره",
+    )
+    # 🎯 FIX: یک regex واحد به‌جای ۱۹ regex جدا
+    _KW_RE = re.compile(
+        r"(?<!\w)(?:" + "|".join(
+            re.escape(k) for k in _KEYWORDS
+        ) + r")(?!\w)"
+    )
+    _STRIP_CHARS = "،.:؛!?؟«»\"'"
+    _MAX_TEXT_LEN = 4000  # 🎯 FIX: سقف ورودی (ضد DoS)
 
-        candidates: list[str] = []
+    @classmethod
+    def _extract_candidates(cls, text: str) -> list[str]:
+        """استخراج کاندیدهای محصول از متن.
 
-        # ─── پیدا کردن عبارت‌های ۱-۳ کلمه‌ای ───
+        🐛 FIX: یک regex کامپایل‌شده (نه ۱۹ بار در هر کلمه).
+        🐛 FIX: سقف طول ورودی.
+        🐛 FIX: dedup با dict (ترتیب حفظ می‌شود).
+        """
+        if not text:
+            return []
+
+        # 🎯 سقف ورودی — ضد DoS
+        if len(text) > cls._MAX_TEXT_LEN:
+            text = text[: cls._MAX_TEXT_LEN]
+
         words = text.split()
-        for i, word in enumerate(words):
-            w = word.strip("،.:؛!?؟«»\"'")
+        if not words:
+            return []
+
+        # 🎯 strip یک‌بار برای همه (نه دوبار)
+        clean = [w.strip(cls._STRIP_CHARS) for w in words]
+
+        # 🎯 dict به‌جای list → dedup + ترتیب پایدار
+        candidates: dict[str, None] = {}
+
+        for i, w in enumerate(clean):
             if len(w) < 3:
                 continue
+            if not cls._KW_RE.search(w):
+                continue
 
-            # ─── چک کلیدواژه ───
-            for kw in KEYWORDS:
-                if kw in w:
-                    # ─── ۱ کلمه ───
-                    candidates.append(w)
-                    # ─── ۲ کلمه ───
-                    if i + 1 < len(words):
-                        nxt = words[i + 1].strip(
-                            "،.:؛!?؟«»\"'"
-                        )
-                        if len(nxt) >= 3:
-                            candidates.append(f"{w} {nxt}")
-                    break
+            candidates[w] = None  # ۱ کلمه
 
-        return candidates
+            if i + 1 < len(clean):
+                nxt = clean[i + 1]
+                if len(nxt) >= 3:
+                    candidates[f"{w} {nxt}"] = None  # ۲ کلمه
+
+        return list(candidates)
 
     def _maybe_learn(self) -> None:
         """اگه تکرار کافی بود، یاد بگیر."""
-        MIN_REPEAT = 3
+        MIN_REPEAT = _env_int(
+            "BRAIN_PRODUCT_LEARN_MIN_REPEAT", 3,
+            min_val=1, max_val=20,
+        )
         learned_any = False
 
         for cand in list(self._pending.keys()):
@@ -1027,17 +1122,18 @@ class ProductLearner:
                 continue
 
             # ─── ذخیره ───
-            products = self._learned.setdefault(
-                "products", {}
-            )
-            if "یادگرفته" not in products:
-                products["یادگرفته"] = []
-            if cand not in products["یادگرفته"]:
-                products["یادگرفته"].append(cand)
+            products = self._learned.setdefault("products", {})
+            bucket = products.setdefault("یادگرفته", [])
+            if cand not in self._learned_lower:
+                bucket.append(cand)
+                self._learned_lower.add(cand.lower())
                 learned_any = True
 
-            # ─── حذف از pending ───
             self._pending.pop(cand, None)
+
+        # 🎯 FIX: اعمال سقف بعد از یادگیری
+        if learned_any:
+            self._enforce_learned_cap()
 
         if learned_any and self._save():
             log_success(
@@ -1060,4 +1156,4 @@ class ProductLearner:
                 ),
                 "pending": dict(self._pending),
                 "file": str(self._learn_file),
-            }           
+            }
