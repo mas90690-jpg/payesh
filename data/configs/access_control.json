@@ -1,6 +1,6 @@
 {
-  "version": "4.3.0",
-  "description": "کنترل دسترسی هوش — v4.3.0: هوش می‌تواند همه چیز را ببیند (فقط خواندن) اما فقط در محدودهٔ write مجاز است بنویسد.",
+  "version": "4.4.0",
+  "description": "کنترل دسترسی هوش — v4.4.0: هوش می‌تواند handlers/ را بخواند و بنویسد، اما core/collectors/analyzers را فقط بخواند.",
 
   "read": {
     "allow": [
@@ -50,6 +50,7 @@
 
   "write": {
     "allow": [
+      "handlers/**/*.py",
       "data/runtime/**",
       "data/sources/target_groups.txt",
       "data/sources/glossary.txt",
@@ -68,7 +69,6 @@
       "data/configs/**",
       "core/**",
       "collectors/**",
-      "handlers/**",
       "analyzers/**",
       "tests/**",
       "scripts/**",
