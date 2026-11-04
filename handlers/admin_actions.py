@@ -540,7 +540,7 @@ class AdminActions:
                     conn.close()
                 except Exception:
                     pass
-                    
+
     def status(self) -> str:
         """آمار کلی — با اسم پلتفرم فارسی."""
         import time as _t
@@ -589,7 +589,7 @@ class AdminActions:
                     conn.close()
                 except Exception:
                     pass
-                    
+
     async def health(self) -> str:
         """سلامت کامل — با اسم پلتفرم فارسی."""
         lines = ["🩺 سلامتِ کامل:"]
@@ -1005,7 +1005,7 @@ class AdminActions:
         except Exception:
             # امن: اگر نمی‌توانیم چک کنیم، فرض کن از env می‌خواند
             return True
-            
+
     def _update_env(self, key: str, value: str) -> tuple[bool, str]:
         """نوشتن atomic در .env + fsync — با اعتبارسنجی."""
         env_path = os.path.join(self.root, ".env")
@@ -1069,7 +1069,7 @@ class AdminActions:
             except Exception:
                 pass
             return False, f"{type(e).__name__}: {e}"
-            
+
     # ═══════════════════════════════════════
     # feature request / restart
     # ═══════════════════════════════════════
@@ -1249,7 +1249,6 @@ class AdminActions:
             )
             return f"❌ خطا در روشن کردن: {e}"
 
-
     async def stop_platform_direct(
         self, platform: str = "bale"
     ) -> str:
@@ -1266,7 +1265,7 @@ class AdminActions:
         log_info(
             f"🛑 [ADMIN:stop_platform] platform={platform}"
         )
-        
+
         # ─── چک پلتفرم ───
         try:
             from collectors.controller import list_platforms
@@ -1300,7 +1299,7 @@ class AdminActions:
                 f"{type(e).__name__}: {e}"
             )
             return f"❌ خطا در خاموش کردن: {e}"
-            
+
     async def search_platform(
         self, query: str, platform: str = "bale"
     ) -> str:

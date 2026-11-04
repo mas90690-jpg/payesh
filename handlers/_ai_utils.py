@@ -52,13 +52,13 @@ def _get_name_fa() -> dict[str, str]:
                 result[key] = str(v[0])
             else:
                 result[key] = str(k)
-                
+
     except Exception:
         result = {}
 
     _name_fa_cache = (mtime, result)
     return result
-    
+
 
 # ═══════════════════════════════════════════════════════════
 # ترجمهٔ اسم پلتفرم → فارسی
@@ -123,7 +123,8 @@ def canonical_platform(name: Any) -> str:
             return k
 
     return key
- 
+
+
 # ═══════════════════════════════════════════════════════════
 # cache markerهای bad (برای اعتبارسنجی AI)
 # ═══════════════════════════════════════════════════════════
@@ -150,7 +151,7 @@ def _get_bad_markers() -> tuple[tuple[str, ...], tuple[str, ...]]:
     _bad_markers_cache = (mtime, prefixes, markers)
     return prefixes, markers
 
-    
+
 # ═══════════════════════════════════════════════════════════
 # اعتبارسنجی پاسخ AI
 # ═══════════════════════════════════════════════════════════
@@ -180,7 +181,7 @@ def is_valid_ai_answer(ans: Any) -> bool:
             return False
 
     return True
-    
+
 
 # ═══════════════════════════════════════════════════════════
 # __all__

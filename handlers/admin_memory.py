@@ -80,7 +80,7 @@ class AdminMemory:
                 )
         except Exception:
             self._count_cache = 0
-            
+
     # ═══════════════════════════════════════════
     # helpers
     # ═══════════════════════════════════════════
@@ -296,7 +296,7 @@ class AdminMemory:
             self._count_cache = self.max_entries
 
         return True
-        
+
     # ═══════════════════════════════════════════
     # count
     # ═══════════════════════════════════════════

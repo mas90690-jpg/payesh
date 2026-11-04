@@ -352,6 +352,7 @@ class AutoSubscriber:
     # ═══════════════════════════════════════════
     # عیب‌یابی
     # ═══════════════════════════════════════════
+
     def get_subscriptions(self) -> list[tuple[str, str]]:
         """لیست subscriptionهای ثبت‌شده — برای debug."""
         return sorted(self._subscribed)

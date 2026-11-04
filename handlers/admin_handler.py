@@ -45,6 +45,21 @@ from config import (
 from data import paths as data_paths
 
 
+# عبارات مجاز برای حافظهٔ پایدار (فقط سلام/تشکر)
+_SAFE_MEMORY_REPLY: frozenset[str] = frozenset({
+    "سلام",
+    "خوبی",
+    "ممنون",
+    "مرسی",
+    "تشکر",
+    "خداحافظ",
+    "صبح بخیر",
+    "شب بخیر",
+    "سلام خوبی",
+    "چه خبر",
+})
+
+
 # ─── Optional imports (graceful) ───
 try:
     from core.manual.brain import get_manual_brain
@@ -379,7 +394,7 @@ class DomainGuard:
             return tpl.format(query=query[:80])
         except (KeyError, IndexError):
             return tpl
-            
+
     def get_empty_reply(self) -> str:
         return self._get_msg(
             "empty_reply",
@@ -684,7 +699,7 @@ class AdminHandler(BaseHandler):
                 f"{type(e).__name__}: {e}"
             )
             return None
-            
+
     # ═══════════════════════════════════════
     # BaseHandler
     # ═══════════════════════════════════════
@@ -916,8 +931,8 @@ class AdminHandler(BaseHandler):
                         f"❌ خطا در اجرای دستور: {e}",
                     )
                     return
-                    
-        # ═══════════════════════════════════════════
+
+        # ═══════════════════════════════════════════════
         # ۳) PersistentMemory — فقط برای سلام/تشکر
         # ═══════════════════════════════════════════
         if is_admin and text.strip() in _SAFE_MEMORY_REPLY:
@@ -930,7 +945,7 @@ class AdminHandler(BaseHandler):
                 )
                 await self._reply(raw, cached)
                 return
-                
+
         # ═══════════════════════════════════════════
         # ۴) Brain کامل — اول
         # ═══════════════════════════════════════════
@@ -992,7 +1007,7 @@ class AdminHandler(BaseHandler):
                     f"⚠️ [ADMIN:layer:manual] "
                     f"{type(e).__name__}: {e}"
                 )
-                
+
         # ═══════════════════════════════════════════
         # ۵) کاربر غیرمجاز
         # ═══════════════════════════════════════════
@@ -1231,7 +1246,7 @@ class AdminHandler(BaseHandler):
                 await sender(chat_id, ct, chunk)
             except Exception as e:
                 log_error(
-                    f"❌ [ADMIN:reply] chunk {i+1}/"
+                    f"❌ [ADMIN:reply] chunk {i + 1}/"
                     f"{len(chunks)} | "
                     f"{type(e).__name__}: {e}"
                 )
