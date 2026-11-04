@@ -123,9 +123,7 @@ _FALLBACK_REPORT_HEADERS: dict[str, str] = {
     "top_groups": "🏆 پرسرنخ‌ترین گروه‌ها:",
     "hot_keywords": "🔑 کلیدواژه‌های داغ:",
     "hot_brands": "🏢 برندهای داغ:",
-    "recommendation": (
-        "📌 توصیه: برای مشاهده جزئیات کامل، " "گزارش تخصصی را درخواست کنید."
-    ),
+    "recommendation": ("📌 توصیه: برای مشاهده جزئیات کامل، " "گزارش تخصصی را درخواست کنید."),
     "separator_70": "=" * 70,
     "separator_60": "=" * 60,
     "section_sep": "═" * 70,
@@ -164,17 +162,11 @@ def _load_report_headers() -> dict[str, str]:
                 merged[str(k)] = v
 
         _REPORT_HEADERS_LOADED_FROM_FILE = True
-        log_info(
-            f"✅ [REPORT:headers] {len(merged)} تیتر از "
-            f"report_headers.json بارگذاری شد"
-        )
+        log_info(f"✅ [REPORT:headers] {len(merged)} تیتر از " f"report_headers.json بارگذاری شد")
         return merged
 
     except Exception as e:
-        log_warning(
-            f"⚠️ [REPORT:headers] بارگذاری ناموفق | "
-            f"{type(e).__name__}: {e} — fallback"
-        )
+        log_warning(f"⚠️ [REPORT:headers] بارگذاری ناموفق | " f"{type(e).__name__}: {e} — fallback")
         _REPORT_HEADERS_LOADED_FROM_FILE = False
         return dict(_FALLBACK_REPORT_HEADERS)
 
@@ -368,23 +360,15 @@ def _load_cache() -> dict[str, Any]:
                     data = json.load(f) or {}
 
                 if not isinstance(data, dict):
-                    log_warning(
-                        f"⚠️ [REPORT:cache] cache dict نیست "
-                        f"(type={type(data).__name__}) — reset"
-                    )
+                    log_warning(f"⚠️ [REPORT:cache] cache dict نیست " f"(type={type(data).__name__}) — reset")
                     return {"_version": _CACHE_VERSION}
 
                 if data.get("_version") != _CACHE_VERSION:
-                    log_info(
-                        f"♻️ [REPORT:cache] نسخهٔ قدیمی "
-                        f"({data.get('_version')}) → reset"
-                    )
+                    log_info(f"♻️ [REPORT:cache] نسخهٔ قدیمی " f"({data.get('_version')}) → reset")
                     return {"_version": _CACHE_VERSION}
                 return data
         except json.JSONDecodeError as e:
-            log_warning(
-                f"⚠️ [REPORT:cache] JSON نامعتبر | " f"line={e.lineno} | {e.msg}"
-            )
+            log_warning(f"⚠️ [REPORT:cache] JSON نامعتبر | " f"line={e.lineno} | {e.msg}")
         except Exception as e:
             log_warning(f"⚠️ [REPORT:cache] load | " f"{type(e).__name__}: {e}")
     return {"_version": _CACHE_VERSION}
@@ -521,31 +505,19 @@ class DailyReporter:
 
         if state == "hit":
             elapsed_ms = (time.monotonic() - t0) * 1000
-            log_info(
-                f"💡 [REPORT:daily] cache HIT | " f"{cache_key} | {elapsed_ms:.0f}ms"
-            )
+            log_info(f"💡 [REPORT:daily] cache HIT | " f"{cache_key} | {elapsed_ms:.0f}ms")
             return cached_result
 
         if state == "partial":
-            log_info(
-                f"🔧 [REPORT:daily] partial cache | "
-                f"{cache_key} | پاک‌شده: {missing_keys}"
-            )
+            log_info(f"🔧 [REPORT:daily] partial cache | " f"{cache_key} | پاک‌شده: {missing_keys}")
         else:
-            log_info(
-                f"▶️ [REPORT:daily] شروع | "
-                f"date={report_date} | "
-                f"platform={platform or 'all'}"
-            )
+            log_info(f"▶️ [REPORT:daily] شروع | " f"date={report_date} | " f"platform={platform or 'all'}")
 
         # ─── واکشی داده ───
         leads_data = await self._get_leads_by_date(report_date, platform=platform)
 
         if not leads_data or leads_data["total"] == 0:
-            log_info(
-                f"ℹ️ [REPORT:daily] بدون سرنخ | "
-                f"{report_date} | platform={platform or 'all'}"
-            )
+            log_info(f"ℹ️ [REPORT:daily] بدون سرنخ | " f"{report_date} | platform={platform or 'all'}")
             if state == "partial":
                 self._cache.get("results", {}).pop(cache_key, None)
                 _save_cache(self._cache)
@@ -553,10 +525,7 @@ class DailyReporter:
 
         total = leads_data["total"]
         if state == "partial":
-            log_info(
-                f"📊 [REPORT:daily] {total} سرنخ — "
-                f"بازتولید {len(missing_keys)} فایل"
-            )
+            log_info(f"📊 [REPORT:daily] {total} سرنخ — " f"بازتولید {len(missing_keys)} فایل")
         else:
             log_info(f"📊 [REPORT:daily] {total} سرنخ پیدا شد")
 
@@ -619,10 +588,7 @@ class DailyReporter:
                 f"{elapsed_ms:.0f}ms"
             )
         else:
-            log_success(
-                f"✅ [REPORT:daily] کامل | {total} سرنخ | "
-                f"{elapsed_ms:.0f}ms | date={report_date}"
-            )
+            log_success(f"✅ [REPORT:daily] کامل | {total} سرنخ | " f"{elapsed_ms:.0f}ms | date={report_date}")
 
         if elapsed_ms > _SLOW_REPORT_MS:
             log_warning(f"🐌 [REPORT:daily] کند | " f"{elapsed_ms:.0f}ms")
@@ -723,9 +689,7 @@ class DailyReporter:
 
         elapsed_ms = (time.monotonic() - t0) * 1000
         log_success(
-            f"✅ [REPORT:weekly] {len(messages)} سرنخ | "
-            f"{elapsed_ms:.0f}ms | "
-            f"{os.path.basename(filename)}"
+            f"✅ [REPORT:weekly] {len(messages)} سرنخ | " f"{elapsed_ms:.0f}ms | " f"{os.path.basename(filename)}"
         )
         return filename
 
@@ -764,11 +728,7 @@ class DailyReporter:
                 row = cur.fetchone()
                 total_leads = row[0] if row else 0
 
-                _sql_platforms = (
-                    "SELECT platform, COUNT(*) FROM messages "
-                    "WHERE " + where + " "
-                    "GROUP BY platform"
-                )
+                _sql_platforms = "SELECT platform, COUNT(*) FROM messages " "WHERE " + where + " " "GROUP BY platform"
                 cur.execute(_sql_platforms, base_params)
                 platform_stats = cur.fetchall()
 
@@ -877,9 +837,7 @@ class DailyReporter:
 
         elapsed_ms = (time.monotonic() - t0) * 1000
         log_success(
-            f"✅ [REPORT:exec] {total_leads} سرنخ | "
-            f"{elapsed_ms:.0f}ms | "
-            f"{os.path.basename(report_file)}"
+            f"✅ [REPORT:exec] {total_leads} سرنخ | " f"{elapsed_ms:.0f}ms | " f"{os.path.basename(report_file)}"
         )
         return report_file
 
@@ -1113,11 +1071,7 @@ class DailyReporter:
             return None
 
         elapsed_ms = (time.monotonic() - t0) * 1000
-        log_success(
-            f"✅ [REPORT:detail] {len(rows)} سرنخ | "
-            f"{elapsed_ms:.0f}ms | "
-            f"{os.path.basename(txt_file)}"
-        )
+        log_success(f"✅ [REPORT:detail] {len(rows)} سرنخ | " f"{elapsed_ms:.0f}ms | " f"{os.path.basename(txt_file)}")
         return txt_file
 
     # ═══════════════════════════════════════════
@@ -1249,11 +1203,7 @@ class DailyReporter:
             val = _safe_get(it, key, None)
             if not val:
                 continue
-            parts = (
-                [p.strip() for p in str(val).split(",")]
-                if key == "keywords"
-                else [str(val)]
-            )
+            parts = [p.strip() for p in str(val).split(",")] if key == "keywords" else [str(val)]
             for p in parts:
                 if p:
                     counts[p] = counts.get(p, 0) + 1
@@ -1292,18 +1242,10 @@ class DailyReporter:
                     f.write(_hdr("section_sep") + "\n")
                     top_groups = self._count_top(rows, "chat_name")
                     if top_groups:
-                        f.write(
-                            "🏆 پرسرنخ‌ترین گروه‌ها: "
-                            + "، ".join(f"{g} ({c})" for g, c in top_groups)
-                            + "\n"
-                        )
+                        f.write("🏆 پرسرنخ‌ترین گروه‌ها: " + "، ".join(f"{g} ({c})" for g, c in top_groups) + "\n")
                     top_kw = self._count_top(rows, "keywords")
                     if top_kw:
-                        f.write(
-                            "🔑 کلیدواژه‌های داغ: "
-                            + "، ".join(f"{k} ({c})" for k, c in top_kw)
-                            + "\n"
-                        )
+                        f.write("🔑 کلیدواژه‌های داغ: " + "، ".join(f"{k} ({c})" for k, c in top_kw) + "\n")
                     f.write(_hdr("line_sep") + "\n")
                     for i, msg in enumerate(dedup_rows(rows), 1):
                         chat = _safe_get(msg, "chat_name", "?")
@@ -1333,10 +1275,7 @@ class DailyReporter:
         filename = os.path.join(REPORTS_DIR, f"daily_report{suffix}_{date}.html")
         safe_date = _html.escape(str(date))
         platform_banner = (
-            f"<p><strong>پلتفرم:</strong> "
-            f"{_html.escape(platform_label(platform))}</p>"
-            if platform
-            else ""
+            f"<p><strong>پلتفرم:</strong> " f"{_html.escape(platform_label(platform))}</p>" if platform else ""
         )
         head = f"""<!DOCTYPE html>
 <html dir="rtl" lang="fa">
@@ -1369,11 +1308,7 @@ class DailyReporter:
 """
         body = ""
         for plat, rows in group_by_platform(data["messages"]):
-            body += (
-                f"\n        <h2>"
-                f"{_html.escape(platform_label(plat))} — "
-                f"{len(rows)} سرنخ</h2>"
-            )
+            body += f"\n        <h2>" f"{_html.escape(platform_label(plat))} — " f"{len(rows)} سرنخ</h2>"
             for msg in rows:
                 chat = _html.escape(str(_safe_get(msg, "chat_name", "") or ""))
                 kw = _html.escape(str(_safe_get(msg, "keywords", "") or ""))
@@ -1546,9 +1481,7 @@ class DailyReporter:
         except Exception as e:
             log_error(f"❌ [REPORT:schedule] " f"{type(e).__name__}: {e}")
 
-    async def generate_monthly_report(
-        self, platform: str | None = None
-    ) -> dict[str, str | None] | None:
+    async def generate_monthly_report(self, platform: str | None = None) -> dict[str, str | None] | None:
         """گزارش ماهانه (۳۰ روز اخیر)."""
         t0 = time.monotonic()
         date_from = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
@@ -1628,9 +1561,7 @@ class DailyReporter:
             "platforms": list(PLATFORM_ORDER),
             "sql_timeout_s": _SQL_TIMEOUT_S,
             "misfire_grace_s": _MISFIRE_GRACE_S,
-            "scheduler_running": (
-                self.scheduler.running if self.scheduler is not None else False
-            ),
+            "scheduler_running": (self.scheduler.running if self.scheduler is not None else False),
             "headers_count": len(REPORT_HEADERS),
             "headers_source": get_headers_source(),
         }
@@ -1653,14 +1584,10 @@ def _parse_time(t: str, default_h: int, default_m: int) -> tuple[int, int]:
         h_i, m_i = int(h), int(m)
         if 0 <= h_i <= 23 and 0 <= m_i <= 59:
             return h_i, m_i
-        log_warning(
-            f"⚠️ [REPORT:parse] '{t}' خارج بازه — " f"{default_h:02d}:{default_m:02d}"
-        )
+        log_warning(f"⚠️ [REPORT:parse] '{t}' خارج بازه — " f"{default_h:02d}:{default_m:02d}")
     except Exception as e:
         log_warning(
-            f"⚠️ [REPORT:parse] '{t}' نامعتبر — "
-            f"{default_h:02d}:{default_m:02d} | "
-            f"{type(e).__name__}: {e}"
+            f"⚠️ [REPORT:parse] '{t}' نامعتبر — " f"{default_h:02d}:{default_m:02d} | " f"{type(e).__name__}: {e}"
         )
     return default_h, default_m
 
@@ -1729,10 +1656,7 @@ def _check_in_loop(name: str) -> None:
     """🎯 FIX: چک می‌کند داخل event loop فعال نیستیم."""
     try:
         asyncio.get_running_loop()
-        raise RuntimeError(
-            f"⛔ `{name}` داخل event loop فعال صدا زده شد — "
-            f"از نسخهٔ async استفاده کن."
-        )
+        raise RuntimeError(f"⛔ `{name}` داخل event loop فعال صدا زده شد — " f"از نسخهٔ async استفاده کن.")
     except RuntimeError as e:
         if "no running event loop" in str(e):
             return

@@ -490,10 +490,7 @@ def _gather_counts_sqlite(path: str, counts: dict[str, Any]) -> dict[str, Any]:
             # ─── hot ───
             try:
                 counts["hot"] = int(
-                    cur.execute(
-                        "SELECT COUNT(*) FROM messages " "WHERE opportunity_type='داغ'"
-                    ).fetchone()[0]
-                    or 0
+                    cur.execute("SELECT COUNT(*) FROM messages " "WHERE opportunity_type='داغ'").fetchone()[0] or 0
                 )
             except Exception as e:
                 log_warning(f"⚠️ [OBS:counts:hot] " f"{type(e).__name__}: {e}")
@@ -501,10 +498,7 @@ def _gather_counts_sqlite(path: str, counts: dict[str, Any]) -> dict[str, Any]:
             # ─── per-platform all-time ───
             try:
                 for p, n in cur.execute(
-                    "SELECT platform, COUNT(*) "
-                    "FROM messages "
-                    "WHERE keywords!='' "
-                    "GROUP BY platform"
+                    "SELECT platform, COUNT(*) " "FROM messages " "WHERE keywords!='' " "GROUP BY platform"
                 ):
                     if p in counts["by_platform"]:
                         counts["by_platform"][p] = int(n)
@@ -513,9 +507,7 @@ def _gather_counts_sqlite(path: str, counts: dict[str, Any]) -> dict[str, Any]:
 
             # 🎯 FIX: per-platform last 24h با localtime
             try:
-                since = (datetime.now() - timedelta(hours=24)).strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                )
+                since = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
                 for p, n in cur.execute(
                     "SELECT platform, COUNT(*) "
                     "FROM messages "
@@ -531,9 +523,7 @@ def _gather_counts_sqlite(path: str, counts: dict[str, Any]) -> dict[str, Any]:
         finally:
             c.close()
     except Exception as e:
-        log_warning(
-            f"⚠️ [OBS:counts] connect | " f"{type(e).__name__}: {e} | path={path}"
-        )
+        log_warning(f"⚠️ [OBS:counts] connect | " f"{type(e).__name__}: {e} | path={path}")
     return counts
 
 
@@ -598,11 +588,7 @@ class _RateLimiter:
         """پاک‌سازی bucketهای قدیمی."""
         now = time.monotonic()
         with self._lock:
-            self._buckets = {
-                ip: (t, c)
-                for ip, (t, c) in self._buckets.items()
-                if now - t < self.window_s * 2
-            }
+            self._buckets = {ip: (t, c) for ip, (t, c) in self._buckets.items() if now - t < self.window_s * 2}
 
     def get_stats(self) -> dict[str, Any]:
         """🎯 آمار rate limiter."""
@@ -729,11 +715,7 @@ async def start_obs_server(
                         AdminHandler,
                     )
                 except Exception as e:
-                    log_error(
-                        f"❌ [OBS:chat] import "
-                        f"AdminHandler | "
-                        f"{type(e).__name__}: {e}"
-                    )
+                    log_error(f"❌ [OBS:chat] import " f"AdminHandler | " f"{type(e).__name__}: {e}")
                     raise
                 log_info(f"🏗️ [OBS:chat] ساخت AdminHandler " f"(db_id={current_db_id})")
                 _admin_state["h"] = AdminHandler(db)
@@ -766,11 +748,7 @@ async def start_obs_server(
                 return web.json_response(result, status=code)
             except Exception as e:
                 elapsed_ms = (time.monotonic() - t0) * 1000
-                log_error(
-                    f"❌ [OBS:/health] "
-                    f"{type(e).__name__}: {e} | "
-                    f"{elapsed_ms:.0f}ms"
-                )
+                log_error(f"❌ [OBS:/health] " f"{type(e).__name__}: {e} | " f"{elapsed_ms:.0f}ms")
                 return web.json_response(
                     {
                         "overall_status": "unhealthy",
@@ -801,9 +779,7 @@ async def start_obs_server(
         }
         _health_cache.set((result, code))
         elapsed_ms = (time.monotonic() - t0) * 1000
-        log_info(
-            f"🌐 [OBS:/health] {code} {overall} " f"(fallback) | {elapsed_ms:.0f}ms"
-        )
+        log_info(f"🌐 [OBS:/health] {code} {overall} " f"(fallback) | {elapsed_ms:.0f}ms")
         return web.json_response(result, status=code)
 
     async def metrics(request):
@@ -812,22 +788,14 @@ async def start_obs_server(
             counts = await _gather_counts(db)
             text = render_prometheus(counts, _sys_stats(), _collector_map())
             elapsed_ms = (time.monotonic() - t0) * 1000
-            log_info(
-                f"🌐 [OBS:/metrics] 200 | "
-                f"{elapsed_ms:.0f}ms | "
-                f"leads={counts.get('leads', 0)}"
-            )
+            log_info(f"🌐 [OBS:/metrics] 200 | " f"{elapsed_ms:.0f}ms | " f"leads={counts.get('leads', 0)}")
             return web.Response(
                 text=text,
                 content_type="text/plain",
             )
         except Exception as e:
             elapsed_ms = (time.monotonic() - t0) * 1000
-            log_error(
-                f"❌ [OBS:/metrics] "
-                f"{type(e).__name__}: {e} | "
-                f"{elapsed_ms:.0f}ms"
-            )
+            log_error(f"❌ [OBS:/metrics] " f"{type(e).__name__}: {e} | " f"{elapsed_ms:.0f}ms")
             return web.Response(
                 text=f"# error: {e}\n",
                 content_type="text/plain",
@@ -839,9 +807,7 @@ async def start_obs_server(
         try:
             counts = await _gather_counts(db)
             s = _sys_stats()
-            by = "، ".join(
-                f"{p}=" f"{counts['by_platform'].get(p, 0)}" for p in _PLATFORM_ORDER
-            )
+            by = "، ".join(f"{p}=" f"{counts['by_platform'].get(p, 0)}" for p in _PLATFORM_ORDER)
             body = (
                 f"Srooyesh Lead-Monitor — OK\n"
                 f"uptime: {int(s['uptime'])}s | "
@@ -887,10 +853,7 @@ async def start_obs_server(
                     },
                 )
             except Exception as e:
-                log_warning(
-                    f"⚠️ [OBS:/chat] خواندن static/chat.html | "
-                    f"{type(e).__name__}: {e}"
-                )
+                log_warning(f"⚠️ [OBS:/chat] خواندن static/chat.html | " f"{type(e).__name__}: {e}")
 
         # Fallback: HTML درون‌خطی
         log_warning("⚠️ [OBS:/chat] static/chat.html نیست — fallback inline")
@@ -931,17 +894,13 @@ async def start_obs_server(
         # ─── AI_ENABLED ───
         if not AI_ENABLED:
             log_warning("⚠️ [OBS:/chat:api] AI_ENABLED=false")
-            return web.json_response(
-                {"reply": ("🧠 هوش فعلاً خاموش است " "(در .env بزن AI_ENABLED=true).")}
-            )
+            return web.json_response({"reply": ("🧠 هوش فعلاً خاموش است " "(در .env بزن AI_ENABLED=true).")})
 
         # ─── Content-Length ───
         try:
             cl = request.content_length
             if cl is not None and cl > _MAX_BODY_BYTES:
-                log_warning(
-                    f"⛔ [OBS:/chat:api] body بزرگ | " f"cl={cl} > {_MAX_BODY_BYTES}"
-                )
+                log_warning(f"⛔ [OBS:/chat:api] body بزرگ | " f"cl={cl} > {_MAX_BODY_BYTES}")
                 return web.json_response(
                     {"reply": "❌ درخواست بزرگ است."},
                     status=413,
@@ -954,9 +913,7 @@ async def start_obs_server(
             data = await request.json()
             message = _sanitize_message(data.get("message") or "")
         except Exception as e:
-            log_warning(
-                f"⚠️ [OBS:/chat:api] json نامعتبر | " f"{type(e).__name__}: {e}"
-            )
+            log_warning(f"⚠️ [OBS:/chat:api] json نامعتبر | " f"{type(e).__name__}: {e}")
             return web.json_response(
                 {"reply": "❌ درخواست نامعتبر " "(بدنه باید JSON باشد)."},
                 status=400,
@@ -979,11 +936,7 @@ async def start_obs_server(
             )
         except Exception as e:
             elapsed_ms = (time.monotonic() - t0) * 1000
-            log_error(
-                f"❌ [OBS:/chat:api] "
-                f"{type(e).__name__}: {e} | "
-                f"{elapsed_ms:.0f}ms | ip={client_ip}"
-            )
+            log_error(f"❌ [OBS:/chat:api] " f"{type(e).__name__}: {e} | " f"{elapsed_ms:.0f}ms | ip={client_ip}")
             if os.getenv("LOG_LEVEL", "").upper() == "DEBUG":
                 for line in traceback.format_exc().splitlines()[-10:]:
                     log_error(f"   ↳ {line}")
@@ -1023,10 +976,7 @@ async def start_obs_server(
 
         task = asyncio.create_task(_runner(), name="obs_rate_cleanup")
         app_["_obs_cleanup_task"] = task
-        log_info(
-            f"🧹 [OBS:init] تسک cleanup راه افتاد | "
-            f"هر {_RATE_CLEANUP_INTERVAL_S:.0f}s"
-        )
+        log_info(f"🧹 [OBS:init] تسک cleanup راه افتاد | " f"هر {_RATE_CLEANUP_INTERVAL_S:.0f}s")
 
     async def _stop_periodic_cleanup(app_):
         task = app_.get("_obs_cleanup_task")
@@ -1055,11 +1005,7 @@ async def start_obs_server(
         )
         return runner
     except Exception as e:
-        log_error(
-            f"❌ [OBS:start] bind ناموفق | "
-            f"host={_obs_host} port={_obs_port} | "
-            f"{type(e).__name__}: {e}"
-        )
+        log_error(f"❌ [OBS:start] bind ناموفق | " f"host={_obs_host} port={_obs_port} | " f"{type(e).__name__}: {e}")
         try:
             await runner.cleanup()
             log_info("🧹 [OBS:start] runner تمیز شد")

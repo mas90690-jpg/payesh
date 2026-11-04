@@ -19,8 +19,24 @@ main.py — نقطهٔ ورود ربات پایش سرنخ.
   - 🐛 FIX: `_signal_handler` حالا idempotent است (دوبار اجرا نمی‌شود).
   - ✅ حفظ همهٔ FIXهای نسخهٔ ۶.
 """
+
 from __future__ import annotations
-import sys, os
+from core.services.cleanup_service import start_cleanup_service
+from core.ops.monitor import PerformanceMonitor, SystemMonitor
+from core.ops.health_check import HealthChecker
+from core.kernel.logger import log_error, log_info, log_success, log_warning
+from core.kernel.event_bus import EventBus
+from core.database.factory import create_database
+from core.app.plugin_loader import PluginLoader
+from core.app.orchestrator import Orchestrator
+from config import (
+    BRAIN_CONFIG,
+    MONITOR,
+    PYCACHE_DIR,
+)
+import sys
+import os
+
 if sys.platform == "win32":
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -54,9 +70,7 @@ _HANDLER_STOP_TIMEOUT_S = 5.0
 def _is_venv() -> bool:
     """آیا در محیط مجازی هستیم؟"""
     try:
-        return (sys.prefix != sys.base_prefix) or (
-            os.environ.get("VIRTUAL_ENV") is not None
-        )
+        return (sys.prefix != sys.base_prefix) or (os.environ.get("VIRTUAL_ENV") is not None)
     except Exception:
         return True
 
@@ -66,6 +80,7 @@ def _should_skip_venv_check() -> bool:
     # ─── اول از config (hot-reload) ───
     try:
         from config import MAIN_CONFIG
+
         if MAIN_CONFIG.get("skip_venv_check", False):
             return True
     except Exception:
@@ -83,18 +98,13 @@ def _enforce_venv() -> None:
 
     if _should_skip_venv_check():
         print(
-            "⚠️ [MAIN:venv] اجرا بدون venv "
-            "(MAIN_SKIP_VENV_CHECK=true)",
+            "⚠️ [MAIN:venv] اجرا بدون venv " "(MAIN_SKIP_VENV_CHECK=true)",
             file=sys.stderr,
         )
         return
 
     is_win = platform.system().lower() == "windows"
-    activate_cmd = (
-        "venv\\Scripts\\activate"
-        if is_win
-        else "source venv/bin/activate"
-    )
+    activate_cmd = "venv\\Scripts\\activate" if is_win else "source venv/bin/activate"
 
     print("=" * _BOOT_BANNER_WIDTH, file=sys.stderr)
     print(
@@ -121,11 +131,6 @@ _enforce_venv()
 # ═══════════════════════════════════════════
 # pycache
 # ═══════════════════════════════════════════
-from config import (
-    BRAIN_CONFIG,
-    MONITOR,
-    PYCACHE_DIR,
-)
 
 try:
     os.makedirs(PYCACHE_DIR, exist_ok=True)
@@ -140,14 +145,6 @@ except Exception as e:
 # ═══════════════════════════════════════════
 # imports اصلی
 # ═══════════════════════════════════════════
-from core.app.orchestrator import Orchestrator
-from core.app.plugin_loader import PluginLoader
-from core.database.factory import create_database
-from core.kernel.event_bus import EventBus
-from core.kernel.logger import log_error, log_info, log_success, log_warning
-from core.ops.health_check import HealthChecker
-from core.ops.monitor import PerformanceMonitor, SystemMonitor
-from core.services.cleanup_service import start_cleanup_service
 
 # ═══════════════════════════════════════════
 # shutdown state
@@ -180,18 +177,12 @@ def _signal_handler(signum=None, frame=None) -> None:
     if _shutdown_triggered:
         _kbd_interrupt_count += 1
         if _kbd_interrupt_count == 2:
-            _safe_log_warning(
-                "⚠️ [MAIN:signal] Ctrl+C دوباره — تلاش برای خروج سریع"
-            )
+            _safe_log_warning("⚠️ [MAIN:signal] Ctrl+C دوباره — تلاش برای خروج سریع")
         return
 
     _shutdown_triggered = True
     try:
-        sig_name = (
-            signal.Signals(signum).name
-            if signum
-            else "KeyboardInterrupt"
-        )
+        sig_name = signal.Signals(signum).name if signum else "KeyboardInterrupt"
     except Exception:
         sig_name = str(signum) if signum else "KeyboardInterrupt"
 
@@ -201,10 +192,7 @@ def _signal_handler(signum=None, frame=None) -> None:
         ev = _get_shutdown_event()
         ev.set()
     except Exception as e:
-        _safe_log_error(
-            f"❌ [MAIN:signal] set | {type(e).__name__}: {e}"
-        )
-
+        _safe_log_error(f"❌ [MAIN:signal] set | {type(e).__name__}: {e}")
 
     # 🆕 fallback: اگه ظرف ۳۰ ثانیه cleanup تموم نشد،
     #    پروسه‌های chrome مربوط به پروفایل‌های ما رو بکش
@@ -215,19 +203,20 @@ def _signal_handler(signum=None, frame=None) -> None:
         import subprocess
         import re as _re
         import os as _os
+
         try:
             out = subprocess.run(
-                ["wmic", "process", "where", "name='chrome.exe'",
-                 "get", "ProcessId,CommandLine"],
-                capture_output=True, text=True, timeout=10,
-                encoding="utf-8", errors="ignore",
+                ["wmic", "process", "where", "name='chrome.exe'", "get", "ProcessId,CommandLine"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                encoding="utf-8",
+                errors="ignore",
             ).stdout
         except Exception:
             return
 
-        sessions_dir = _os.path.normcase(
-            r"F:\payesh plat\storage\sessions"
-        )
+        sessions_dir = _os.path.normcase(r"F:\payesh plat\storage\sessions")
         killed = 0
         for line in out.splitlines():
             if "--user-data-dir" not in line:
@@ -240,17 +229,15 @@ def _signal_handler(signum=None, frame=None) -> None:
             try:
                 subprocess.run(
                     ["taskkill", "/F", "/PID", m.group(1), "/T"],
-                    capture_output=True, timeout=5,
+                    capture_output=True,
+                    timeout=5,
                 )
                 killed += 1
             except Exception:
                 pass
         if killed:
             try:
-                _safe_log_warning(
-                    f"🧹 [MAIN:fallback] {killed} پروسه chrome "
-                    f"بعد از timeout کشته شد"
-                )
+                _safe_log_warning(f"🧹 [MAIN:fallback] {killed} پروسه chrome " f"بعد از timeout کشته شد")
             except Exception:
                 pass
 
@@ -262,6 +249,7 @@ def _signal_handler(signum=None, frame=None) -> None:
         ).start()
     except Exception:
         pass
+
 
 def _safe_log_warning(msg: str) -> None:
     """لاگ warning با fallback به stderr."""
@@ -285,9 +273,7 @@ def _safe_log_error(msg: str) -> None:
             pass
 
 
-def _extract_sys_value(
-    system_dict: dict, key: str, default: float = 0.0
-) -> float:
+def _extract_sys_value(system_dict: dict, key: str, default: float = 0.0) -> float:
     """مقدار عددی رو از system_dict استخراج می‌کنه."""
     m = system_dict.get(key)
     if m and hasattr(m, "value"):
@@ -317,29 +303,18 @@ async def _stop_handlers(handlers: list[Any]) -> None:
                 continue
             result = on_stop()
             if asyncio.iscoroutine(result):
-                await asyncio.wait_for(
-                    result, timeout=_HANDLER_STOP_TIMEOUT_S
-                )
+                await asyncio.wait_for(result, timeout=_HANDLER_STOP_TIMEOUT_S)
             stopped += 1
         except TimeoutError:
             failed += 1
-            log_warning(
-                f"   ⏰ handler.on_stop timeout | {name} | "
-                f"{_HANDLER_STOP_TIMEOUT_S}s"
-            )
+            log_warning(f"   ⏰ handler.on_stop timeout | {name} | " f"{_HANDLER_STOP_TIMEOUT_S}s")
         except Exception as e:
             failed += 1
-            log_warning(
-                f"   ⚠️ handler.on_stop | {name} | "
-                f"{type(e).__name__}: {e}"
-            )
+            log_warning(f"   ⚠️ handler.on_stop | {name} | " f"{type(e).__name__}: {e}")
 
     elapsed_ms = (time.monotonic() - t0) * 1000
     if stopped or failed:
-        log_info(
-            f"   ✔ handlers on_stop | stopped={stopped} "
-            f"failed={failed} | {elapsed_ms:.0f}ms"
-        )
+        log_info(f"   ✔ handlers on_stop | stopped={stopped} " f"failed={failed} | {elapsed_ms:.0f}ms")
 
 
 async def shutdown_cleanup(
@@ -363,9 +338,7 @@ async def shutdown_cleanup(
             await system_monitor.stop_monitoring()
             log_info("   ✔ system_monitor متوقف شد")
         except Exception as e:
-            log_warning(
-                f"   ⚠️ system_monitor | {type(e).__name__}: {e}"
-            )
+            log_warning(f"   ⚠️ system_monitor | {type(e).__name__}: {e}")
 
     if monitor_task and not monitor_task.done():
         monitor_task.cancel()
@@ -374,9 +347,7 @@ async def shutdown_cleanup(
         except (TimeoutError, asyncio.CancelledError):
             pass
         except Exception as e:
-            log_warning(
-                f"   ⚠️ monitor_task | {type(e).__name__}: {e}"
-            )
+            log_warning(f"   ⚠️ monitor_task | {type(e).__name__}: {e}")
         log_info("   ✔ monitor task cancel شد")
 
     # ۲) orchestrator stop + cancel task
@@ -388,14 +359,9 @@ async def shutdown_cleanup(
             )
             log_info("   ✔ orchestrator متوقف شد")
         except TimeoutError:
-            log_warning(
-                f"   ⏰ orchestrator timeout "
-                f"({_ORCH_CLEANUP_TIMEOUT_S}s)"
-            )
+            log_warning(f"   ⏰ orchestrator timeout " f"({_ORCH_CLEANUP_TIMEOUT_S}s)")
         except Exception as e:
-            log_warning(
-                f"   ⚠️ orchestrator | {type(e).__name__}: {e}"
-            )
+            log_warning(f"   ⚠️ orchestrator | {type(e).__name__}: {e}")
 
     if orchestrator_task and not orchestrator_task.done():
         orchestrator_task.cancel()
@@ -404,9 +370,7 @@ async def shutdown_cleanup(
         except (TimeoutError, asyncio.CancelledError):
             pass
         except Exception as e:
-            log_warning(
-                f"   ⚠️ orchestrator_task | {type(e).__name__}: {e}"
-            )
+            log_warning(f"   ⚠️ orchestrator_task | {type(e).__name__}: {e}")
         log_info("   ✔ orchestrator task cancel شد")
 
     # ۳) handlers
@@ -414,9 +378,7 @@ async def shutdown_cleanup(
         try:
             await _stop_handlers(handlers)
         except Exception as e:
-            log_warning(
-                f"   ⚠️ handlers stop | {type(e).__name__}: {e}"
-            )
+            log_warning(f"   ⚠️ handlers stop | {type(e).__name__}: {e}")
 
     # ۴) obs runner
     if obs_runner:
@@ -427,14 +389,9 @@ async def shutdown_cleanup(
             )
             log_info("   ✔ obs_runner تمیز شد")
         except TimeoutError:
-            log_warning(
-                f"   ⏰ obs_runner timeout "
-                f"({_OBS_CLEANUP_TIMEOUT_S}s)"
-            )
+            log_warning(f"   ⏰ obs_runner timeout " f"({_OBS_CLEANUP_TIMEOUT_S}s)")
         except Exception as e:
-            log_warning(
-                f"   ⚠️ obs_runner | {type(e).__name__}: {e}"
-            )
+            log_warning(f"   ⚠️ obs_runner | {type(e).__name__}: {e}")
 
     # ۵) SafeBrain.flush
     if safe_brain:
@@ -442,9 +399,7 @@ async def shutdown_cleanup(
             safe_brain.flush()
             log_info("   ✔ SafeBrain flush شد")
         except Exception as e:
-            log_warning(
-                f"   ⚠️ SafeBrain flush | {type(e).__name__}: {e}"
-            )
+            log_warning(f"   ⚠️ SafeBrain flush | {type(e).__name__}: {e}")
 
     # ۵.۵) cleanup service
     if cleanup_svc:
@@ -452,10 +407,7 @@ async def shutdown_cleanup(
             await cleanup_svc.shutdown()
             log_info("   ✔ cleanup_service متوقف شد")
         except Exception as e:
-            log_warning(
-                f"   ⚠️ cleanup_svc | {type(e).__name__}: {e}"
-            )
-
+            log_warning(f"   ⚠️ cleanup_svc | {type(e).__name__}: {e}")
 
     # ۶) db — فقط یک‌بار، این‌جا
     if db:
@@ -466,9 +418,7 @@ async def shutdown_cleanup(
             log_warning(f"   ⚠️ db | {type(e).__name__}: {e}")
 
     elapsed_ms = (time.monotonic() - t0) * 1000
-    log_success(
-        f"✅ [MAIN:shutdown] cleanup کامل | {elapsed_ms:.0f}ms"
-    )
+    log_success(f"✅ [MAIN:shutdown] cleanup کامل | {elapsed_ms:.0f}ms")
 
 
 # ═══════════════════════════════════════════
@@ -497,18 +447,12 @@ async def main() -> None:
         t = time.monotonic()
         db = create_database()
         await db.init()
-        log_success(
-            f"✅ [MAIN:db] آماده | {time.monotonic() - t:.2f}s"
-        )
+        log_success(f"✅ [MAIN:db] آماده | {time.monotonic() - t:.2f}s")
 
         # ─── ۱.۵) cleanup خودکار ───
         t = time.monotonic()
         cleanup_svc = await start_cleanup_service(db)
-        log_success(
-            f"✅ [MAIN:cleanup] سرویس راه افتاد | "
-            f"{time.monotonic() - t:.2f}s"
-        )
-
+        log_success(f"✅ [MAIN:cleanup] سرویس راه افتاد | " f"{time.monotonic() - t:.2f}s")
 
         # ─── ۲) EventBus + PluginLoader ───
         event_bus = EventBus()
@@ -532,9 +476,7 @@ async def main() -> None:
         t = time.monotonic()
 
         _api_key_main: str = (
-            (_AI_CFG_MAIN or {}).get("deepseek_api_key")
-            or os.environ.get("DEEPSEEK_API_KEY", "")
-            or ""
+            (_AI_CFG_MAIN or {}).get("deepseek_api_key") or os.environ.get("DEEPSEEK_API_KEY", "") or ""
         )
 
         safe_brain = get_safe_brain(
@@ -560,15 +502,10 @@ async def main() -> None:
         if MONITOR.get("enabled", True):
             interval = MONITOR.get("interval_seconds", 30)
             monitor_task = asyncio.create_task(
-                system_monitor.start_monitoring(
-                    interval_seconds=interval
-                ),
+                system_monitor.start_monitoring(interval_seconds=interval),
                 name="system_monitor",
             )
-            log_info(
-                f"✅ [MAIN:monitor] SystemMonitor راه افتاد | "
-                f"interval={interval}s"
-            )
+            log_info(f"✅ [MAIN:monitor] SystemMonitor راه افتاد | " f"interval={interval}s")
 
         # ─── ۵) collectors ───
         t = time.monotonic()
@@ -588,46 +525,37 @@ async def main() -> None:
         # ─── ۶) obs server ───
         t = time.monotonic()
         from core.ops.obs_server import start_obs_server
+
         obs_runner = await start_obs_server(db, health_check, collectors)
         if obs_runner:
-            log_success(
-                f"✅ [MAIN:obs] server راه افتاد | "
-                f"{time.monotonic() - t:.2f}s"
-            )
+            log_success(f"✅ [MAIN:obs] server راه افتاد | " f"{time.monotonic() - t:.2f}s")
         else:
             log_warning("⚠️ [MAIN:obs] راه نیافتاد")
 
         # ─── ۷) self monitor ───
         try:
             from core.ops.self_monitor import start_self_monitor
+
             await start_self_monitor(db)
         except Exception as e:
-            log_warning(
-                f"⚠️ [MAIN:self_monitor] {type(e).__name__}: {e}"
-            )
+            log_warning(f"⚠️ [MAIN:self_monitor] {type(e).__name__}: {e}")
 
         # ─── ۸) handlers — استفاده از AutoSubscriber ───
         t = time.monotonic()
         from handlers.auto_subscribe import AutoSubscriber
+
         handlers = plugin_loader.discover_handlers()
         auto_sub = AutoSubscriber(event_bus, plugin_loader)
         subscribed = await auto_sub.register_all()
         log_success(
-            f"✅ [MAIN:handlers] {len(handlers)} هندلر | "
-            f"subscribed={subscribed} | "
-            f"{time.monotonic() - t:.2f}s"
+            f"✅ [MAIN:handlers] {len(handlers)} هندلر | " f"subscribed={subscribed} | " f"{time.monotonic() - t:.2f}s"
         )
 
         # ─── ۹) orchestrator ───
         t = time.monotonic()
         orchestrator = Orchestrator(collectors, event_bus, db)
-        orchestrator_task = asyncio.create_task(
-            orchestrator.start(), name="orchestrator"
-        )
-        log_success(
-            f"✅ [MAIN:orchestrator] شروع شد | "
-            f"{time.monotonic() - t:.2f}s"
-        )
+        orchestrator_task = asyncio.create_task(orchestrator.start(), name="orchestrator")
+        log_success(f"✅ [MAIN:orchestrator] شروع شد | " f"{time.monotonic() - t:.2f}s")
 
         # ═══════════════════════════════════════
         # گزارش ری‌استارت — حذف شد (پایشگر فقط‌خواندنی)
@@ -636,12 +564,8 @@ async def main() -> None:
 
         perf_monitor.end_operation("main", "boot_total", boot_start)
         total_boot_s = time.monotonic() - t_boot
-        log_success(
-            f"🎯 [MAIN:boot] کامل | total={total_boot_s:.2f}s"
-        )
-        log_info(
-            "🔄 [MAIN:run] در حالت انتظار shutdown signal..."
-        )
+        log_success(f"🎯 [MAIN:boot] کامل | total={total_boot_s:.2f}s")
+        log_info("🔄 [MAIN:run] در حالت انتظار shutdown signal...")
 
         # ═══════════════════════════════════════
         # انتظار shutdown
@@ -652,9 +576,7 @@ async def main() -> None:
             # handler برسد و loop گیر نکند.
             while not ev.is_set():
                 try:
-                    await asyncio.wait_for(
-                        ev.wait(), timeout=0.5
-                    )
+                    await asyncio.wait_for(ev.wait(), timeout=0.5)
                 except asyncio.TimeoutError:
                     continue
         except KeyboardInterrupt:
@@ -665,6 +587,7 @@ async def main() -> None:
     except Exception as e:
         log_error(f"❌ [MAIN:main] {type(e).__name__}: {e}")
         import traceback
+
         for ln in traceback.format_exc().splitlines()[-5:]:
             log_error(f"   ↳ {ln}")
 
@@ -684,9 +607,7 @@ async def main() -> None:
                 cleanup_svc=cleanup_svc,
             )
         except Exception as e:
-            log_error(
-                f"❌ [MAIN:cleanup] {type(e).__name__}: {e}"
-            )
+            log_error(f"❌ [MAIN:cleanup] {type(e).__name__}: {e}")
 
         # ─── گزارش نهایی ───
         log_success("=" * _BOOT_BANNER_WIDTH)
@@ -711,29 +632,16 @@ async def main() -> None:
 
                 alerts = sys_report.get("alerts", [])
                 if alerts:
-                    log_warning(
-                        f"   🚨 {len(alerts)} هشدار (آخرین ۳):"
-                    )
+                    log_warning(f"   🚨 {len(alerts)} هشدار (آخرین ۳):")
                     for alert in alerts[-3:]:
                         try:
-                            lvl = (
-                                alert.level
-                                if hasattr(alert, "level")
-                                else alert.get("level", "?")
-                            )
-                            title = (
-                                alert.title
-                                if hasattr(alert, "title")
-                                else alert.get("title", "?")
-                            )
+                            lvl = alert.level if hasattr(alert, "level") else alert.get("level", "?")
+                            title = alert.title if hasattr(alert, "title") else alert.get("title", "?")
                             log_warning(f"      [{lvl}] {title}")
                         except Exception:
                             pass
             except Exception as e:
-                log_warning(
-                    f"⚠️ [MAIN:final] sys_report | "
-                    f"{type(e).__name__}: {e}"
-                )
+                log_warning(f"⚠️ [MAIN:final] sys_report | " f"{type(e).__name__}: {e}")
 
         if perf_monitor:
             try:
@@ -743,20 +651,12 @@ async def main() -> None:
                     for name, stats in list(perf_stats.items())[:5]:
                         avg = stats.get("avg_time", 0)
                         calls = stats.get("calls", 0)
-                        log_info(
-                            f"      {name}: {avg:.2f}s avg "
-                            f"({calls} calls)"
-                        )
+                        log_info(f"      {name}: {avg:.2f}s avg " f"({calls} calls)")
                 perf_monitor.show_slowest_operations(limit=3)
             except Exception as e:
-                log_warning(
-                    f"⚠️ [MAIN:final] perf | "
-                    f"{type(e).__name__}: {e}"
-                )
+                log_warning(f"⚠️ [MAIN:final] perf | " f"{type(e).__name__}: {e}")
 
-        log_success(
-            "✅ [MAIN:final] برنامه به‌طور تمیز پایان یافت."
-        )
+        log_success("✅ [MAIN:final] برنامه به‌طور تمیز پایان یافت.")
 
 
 # ═══════════════════════════════════════════
@@ -772,10 +672,7 @@ def _run() -> None:
         try:
             signal.signal(signal.SIGINT, _signal_handler)
         except Exception as e:
-            log_warning(
-                f"⚠️ [MAIN:signal] signal() | "
-                f"{type(e).__name__}: {e}"
-            )
+            log_warning(f"⚠️ [MAIN:signal] signal() | " f"{type(e).__name__}: {e}")
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -787,23 +684,14 @@ def _run() -> None:
             _signal_handler()
             log_info("🛑 [MAIN:win] KeyboardInterrupt")
         except Exception as e:
-            log_error(
-                f"❌ [MAIN:win] {type(e).__name__}: {e}"
-            )
+            log_error(f"❌ [MAIN:win] {type(e).__name__}: {e}")
         finally:
             try:
-                pending = [
-                    t for t in asyncio.all_tasks(loop)
-                    if not t.done()
-                ]
+                pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
                 for t in pending:
                     t.cancel()
                 if pending:
-                    loop.run_until_complete(
-                        asyncio.gather(
-                            *pending, return_exceptions=True
-                        )
-                    )
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
             except Exception:
                 pass
             try:
@@ -811,22 +699,16 @@ def _run() -> None:
             except Exception:
                 pass
             _reset_shutdown_event()
-            
+
     else:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
-                loop.add_signal_handler(
-                    sig, lambda s=sig: _signal_handler(s)
-                )
+                loop.add_signal_handler(sig, lambda s=sig: _signal_handler(s))
             except (NotImplementedError, RuntimeError) as e:
-                log_warning(
-                    f"⚠️ [MAIN:signal] "
-                    f"add_signal_handler({sig}) | "
-                    f"{type(e).__name__}: {e}"
-                )
+                log_warning(f"⚠️ [MAIN:signal] " f"add_signal_handler({sig}) | " f"{type(e).__name__}: {e}")
 
         try:
             loop.run_until_complete(main())
@@ -835,18 +717,11 @@ def _run() -> None:
             _signal_handler()
         finally:
             try:
-                pending = [
-                    t for t in asyncio.all_tasks(loop)
-                    if not t.done()
-                ]
+                pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
                 for task in pending:
                     task.cancel()
                 if pending:
-                    loop.run_until_complete(
-                        asyncio.gather(
-                            *pending, return_exceptions=True
-                        )
-                    )
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
             except Exception:
                 pass
             try:

@@ -773,8 +773,8 @@ class DataAPI:
     def error_count_recent(self, n: int = 100) -> int:
         """تعداد خطاهای ERROR/CRITICAL در N خط اخیر."""
         return sum(
-            1 for l in self.recent_logs(n)
-            if l.get("level") in ("ERROR", "CRITICAL")
+            1 for entry in self.recent_logs(n)
+            if entry.get("level") in ("ERROR", "CRITICAL")
         )
 
     # ═══════════════════════════════════════════
