@@ -1193,8 +1193,8 @@ class SQLiteDatabase(BaseDatabase):
         query_upper = query_stripped.upper()
 
         is_select = query_upper.startswith("SELECT") or \
-                    query_upper.startswith("PRAGMA") or \
-                    query_upper.startswith("EXPLAIN")
+            query_upper.startswith("PRAGMA") or \
+            query_upper.startswith("EXPLAIN")
 
         try:
             async with self._get_conn() as conn:

@@ -356,11 +356,13 @@ def _dedup_rows(rows: list[Any]) -> list[Any]:
             continue
         seen.add(key)
         out.append(r)
-    return out  
+    return out
 
 # ═══════════════════════════════════════════
 # خواندن داده
 # ═══════════════════════════════════════════
+
+
 def _rows(
     days: int, platform: str | None = None
 ) -> list[Any]:
@@ -618,7 +620,7 @@ def _write_csv(
         elapsed_ms = (time.monotonic() - t0) * 1000
         log_info(
             f"📄 [CRM:csv] {os.path.basename(path)} | "
-            f"{len(records)} ردیف | {size/1024:.1f}KB | "
+            f"{len(records)} ردیف | {size / 1024:.1f}KB | "
             f"encoding=utf-8-sig (BOM) | "
             f"{elapsed_ms:.0f}ms"
         )
@@ -652,7 +654,7 @@ def _write_json(
         elapsed_ms = (time.monotonic() - t0) * 1000
         log_info(
             f"📄 [CRM:json] {os.path.basename(path)} | "
-            f"{len(records)} رکورد | {size/1024:.1f}KB | "
+            f"{len(records)} رکورد | {size / 1024:.1f}KB | "
             f"{elapsed_ms:.0f}ms"
         )
         return True
@@ -741,7 +743,7 @@ def _export_xlsx_single(
         log_info(
             f"📊 [CRM:xlsx:single] "
             f"{os.path.basename(path)} | "
-            f"{len(records)} ردیف | {size/1024:.1f}KB | "
+            f"{len(records)} ردیف | {size / 1024:.1f}KB | "
             f"{elapsed_ms:.0f}ms"
         )
         return path
@@ -838,7 +840,7 @@ def _export_xlsx_multi_sheet(
             f"{os.path.basename(path)} | "
             f"sheets={sheets_created} "
             f"records={total_records} | "
-            f"{size/1024:.1f}KB | {elapsed_ms:.0f}ms"
+            f"{size / 1024:.1f}KB | {elapsed_ms:.0f}ms"
         )
         return path
     except Exception as e:

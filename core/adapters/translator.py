@@ -425,7 +425,7 @@ class Translator:
                     except Exception as e:
                         log_warning(
                             f"⚠️ [TRANS:translate] chunk "
-                            f"{i+1}/{len(chunks)} | "
+                            f"{i + 1}/{len(chunks)} | "
                             f"{type(e).__name__}: {e}"
                         )
                         result = chunk  # fallback به متن اصلی

@@ -390,7 +390,7 @@ class BaleCollector(BaseCollector):
                     os.remove(tmp)
             except Exception:
                 pass
-                
+
     # ═══════════════════════════════════════════════════
     # اتصال
     # ═══════════════════════════════════════════════════
@@ -450,7 +450,7 @@ class BaleCollector(BaseCollector):
                         )
                         log_success(
                             f"✅ اتصال بله‌وب برقرار شد — "
-                            f"بعد از {i+1} تلاش"
+                            f"بعد از {i + 1} تلاش"
                         )
                         return True
 
@@ -524,7 +524,7 @@ class BaleCollector(BaseCollector):
                 )
             except Exception:
                 pass
-                
+
     async def _launch_context(self, use_headless: bool):
         from config import CHROME_PATH
 
@@ -899,7 +899,7 @@ class BaleCollector(BaseCollector):
             else:
                 stable_rounds = 0
                 last_count = cur
-                log_debug(f"   ↕️ دور {round_i+1}: {cur} چت")
+                log_debug(f"   ↕️ دور {round_i + 1}: {cur} چت")
 
         log_info(f"🎯 اسکرول کامل شد | {len(chats)} چت یکتا")
         return chats
@@ -1100,7 +1100,7 @@ class BaleCollector(BaseCollector):
                 # گارد سیستمی (دوباره چک می‌کنیم — احتیاط)
                 if self._is_system_name(chat_name):
                     log_debug(
-                        f"   ⏭️ [{idx+1}] سیستمی: {chat_name}"
+                        f"   ⏭️ [{idx + 1}] سیستمی: {chat_name}"
                     )
                     skipped_system += 1
                     continue
@@ -1108,7 +1108,7 @@ class BaleCollector(BaseCollector):
                 # گارد مدیر
                 if self._is_admin_chat(chat_name, peer_id):
                     log_info(
-                        f"   ⏭️ [{idx+1}] چتِ مدیر: {chat_name}"
+                        f"   ⏭️ [{idx + 1}] چتِ مدیر: {chat_name}"
                     )
                     skipped_admin += 1
                     continue
@@ -1122,7 +1122,7 @@ class BaleCollector(BaseCollector):
                         )
                     ):
                         log_debug(
-                            f"   ⏭️ [{idx+1}] غیرهدف: {chat_name}"
+                            f"   ⏭️ [{idx + 1}] غیرهدف: {chat_name}"
                         )
                         skipped_target += 1
                         continue
@@ -1134,14 +1134,14 @@ class BaleCollector(BaseCollector):
 
                 # کلیک
                 log_info(
-                    f"   ▶️ [{idx+1}/{len(chats)}] {chat_name}"
+                    f"   ▶️ [{idx + 1}/{len(chats)}] {chat_name}"
                 )
                 clicked = await self._find_and_click_by_key(
                     chat_key, chat_name
                 )
                 if not clicked:
                     log_warning(
-                        f"   ⚠️ [{idx+1}] پیدا نشد: {chat_name}"
+                        f"   ⚠️ [{idx + 1}] پیدا نشد: {chat_name}"
                     )
                     failed += 1
                     continue

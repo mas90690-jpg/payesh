@@ -32,28 +32,28 @@ from core.manual._brain_core import (
 # dispatch table برای _call_builtin
 # ═══════════════════════════════════════════════════════════
 _BUILTIN_HANDLERS: dict[str, str] = {
-    "keyword_count":       "_builtin_keyword_count",
-    "keyword_list":        "_builtin_keyword_list",
+    "keyword_count": "_builtin_keyword_count",
+    "keyword_list": "_builtin_keyword_list",
     "custom_keyword_list": "_builtin_custom_keyword_list",
-    "target_group_list":   "_builtin_target_group_list",
-    "today_by_platform":   "_builtin_today_by_platform",
-    "platform_status":     "_builtin_platform_status",
-    "top_keywords":        "_builtin_top_keywords",
-    "top_groups":          "_builtin_top_groups",
-    "last_lead":           "_builtin_last_lead",
-    "first_lead":          "_builtin_first_lead",
-    "recent_logs":         "_builtin_recent_logs",
-    "error_count":         "_builtin_error_count",
-    "recent_reports":      "_builtin_recent_reports",
-    "system_snapshot":     "_builtin_system_snapshot",
-    "compare_days":        "_builtin_compare_days",
-    "today_hourly":        "_builtin_today_hourly",
-    "hot_recent":          "_builtin_hot_recent",
-    "high_score":          "_builtin_high_score",
-    "silent_groups":       "_builtin_silent_groups",
-    "by_platform":         "_builtin_by_platform",
-    "top_platform":        "_builtin_top_platform",
-    "top_group":           "_builtin_top_group",
+    "target_group_list": "_builtin_target_group_list",
+    "today_by_platform": "_builtin_today_by_platform",
+    "platform_status": "_builtin_platform_status",
+    "top_keywords": "_builtin_top_keywords",
+    "top_groups": "_builtin_top_groups",
+    "last_lead": "_builtin_last_lead",
+    "first_lead": "_builtin_first_lead",
+    "recent_logs": "_builtin_recent_logs",
+    "error_count": "_builtin_error_count",
+    "recent_reports": "_builtin_recent_reports",
+    "system_snapshot": "_builtin_system_snapshot",
+    "compare_days": "_builtin_compare_days",
+    "today_hourly": "_builtin_today_hourly",
+    "hot_recent": "_builtin_hot_recent",
+    "high_score": "_builtin_high_score",
+    "silent_groups": "_builtin_silent_groups",
+    "by_platform": "_builtin_by_platform",
+    "top_platform": "_builtin_top_platform",
+    "top_group": "_builtin_top_group",
 }
 
 
@@ -391,7 +391,7 @@ class BrainRulesMixin:
         if not logs:
             return "📭 لاگی نیست."
         return "🗒️ آخرین لاگ‌ها:\n" + "\n".join(
-            f"[{l.get('level','')}] {l.get('msg','')[:90]}"
+            f"[{l.get('level', '')}] {l.get('msg', '')[:90]}"
             for l in logs
         )
 
@@ -560,12 +560,12 @@ class BrainRulesMixin:
     def _format_lead(self, r: dict, label: str) -> str:
         return (
             f"🔎 {label} سرنخ:\n"
-            f"📱 پلتفرم: {r.get('platform','?')}\n"
-            f"👥 گروه: {r.get('chat_name','?')}\n"
-            f"🔑 کلیدواژه: {r.get('keywords','?')}\n"
-            f"🎯 {r.get('opportunity_type','-')} "
-            f"(امتیاز {r.get('opportunity_score',0)})\n"
-            f"🕒 {r.get('timestamp','?')}\n"
+            f"📱 پلتفرم: {r.get('platform', '?')}\n"
+            f"👥 گروه: {r.get('chat_name', '?')}\n"
+            f"🔑 کلیدواژه: {r.get('keywords', '?')}\n"
+            f"🎯 {r.get('opportunity_type', '-')} "
+            f"(امتیاز {r.get('opportunity_score', 0)})\n"
+            f"🕒 {r.get('timestamp', '?')}\n"
             f"💬 {(r.get('text') or '')[:300]}"
             + (
                 f"\n🔗 {r['chat_link']}"

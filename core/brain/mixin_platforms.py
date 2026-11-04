@@ -111,7 +111,9 @@ class PlatformMixin:
             (class, error_message)
         """
         if platform not in _PLATFORM_MAP:
-            return None, f"پلتفرم «{platform}» پشتیبانی نمی‌شود. معتبر: {list(_PLATFORM_MAP.keys())}"
+            return None, f"پلتفرم «{platform}» پشتیبانی نمی‌شود. معتبر: {
+                list(
+                    _PLATFORM_MAP.keys())}"
 
         module_path, class_name = _PLATFORM_MAP[platform]
         try:

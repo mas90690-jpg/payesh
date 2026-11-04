@@ -457,7 +457,7 @@ async def download_dom_image(
     elapsed_ms = (time.monotonic() - t_all) * 1000
     log_success(
         f"📁 [WEBMEDIA:{safe_prefix}] {filename} | "
-        f"{size/1024:.1f}KB | ext={ext} | mime={mime} | "
+        f"{size / 1024:.1f}KB | ext={ext} | mime={mime} | "
         f"fetch={fetch_ms:.0f}ms write={write_ms:.0f}ms "
         f"total={elapsed_ms:.0f}ms"
     )

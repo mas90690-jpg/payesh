@@ -41,6 +41,7 @@
   - ✅ حفظ همهٔ رفتار نسخهٔ ۲.
 """
 from __future__ import annotations
+from data import paths as data_paths
 
 import json
 import os
@@ -88,7 +89,6 @@ def _env_int(
 ROOT = Path(__file__).parent.parent.parent
 STORAGE_DIR = ROOT / "storage"
 
-from data import paths as data_paths
 
 FORMULAS_FILE: Path = data_paths.MY_FORMULAS
 AUDIT_FILE: Path = data_paths.FORMULA_AUDIT

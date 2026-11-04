@@ -123,7 +123,8 @@ class WhatsAppCollector(BaseCollector):
         self._media_dir = os.path.join(STORAGE_DIR, "media", "whatsapp")
         os.makedirs(self._media_dir, exist_ok=True)
         # ضدتکراری ماندگار
-        self._seen_path = os.path.join(STORAGE_DIR, "offset", "whatsapp_seen.json")
+        self._seen_path = os.path.join(
+            STORAGE_DIR, "offset", "whatsapp_seen.json")
         os.makedirs(os.path.dirname(self._seen_path), exist_ok=True)
         self._load_seen()
 
@@ -190,11 +191,11 @@ class WhatsAppCollector(BaseCollector):
                     os.remove(tmp)
             except Exception:
                 pass
-                
 
     # ==================================================
     # ⭐ NEW: اتصال با BROWSER_LOCK (استاندارد پروژه)
     # ==================================================
+
     async def connect(self, headless: bool | None = None) -> bool:
         """🎯 قفل سراسری مرورگر — جلوگیری از تداخل با بله/ایتا/لینکدین."""
         from core.adapters.browser_lock import BROWSER_LOCK
@@ -269,22 +270,24 @@ class WhatsAppCollector(BaseCollector):
                         login_confirmed = True
                         log_success(
                             f"✅ لاگین واتساپ تشخیص داده شد "
-                            f"(بعد از {attempt+1} تلاش، ~{(attempt+1)*2}s)"
+                            f"(بعد از {attempt + 1} تلاش، ~{(attempt + 1) * 2}s)"
                         )
                         break
                     if attempt % 5 == 4:
-                        log_info(f"   ⏳ [whatsapp] {attempt+1}/20 ...")
+                        log_info(f"   ⏳ [whatsapp] {attempt + 1}/20 ...")
 
                 if login_confirmed:
                     # 🎯 FIX: انتظار صریح برای لود شدن chat-list
-                    log_info("⏳ [whatsapp] انتظار برای لود شدن لیست چت (۱۵s)...")
+                    log_info(
+                        "⏳ [whatsapp] انتظار برای لود شدن لیست چت (۱۵s)...")
                     chatlist_ready = False
                     for sel in CHATLIST_MARKERS + CHAT_ITEM_SELECTORS:
                         try:
                             await self._page.wait_for_selector(
                                 sel, timeout=15000, state="visible"
                             )
-                            log_success(f"✅ chat-list آماده شد | selector={sel}")
+                            log_success(
+                                f"✅ chat-list آماده شد | selector={sel}")
                             chatlist_ready = True
                             break
                         except Exception:
@@ -347,7 +350,7 @@ class WhatsAppCollector(BaseCollector):
                 self._set_error(str(e))
                 await self.disconnect()
                 return False
-                
+
     async def _launch_context(self, use_headless: bool):
         """مرورگر را قابل‌حمل باز می‌کند."""
         from config import CHROME_PATH, get_browser_proxy
@@ -404,7 +407,7 @@ class WhatsAppCollector(BaseCollector):
         raise RuntimeError(
             f"هیچ مرورگری برای واتساپ‌وب باز نشد: {last_err}"
         )
-        
+
     async def _is_logged_in(self) -> bool:
         """چک دقیق‌تر: صفحه لود شده + المان‌ها visible."""
         try:
@@ -457,6 +460,7 @@ class WhatsAppCollector(BaseCollector):
     # ==================================================
     # ابزار کمکی — استخراج فرستنده (پایدار)
     # ==================================================
+
     @staticmethod
     def _parse_pre_plain_text(pre: str) -> str:
         """از data-pre-plain-text، نام فرستنده را بیرون می‌کشد.
@@ -471,7 +475,14 @@ class WhatsAppCollector(BaseCollector):
                 return ""
             name = m.group(1).strip()
             # پاک‌سازی نشانه‌های جهت‌دهی (RTL/LTR markers)
-            for ch in ("\u200e", "\u200f", "\u202a", "\u202b", "\u202c", "\u202d", "\u202e"):
+            for ch in (
+                "\u200e",
+                "\u200f",
+                "\u202a",
+                "\u202b",
+                "\u202c",
+                "\u202d",
+                    "\u202e"):
                 name = name.replace(ch, "")
             if name and len(name) < 60:
                 return name
@@ -547,7 +558,8 @@ class WhatsAppCollector(BaseCollector):
     # ==================================================
     # خواندن پیام‌های جدید از چتِ باز
     # ==================================================
-    async def fetch_messages(self, since: datetime = None) -> list[dict[str, Any]]:
+    async def fetch_messages(
+            self, since: datetime = None) -> list[dict[str, Any]]:
         if not self._connected or not self._page:
             return []
         try:
@@ -632,7 +644,7 @@ class WhatsAppCollector(BaseCollector):
                         and self._is_valid_chat_name(chat_name)
                         and not self._targets.is_target(chat_name, platform="whatsapp")):
                     skipped_target += 1
-                    log_info(f"   ⏭️ [{idx+1}] غیرهدف: «{chat_name}»")
+                    log_info(f"   ⏭️ [{idx + 1}] غیرهدف: «{chat_name}»")
                     continue
 
                 await chat.click()
@@ -685,7 +697,8 @@ class WhatsAppCollector(BaseCollector):
                 # ⭐ FIX بحرانی: فرمت data-id تغییر کرده (۲۰۲۶-۰۴-۳۰)
                 # فرمت قدیمی: false_<chat>@g.us_<msgid>_<sender>
                 # فرمت جدید: فقط <msgid> خالی (hex)
-                # chat_id از DOM در نمی‌آید → از header استفاده می‌کنیم [citation:3][citation:10][citation:18]
+                # chat_id از DOM در نمی‌آید → از header استفاده می‌کنیم
+                # [citation:3][citation:10][citation:18]
                 mid = ""
                 is_group = False
                 if "_" in data_id and "@" in data_id:
@@ -739,9 +752,10 @@ class WhatsAppCollector(BaseCollector):
                 # فیلتر کلیدواژه — نتیجه در متغیر نگه داشته می‌شود
                 has_kw = self._kw.has_match(text)
                 if not has_kw:
-                    log_debug(f"⏭️ [kw] بدون کلیدواژه | {chat_name} | {text[:40]}")
+                    log_debug(
+                        f"⏭️ [kw] بدون کلیدواژه | {chat_name} | {text[:40]}")
                     continue
-                    
+
                 # ─── استخراج فرستنده ───
                 sender_name = ""
                 if is_group:
@@ -817,7 +831,9 @@ class WhatsAppCollector(BaseCollector):
         return _DEFAULT_CHAT_NAME
 
     async def dump_dom(self, path: str = None) -> str:
-        path = path or os.path.join(self._user_data_dir, "whatsapp_dom_dump.html")
+        path = path or os.path.join(
+            self._user_data_dir,
+            "whatsapp_dom_dump.html")
         html = await self._page.content()
         with open(path, "w", encoding="utf-8") as f:
             f.write(html)

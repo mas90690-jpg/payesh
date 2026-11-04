@@ -138,27 +138,27 @@ def _load_actions_from_data() -> tuple[frozenset[str], frozenset[str]]:
     """خواندن اکشن‌ها از data/configs/actions.json — منبع یکتا."""
     from data.loader import load_json
     data = load_json("actions")
-    
+
     if not isinstance(data, dict):
         raise RuntimeError(
             "actions.json نامعتبر — باید dict باشد"
         )
-    
+
     safe = data.get("safe_actions")
     local = data.get("handled_locally")
-    
+
     if not isinstance(safe, list) or not safe:
         raise RuntimeError(
             "actions.json کلید safe_actions ندارد یا خالی است"
         )
     if not isinstance(local, list):
         local = []
-    
+
     return (
         frozenset(str(x) for x in safe if str(x).strip()),
         frozenset(str(x) for x in local if str(x).strip()),
     )
-    
+
 
 SAFE_ACTIONS, SAFE_ACTIONS_HANDLED_LOCALLY = _load_actions_from_data()
 

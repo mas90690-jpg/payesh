@@ -449,7 +449,7 @@ class PostgresDatabase(BaseDatabase):
                             f"ADD COLUMN IF NOT EXISTS "
                             f"{safe_column} {safe_type}"
                         )
-                        
+
                         ok += 1
                     except Exception as e:
                         log_warning(

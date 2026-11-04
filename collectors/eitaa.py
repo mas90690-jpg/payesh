@@ -230,7 +230,7 @@ class EitaaCollector(BaseCollector):
                     os.remove(tmp)
             except Exception:
                 pass
-                
+
     # ═══════════════════════════════════════════════
     # خواص
     # ═══════════════════════════════════════════════
@@ -289,7 +289,7 @@ class EitaaCollector(BaseCollector):
                         self._connected = True
                         self._needs_backfill = True
                         self._set_status(ConnectionStatus.CONNECTED)
-                        log_success(f"✅ اتصال ایتا بعد از {i+1} تلاش")
+                        log_success(f"✅ اتصال ایتا بعد از {i + 1} تلاش")
                         return True
 
                 log_error("نشست ایتا تشخیص داده نشد")
@@ -495,7 +495,8 @@ class EitaaCollector(BaseCollector):
     # ═══════════════════════════════════════════════
     # fetch_messages
     # ═══════════════════════════════════════════════
-    async def fetch_messages(self, since: datetime = None) -> list[dict[str, Any]]:
+    async def fetch_messages(
+            self, since: datetime = None) -> list[dict[str, Any]]:
         if not self._connected or not self._page:
             return []
 
@@ -514,7 +515,7 @@ class EitaaCollector(BaseCollector):
                     await self._scrape_chat(chat, idx)
                     await self._human_delay(0.3, 0.6)
                 except Exception as e:
-                    log_warning(f"[{idx+1}] {chat.get('name')}: {e}")
+                    log_warning(f"[{idx + 1}] {chat.get('name')}: {e}")
 
         new_msgs = self._messages_queue.copy()
         self._messages_queue.clear()
@@ -525,7 +526,7 @@ class EitaaCollector(BaseCollector):
             log_success(f"📥 {len(new_msgs)} پیام از ایتا")
 
         return new_msgs
-        
+
     # ═══════════════════════════════════════════════
     # اسکرپ یک چت
     # ═══════════════════════════════════════════════
@@ -538,16 +539,16 @@ class EitaaCollector(BaseCollector):
 
         try:
             if (self._targets.enabled(_PLATFORM) and
-                not self._targets.is_target(name, platform=_PLATFORM)):
-                log_debug(f"⏭️ [{idx+1}] غیرهدف: {name}")
+                    not self._targets.is_target(name, platform=_PLATFORM)):
+                log_debug(f"⏭️ [{idx + 1}] غیرهدف: {name}")
                 return
         except Exception:
             pass
 
-        log_info(f"▶️ [{idx+1}] {name}")
+        log_info(f"▶️ [{idx + 1}] {name}")
 
         if not await self._click_chat(peer_id, name):
-            log_warning(f"⏭️ [{idx+1}] کلیک نشد: {name}")
+            log_warning(f"⏭️ [{idx + 1}] کلیک نشد: {name}")
             return
 
         # 🎯 NEW: انتظار برای لود شدن پیام‌ها بعد از کلیک
@@ -571,7 +572,7 @@ class EitaaCollector(BaseCollector):
                 timeout=_CHAT_TIMEOUT,
             )
         except asyncio.TimeoutError:
-            log_warning(f"⏱️ [{idx+1}] timeout: {name}")
+            log_warning(f"⏱️ [{idx + 1}] timeout: {name}")
 
     # ═══════════════════════════════════════════════
     # کلیک مطمئن روی چت

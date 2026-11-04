@@ -176,6 +176,7 @@ _QUICK_COMMANDS: dict[str, str] = {
     "/health": "health",
 }
 
+
 class AgentMixin:
     """Agent loop و tool execution — به Brain اضافه می‌شود."""
 

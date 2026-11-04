@@ -167,11 +167,11 @@ class YouTubeCollector(BaseCollector):
                     os.remove(tmp)
             except Exception:
                 pass
-                
 
     # ═══════════════════════════════════════════════
     # اتصال
     # ═══════════════════════════════════════════════
+
     async def connect(self, headless: bool | None = None) -> bool:
         from core.adapters.browser_lock import BROWSER_LOCK
         async with BROWSER_LOCK:
@@ -233,7 +233,7 @@ class YouTubeCollector(BaseCollector):
                         self._set_status(ConnectionStatus.CONNECTED)
                         log_success(
                             f"✅ اتصال یوتیوب برقرار شد — "
-                            f"بعد از {i+1} تلاش"
+                            f"بعد از {i + 1} تلاش"
                         )
                         return True
 
@@ -374,7 +374,6 @@ class YouTubeCollector(BaseCollector):
                 )
             except Exception:
                 pass
-                
 
     async def _is_logged_in(self) -> bool:
         """چک لاگین — دقیقاً مثل بقیه پلتفرم‌ها."""

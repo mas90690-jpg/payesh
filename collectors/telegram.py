@@ -197,7 +197,7 @@ class TelegramWebCollector(BaseCollector):
                     os.remove(tmp)
             except Exception:
                 pass
-                
+
     # ═══════════════════════════════════════════════════
     # اتصال
     # ═══════════════════════════════════════════════════
@@ -259,7 +259,7 @@ class TelegramWebCollector(BaseCollector):
                         self._set_status(ConnectionStatus.CONNECTED)
                         log_success(
                             f"✅ اتصال تلگرام‌وب برقرار شد — "
-                            f"بعد از {i+1} تلاش"
+                            f"بعد از {i + 1} تلاش"
                         )
                         return True
 
@@ -379,7 +379,7 @@ class TelegramWebCollector(BaseCollector):
                 )
             except Exception:
                 pass
-                
+
     async def _is_logged_in(self) -> bool:
         try:
             for sel in LOGGEDIN_MARKERS:
@@ -458,7 +458,7 @@ class TelegramWebCollector(BaseCollector):
                         log_info(
                             f"✅ [تلگرام] لیست چت با `{sel}` "
                             f"({len(visible)} آیتم) — "
-                            f"تلاش {attempt+1}"
+                            f"تلاش {attempt + 1}"
                         )
                         return visible, sel
                 except Exception:
@@ -622,7 +622,7 @@ class TelegramWebCollector(BaseCollector):
                             )
                         ):
                             log_info(
-                                f"   ⏭️ [{idx+1}] غیرهدف: "
+                                f"   ⏭️ [{idx + 1}] غیرهدف: "
                                 f"«{chat_name}»"
                             )
                             skipped_target += 1
@@ -724,7 +724,8 @@ class TelegramWebCollector(BaseCollector):
                     chat_type != "private"
                     and not self._kw.has_match(text)
                 ):
-                    log_debug(f"⏭️ [kw] بدون کلیدواژه | {chat_name} | {text[:40]}")
+                    log_debug(
+                        f"⏭️ [kw] بدون کلیدواژه | {chat_name} | {text[:40]}")
                     continue
 
                 if uniq in self._seen_ids:

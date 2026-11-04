@@ -709,7 +709,7 @@ class AIAssistant:
                             if attempt < _DEEPSEEK_MAX_RETRY:
                                 log_info(
                                     f"⏳ [AI:deepseek] 429 — "
-                                    f"retry {attempt+1}/"
+                                    f"retry {attempt + 1}/"
                                     f"{_DEEPSEEK_MAX_RETRY} "
                                     f"بعد از "
                                     f"{_DEEPSEEK_RETRY_DELAY_S}s"
@@ -730,7 +730,7 @@ class AIAssistant:
                             if attempt < _DEEPSEEK_MAX_RETRY:
                                 log_info(
                                     f"⏳ [AI:deepseek] {resp.status} — "
-                                    f"retry {attempt+1}/"
+                                    f"retry {attempt + 1}/"
                                     f"{_DEEPSEEK_MAX_RETRY}"
                                 )
                                 await asyncio.sleep(
@@ -763,7 +763,7 @@ class AIAssistant:
                 if attempt < _DEEPSEEK_MAX_RETRY:
                     log_info(
                         f"⏳ [AI:deepseek] timeout — "
-                        f"retry {attempt+1}/"
+                        f"retry {attempt + 1}/"
                         f"{_DEEPSEEK_MAX_RETRY}"
                     )
                     await asyncio.sleep(_DEEPSEEK_RETRY_DELAY_S)

@@ -34,6 +34,7 @@
   - ✅ حفظ همهٔ رفتار نسخهٔ ۴.
 """
 from __future__ import annotations
+from data import paths as data_paths
 
 import copy
 import fnmatch
@@ -104,7 +105,6 @@ ROOT = Path(ROOT).resolve()
 
 
 # ─── مسیر از data.paths ───
-from data import paths as data_paths
 
 ACCESS_FILE: Path = data_paths.ACCESS_CONTROL
 
@@ -744,17 +744,17 @@ class AccessManager:
             "🔐 **دسترسی‌ها**\n"
             f"🔓 دسترسی کامل: {full}\n"
             f"📖 خواندن: "
-            f"{len(r.get('read',{}).get('allow',[]))} الگو\n"
+            f"{len(r.get('read', {}).get('allow', []))} الگو\n"
             f"✏️ نوشتن: "
-            f"{len(r.get('write',{}).get('allow',[]))} الگو\n"
+            f"{len(r.get('write', {}).get('allow', []))} الگو\n"
             f"🗄️ جداول DB: "
-            f"{r.get('database',{}).get('read_tables',[])}\n"
+            f"{r.get('database', {}).get('read_tables', [])}\n"
             f"⚙️ تنظیمات (نوشتن): "
-            f"{len(r.get('settings',{}).get('write',[]))} مورد\n"
+            f"{len(r.get('settings', {}).get('write', []))} مورد\n"
             f"📱 پلتفرم‌ها: "
-            f"{r.get('platforms',{}).get('toggleable',[])}\n"
+            f"{r.get('platforms', {}).get('toggleable', [])}\n"
             f"🖥️ دستورات: "
-            f"{len(r.get('commands',{}).get('allow',[]))} مورد"
+            f"{len(r.get('commands', {}).get('allow', []))} مورد"
         )
 
     def get_stats(self) -> dict[str, Any]:

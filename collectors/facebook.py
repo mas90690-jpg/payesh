@@ -26,7 +26,6 @@ import hashlib
 import json
 import os
 import random
-import re
 from datetime import datetime
 from typing import Any
 
@@ -294,7 +293,7 @@ class FacebookCollector(BaseCollector):
                         self._set_status(ConnectionStatus.CONNECTED)
                         log_success(
                             f"✅ اتصال فیسبوک برقرار شد — "
-                            f"بعد از {i+1} تلاش"
+                            f"بعد از {i + 1} تلاش"
                         )
                         return True
 
@@ -415,7 +414,7 @@ class FacebookCollector(BaseCollector):
                 )
             except Exception:
                 pass
-                
+
     async def _is_logged_in(self) -> bool:
         try:
             url = (self._page.url or "").lower()
@@ -493,7 +492,7 @@ class FacebookCollector(BaseCollector):
             await self._human_scroll(random.randint(800, 1400))
             await self._human_delay(1.5, 3)
             if (i + 1) % 2 == 0:
-                log_info(f"   ↕️ اسکرول {i+1}/{self._scroll_rounds}")
+                log_info(f"   ↕️ اسکرول {i + 1}/{self._scroll_rounds}")
 
         posts = await self._find_posts()
         if not posts:
@@ -528,7 +527,7 @@ class FacebookCollector(BaseCollector):
             await self._human_scroll(random.randint(1000, 1500))
             await self._human_delay(1.5, 3)
             if (i + 1) % 2 == 0:
-                log_info(f"   ↕️ اسکرول {i+1}/{self._scroll_rounds}")
+                log_info(f"   ↕️ اسکرول {i + 1}/{self._scroll_rounds}")
 
         posts = await self._find_posts()
         if not posts:
@@ -681,17 +680,17 @@ class FacebookCollector(BaseCollector):
                         return t
             except Exception:
                 continue
-        
+
         # ۲. fallback: کل متن پست
         try:
             return (await post.inner_text() or "").strip()
         except Exception:
             return ""
-            
-            
+
     # ═══════════════════════════════════════════════
     # استخراج نویسنده
     # ═══════════════════════════════════════════════
+
     async def _extract_author(self, post) -> str:
         for sel in POST_AUTHOR_SELECTORS:
             try:

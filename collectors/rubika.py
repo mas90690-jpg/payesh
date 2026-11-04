@@ -98,7 +98,8 @@ class RubikaCollector(BaseCollector):
         self._session_path = _get_session_path()
         self._media_dir = os.path.join(STORAGE_DIR, "media", "rubika")
         os.makedirs(self._media_dir, exist_ok=True)
-        self._seen_path = os.path.join(STORAGE_DIR, "offset", "rubika_seen.json")
+        self._seen_path = os.path.join(
+            STORAGE_DIR, "offset", "rubika_seen.json")
         os.makedirs(os.path.dirname(self._seen_path), exist_ok=True)
         self._load_seen()
 
@@ -127,7 +128,8 @@ class RubikaCollector(BaseCollector):
                 data = json.load(f)
             if isinstance(data, list):
                 self._seen_ids = set(data[-_MAX_SEEN:])
-                log_info(f"♻️ {len(self._seen_ids)} شناسهٔ دیده‌شدهٔ روبیکا بارگذاری شد")
+                log_info(
+                    f"♻️ {len(self._seen_ids)} شناسهٔ دیده‌شدهٔ روبیکا بارگذاری شد")
         except Exception:
             self._seen_ids = set()
 
@@ -210,7 +212,11 @@ class RubikaCollector(BaseCollector):
 
     @staticmethod
     def _extract_sender_name(update) -> str:
-        for attr in ("author_title", "sender_name", "author_name", "from_name"):
+        for attr in (
+            "author_title",
+            "sender_name",
+            "author_name",
+                "from_name"):
             v = getattr(update, attr, None)
             if v and str(v).strip():
                 return str(v).strip()[:60]
@@ -250,7 +256,13 @@ class RubikaCollector(BaseCollector):
 
         media_type = "text"
         try:
-            if getattr(update, "is_file_inline", False) or getattr(update, "file_inline", None):
+            if getattr(
+                    update,
+                    "is_file_inline",
+                    False) or getattr(
+                    update,
+                    "file_inline",
+                    None):
                 media_type = "file"
             elif getattr(update, "photo", None):
                 media_type = "photo"
@@ -302,7 +314,9 @@ class RubikaCollector(BaseCollector):
             save_path = os.path.join(self._media_dir, f"rubika_{stamp}{ext}")
             await update.download(save_as=save_path)
             if os.path.exists(save_path) and os.path.getsize(save_path) > 0:
-                log_success(f"📁 فایل روبیکا ذخیره شد: {os.path.basename(save_path)}")
+                log_success(
+                    f"📁 فایل روبیکا ذخیره شد: {
+                        os.path.basename(save_path)}")
                 return save_path
         except Exception as e:
             log_warning(f"دانلود فایل روبیکا ناموفق بود: {e}")
@@ -368,7 +382,10 @@ class RubikaCollector(BaseCollector):
         return (name, username)
 
     @staticmethod
-    def _build_link(username: str | None, object_guid: str | None, chat_type: str) -> str | None:
+    def _build_link(
+            username: str | None,
+            object_guid: str | None,
+            chat_type: str) -> str | None:
         if username:
             return f"https://rubika.ir/{username}"
         return None
@@ -453,7 +470,8 @@ class RubikaCollector(BaseCollector):
                     or self._dig(ch, "name")
                 )
                 if not ch_name and self._client:
-                    for method_name in ("get_chat_info", "get_chat", "get_object"):
+                    for method_name in (
+                            "get_chat_info", "get_chat", "get_object"):
                         if ch_name:
                             break
                         method = getattr(self._client, method_name, None)
@@ -461,7 +479,9 @@ class RubikaCollector(BaseCollector):
                             continue
                         try:
                             info = await method(guid)
-                            if hasattr(info, "to_dict") and callable(info.to_dict):
+                            if hasattr(
+                                    info, "to_dict") and callable(
+                                    info.to_dict):
                                 d = info.to_dict()
                             elif hasattr(info, "to_dict"):
                                 d = info.to_dict
@@ -575,10 +595,10 @@ class RubikaCollector(BaseCollector):
                     )
                 chats_attr = getattr(chats_resp, "chats", None)
                 log_debug(
-                    f"🔍 [rubika:debug:get_chats] "
-                    f"chats_attr_type={type(chats_attr).__name__} | "
-                    f"len={len(chats_attr) if isinstance(chats_attr, list) else 'N/A'}"
-                )
+                    f"🔍 [rubika:debug:get_chats] " f"chats_attr_type={
+                        type(chats_attr).__name__} | " f"len={
+                        len(chats_attr) if isinstance(
+                            chats_attr, list) else 'N/A'}")
                 log_debug(
                     f"🔍 [rubika:debug:get_chats] "
                     f"chats_extracted={len(chats)}"
@@ -617,7 +637,12 @@ class RubikaCollector(BaseCollector):
                     or ""
                 ).lower()
 
-                if not any(k in ctype for k in ("group", "channel", "user", "private")):
+                if not any(
+                    k in ctype for k in (
+                        "group",
+                        "channel",
+                        "user",
+                        "private")):
                     continue
 
                 try:

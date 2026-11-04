@@ -27,6 +27,12 @@ Endpointها:
   - ✅ حفظ همهٔ FIXهای نسخهٔ ۵.
 """
 from __future__ import annotations
+from core.kernel.logger import (
+    log_error,
+    log_info,
+    log_success,
+    log_warning,
+)
 
 import asyncio
 import os
@@ -43,12 +49,6 @@ from typing import Any
 _STATIC_DIR = (
     pathlib.Path(__file__).resolve()
     .parent.parent.parent / "static"
-)
-from core.kernel.logger import (
-    log_error,
-    log_info,
-    log_success,
-    log_warning,
 )
 
 
@@ -996,7 +996,7 @@ async def start_obs_server(
                 "X-Content-Type-Options": "nosniff",
             },
         )
-        
+
     async def chat_api(request):
         t0 = time.monotonic()
 

@@ -434,7 +434,7 @@ class BaleBotCollector(BaseCollector):
                 if data and data.get("ok"):
                     log_success(
                         f"📤 [bale_bot:send] chat={chat_id} | "
-                        f"chunk={i+1}/{len(chunks)} | "
+                        f"chunk={i + 1}/{len(chunks)} | "
                         f"len={len(chunk)}"
                     )
                 else:

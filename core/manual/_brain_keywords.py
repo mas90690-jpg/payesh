@@ -723,7 +723,7 @@ class BrainKeywordsMixin:
                 ts = str(e.get("ts", ""))[:19].replace("T", " ")
                 msg = str(e.get("msg", ""))[:100]
                 lines.append(
-                    f"   [{ts}] {e.get('level','?')}: {msg}"
+                    f"   [{ts}] {e.get('level', '?')}: {msg}"
                 )
             return "\n".join(lines)
 

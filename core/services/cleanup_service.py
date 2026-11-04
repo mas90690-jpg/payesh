@@ -233,16 +233,16 @@ class CleanupService:
         )
 
         log_success(
-            f"✅ [CLEANUP:init] آماده | "
-            f"media={self.keep_media_days}روز | "
-            f"reports={self.keep_reports_days}روز | "
-            f"messages="
-            f"{'همیشه' if self.keep_messages_days == 0 else str(self.keep_messages_days)+'روز'} | "
-            f"interval={self.interval_hours}ساعت | "
-            f"caches={len(_CACHE_DIRS)}dirs+"
-            f"{len(_CACHE_FILES)}files | "
-            f"db={'✅' if self.db else '❌'}"
-        )
+            f"✅ [CLEANUP:init] آماده | " f"media={
+                self.keep_media_days}روز | " f"reports={
+                self.keep_reports_days}روز | " f"messages=" f"{
+                'همیشه' if self.keep_messages_days == 0 else str(
+                    self.keep_messages_days) +
+                'روز'} | " f"interval={
+                self.interval_hours}ساعت | " f"caches={
+                len(_CACHE_DIRS)}dirs+" f"{
+                len(_CACHE_FILES)}files | " f"db={
+                '✅' if self.db else '❌'}")
         log_info(
             f"📂 [CLEANUP:init] مسیرها | "
             f"media_dir={MEDIA_DIR} | "
@@ -818,13 +818,13 @@ async def start_cleanup_service(db=None) -> CleanupService:
         )
         svc._pending_tasks.append(task)
         log_success(
-            f"✅ [CLEANUP:start] حلقه راه افتاد | "
-            f"media={svc.keep_media_days}روز | "
-            f"reports={svc.keep_reports_days}روز | "
-            f"messages="
-            f"{'همیشه' if svc.keep_messages_days == 0 else str(svc.keep_messages_days)+'روز'} | "
-            f"interval={svc.interval_hours}ساعت"
-        )
+            f"✅ [CLEANUP:start] حلقه راه افتاد | " f"media={
+                svc.keep_media_days}روز | " f"reports={
+                svc.keep_reports_days}روز | " f"messages=" f"{
+                'همیشه' if svc.keep_messages_days == 0 else str(
+                    svc.keep_messages_days) +
+                'روز'} | " f"interval={
+                svc.interval_hours}ساعت")
     except Exception as e:
         log_error(
             f"❌ [CLEANUP:start] create_task | "

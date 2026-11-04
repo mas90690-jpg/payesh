@@ -155,7 +155,8 @@ class WebCollector(BaseCollector):
 
     @property
     def poll_interval_seconds(self) -> float:
-        # وب اسکرپر سنگین است؛ با فاصلهٔ سیستم (پیش‌فرض ۲۴ ساعت) اجرا شود نه هر ۲ ثانیه.
+        # وب اسکرپر سنگین است؛ با فاصلهٔ سیستم (پیش‌فرض ۲۴ ساعت) اجرا شود نه هر
+        # ۲ ثانیه.
         from config import SYSTEM_CONFIG
 
         return SYSTEM_CONFIG.get("poll_interval_hours", 24) * 3600
@@ -195,23 +196,26 @@ class WebCollector(BaseCollector):
                     os.remove(tmp)
             except Exception:
                 pass
-                
 
     # ==================================================
     # اتصال = بارگذاری فایل لینک‌ها
     # ==================================================
+
     async def connect(self) -> bool:
         self._sources = self._load_sources()
         self._connected = True
         self._set_status(ConnectionStatus.CONNECTED)
         if self._sources:
             log_success(
-                f"✅ وب: {len(self._sources)} منبع از {os.path.basename(self.sources_file)} بارگذاری شد"
-            )
+                f"✅ وب: {
+                    len(
+                        self._sources)} منبع از {
+                    os.path.basename(
+                        self.sources_file)} بارگذاری شد")
         else:
             log_warning(
-                f"⚠️ وب: هیچ لینکی در {self.sources_file} نیست (فقط لینک اضافه کن)"
-            )
+                f"⚠️ وب: هیچ لینکی در {
+                    self.sources_file} نیست (فقط لینک اضافه کن)")
         return True
 
     def _load_sources(self) -> list[tuple[str, str, dict]]:
@@ -241,7 +245,8 @@ class WebCollector(BaseCollector):
     # ==================================================
     # خواندن منابع
     # ==================================================
-    async def fetch_messages(self, since: datetime = None) -> list[dict[str, Any]]:
+    async def fetch_messages(
+            self, since: datetime = None) -> list[dict[str, Any]]:
         if not self._connected or not self._sources:
             return []
 
@@ -268,7 +273,10 @@ class WebCollector(BaseCollector):
                             depth = int(params.get("depth", 1))
                             pages = await self._crawl_site(session, url, depth)
                         elif mode == "news":
-                            limit = int(params.get("limit", min(self.max_pages, 25)))
+                            limit = int(
+                                params.get(
+                                    "limit", min(
+                                        self.max_pages, 25)))
                             pages = await self._crawl_news(session, url, limit)
                         else:
                             pages = await self._read_single(session, url)
@@ -319,7 +327,8 @@ class WebCollector(BaseCollector):
 
             if d < depth:
                 for link in self._extract_links(html, url):
-                    if urlparse(link).netloc == base_host and link not in visited:
+                    if urlparse(
+                            link).netloc == base_host and link not in visited:
                         frontier.append((link, d + 1))
             await asyncio.sleep(0.3)  # مودب بودن با سرور
         return out
@@ -341,7 +350,8 @@ class WebCollector(BaseCollector):
 
         base = urlparse(index_url)
         host = base.netloc
-        index_path = base.path.rstrip("/")  # مثلاً /en/news یا "" برای صفحهٔ اصلی
+        # مثلاً /en/news یا "" برای صفحهٔ اصلی
+        index_path = base.path.rstrip("/")
 
         def is_news_link(link: str) -> bool:
             link = (link or "").split("#")[0].rstrip("/")
@@ -370,7 +380,8 @@ class WebCollector(BaseCollector):
             dict.fromkeys(collect(self._extract_links(index_html, index_url)))
         )
 
-        # اگر چیزی پیدا نشد (سایت JS-محور)، از DOMِ زندهٔ مرورگر بعد از اسکرول بگیر
+        # اگر چیزی پیدا نشد (سایت JS-محور)، از DOMِ زندهٔ مرورگر بعد از اسکرول
+        # بگیر
         if not article_links:
             article_links = list(
                 dict.fromkeys(collect(await self._rendered_links(index_url)))
@@ -446,7 +457,8 @@ class WebCollector(BaseCollector):
                 "headless": True,
                 "args": ["--no-sandbox", "--disable-dev-shm-usage"],
             }
-            # مثل بقیهٔ کلکتورها: اول مرورگرِ نصب‌شدهٔ سیستم (Chrome/Edge)، بعد chromiumِ دانلودی
+            # مثل بقیهٔ کلکتورها: اول مرورگرِ نصب‌شدهٔ سیستم (Chrome/Edge)، بعد
+            # chromiumِ دانلودی
             attempts = []
             if CHROME_PATH:
                 attempts.append({**base, "executable_path": CHROME_PATH})
@@ -481,7 +493,7 @@ class WebCollector(BaseCollector):
                 pass
             self._bpw = None
             return None
-            
+
     async def _fetch_rendered(self, url) -> str | None:
         ctx = await self._ensure_browser()
         if ctx is None:
@@ -489,7 +501,8 @@ class WebCollector(BaseCollector):
         page = None
         try:
             page = await ctx.new_page()
-            # سایت‌های کند/ریدایرکتی (مثل گواهیِ منقضی) به مهلتِ بیشتری نیاز دارند
+            # سایت‌های کند/ریدایرکتی (مثل گواهیِ منقضی) به مهلتِ بیشتری نیاز
+            # دارند
             await page.goto(
                 url, wait_until="domcontentloaded", timeout=max(self.timeout, 45) * 1000
             )
@@ -569,13 +582,11 @@ class WebCollector(BaseCollector):
             from bs4 import BeautifulSoup
 
             soup = BeautifulSoup(html, "html.parser")
-            for tag in soup(
-                ["script", "style", "noscript", "svg", "header", "footer", "nav"]
-            ):
+            for tag in soup(["script", "style", "noscript",
+                             "svg", "header", "footer", "nav"]):
                 tag.decompose()
-            title = (
-                soup.title.string.strip() if soup.title and soup.title.string else ""
-            )
+            title = (soup.title.string.strip()
+                     if soup.title and soup.title.string else "")
             text = re.sub(r"\s+", " ", soup.get_text(" ")).strip()
         except Exception:
             # fallback ساده بدون bs4
@@ -634,7 +645,6 @@ class WebCollector(BaseCollector):
 
         return False, ""
 
-
     async def _make_message(
         self, url: str, title: str, text: str
     ) -> dict[str, Any] | None:
@@ -650,7 +660,8 @@ class WebCollector(BaseCollector):
             )
             return None
         # اثرانگشت محتوا برای حذف تکراری (پایدار بین اجراها)
-        fingerprint = hashlib.sha256((url + "|" + text[:1000]).encode("utf-8")).hexdigest()[:16]
+        fingerprint = hashlib.sha256(
+            (url + "|" + text[:1000]).encode("utf-8")).hexdigest()[:16]
         if fingerprint in self._seen_hashes:
             log_debug(f"⏭️ [seen] تکراری | web | {url[:60]}")
             return None
@@ -670,7 +681,8 @@ class WebCollector(BaseCollector):
                 log_warning(f"ترجمهٔ صفحه ناموفق بود: {e}")
 
         return {
-            "id": f"web_{fingerprint}",  # کلید یکتا → دیتابیس تکراری را رد می‌کند
+            # کلید یکتا → دیتابیس تکراری را رد می‌کند
+            "id": f"web_{fingerprint}",
             "platform": "web",
             "text": full_text,
             "text_translated": text_translated,

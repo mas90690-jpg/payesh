@@ -650,7 +650,10 @@ class RubikaController(_BaseController):
         except Exception as e:
             return f"❌ خطا: {e}"
 
-    async def delete_message(self, chat: str = "", message_id: str = "") -> str:
+    async def delete_message(
+            self,
+            chat: str = "",
+            message_id: str = "") -> str:
         ok, reason = await self._safe.check()
         if not ok:
             return reason

@@ -46,6 +46,8 @@ from typing import Any
 # ═══════════════════════════════════════════
 # helpers
 # ═══════════════════════════════════════════
+
+
 def _env_int(
     name: str, default: int,
     min_val: int | None = None,
@@ -209,6 +211,8 @@ _EXC_MAX_LEN = _env_int(
 )
 
 # ─── سازگاری عقب‌رو ───
+
+
 class LogLevel(Enum):
     """Enum قدیمی — حفظ‌شده برای سازگاری عقب‌رو.
 
@@ -368,7 +372,7 @@ class Logger:
             bool(_sys_log_to_file)
             and _env_bool("LOG_TO_FILE", "true")
         )
-        
+
         self._file_path = ""
         if self._file_enabled:
             self._setup_file_handler()
@@ -404,7 +408,7 @@ class Logger:
             return os.path.join(project_root, "storage", "logs")
         except Exception:
             return "storage/logs"
-            
+
     @staticmethod
     def _resolve_log_level() -> str:
         """🎯 FIX: بدون config — فقط env."""
@@ -412,7 +416,7 @@ class Logger:
         if lv in _LEVEL_NO:
             return lv
         return "INFO"
-        
+
     def _setup_console_handler(self) -> None:
         """🎯 FIX: setup console handler با UTF-8 امن."""
         try:
@@ -454,7 +458,7 @@ class Logger:
                 min_val=0, max_val=10_000,
             )
             as_json = _env_bool("LOG_JSON", "true")
-            
+
             if max_mb <= 0:
                 max_mb = 10.0
             if backups < 0:

@@ -636,7 +636,7 @@ class Orchestrator:
                 log_info(
                     f"💤 [ORCH:reconnect:{platform}] "
                     f"صبر {delay}s "
-                    f"(attempt {attempt}→{attempt+1})"
+                    f"(attempt {attempt}→{attempt + 1})"
                 )
                 if await self._sleep_or_stop(delay):
                     return

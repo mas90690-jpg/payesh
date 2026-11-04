@@ -608,8 +608,8 @@ class BackupService:
             )
             log_success(
                 f"🗜️ [BACKUP:compress] {file_count} فایل | "
-                f"raw={total_bytes/1024:.1f}KB → "
-                f"zip={zip_size/1024:.1f}KB "
+                f"raw={total_bytes / 1024:.1f}KB → "
+                f"zip={zip_size / 1024:.1f}KB "
                 f"(ratio={ratio:.2f}) | {elapsed_ms:.0f}ms"
             )
             return True
@@ -698,8 +698,8 @@ class BackupService:
             log_success(
                 f"✅ [BACKUP:daily] "
                 f"{os.path.basename(zip_path)} | "
-                f"src={src_size/1024:.1f}KB → "
-                f"zip={zip_size/1024:.1f}KB | "
+                f"src={src_size / 1024:.1f}KB → "
+                f"zip={zip_size / 1024:.1f}KB | "
                 f"copy={copy_ms:.0f}ms total={elapsed_ms:.0f}ms"
             )
             if elapsed_ms > _SLOW_BACKUP_MS:
@@ -828,7 +828,7 @@ class BackupService:
                 f"db={'✅' if db_copied else '❌'} | "
                 f"code={code_ms:.0f}ms "
                 f"total={elapsed_ms:.0f}ms | "
-                f"zip={zip_size/1024:.1f}KB"
+                f"zip={zip_size / 1024:.1f}KB"
             )
             if elapsed_ms > _SLOW_BACKUP_MS:
                 log_warning(

@@ -212,7 +212,7 @@ class InstagramCollector(BaseCollector):
                         self._set_status(ConnectionStatus.CONNECTED)
                         log_success(
                             f"✅ اتصال Instagram (فقط فالوورها) — "
-                            f"بعد از {i+1} تلاش"
+                            f"بعد از {i + 1} تلاش"
                         )
                         return True
 
@@ -294,7 +294,8 @@ class InstagramCollector(BaseCollector):
     # ═══════════════════════════════════════════
     # fetch_messages
     # ═══════════════════════════════════════════
-    async def fetch_messages(self, since: datetime = None) -> list[dict[str, Any]]:
+    async def fetch_messages(
+            self, since: datetime = None) -> list[dict[str, Any]]:
         if not self._connected or not self._page:
             return []
 

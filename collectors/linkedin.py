@@ -238,7 +238,7 @@ class LinkedInCollector(BaseCollector):
                     os.remove(tmp)
             except Exception:
                 pass
-                
+
     # ═══════════════════════════════════════════════════
     # last_run
     # ═══════════════════════════════════════════════════
@@ -566,7 +566,7 @@ class LinkedInCollector(BaseCollector):
         if new_msgs:
             log_success(f"📥 {len(new_msgs)} پست از لینکدین")
         return new_msgs
-        
+
     # ═══════════════════════════════════════════════════
     # scrape فید
     # ═══════════════════════════════════════════════════
@@ -624,7 +624,7 @@ class LinkedInCollector(BaseCollector):
             await self._human_scroll(random.randint(800, 1400))
             await self._human_delay(2, 4)
             if (i + 1) % 2 == 0:
-                log_info(f"   ↕️ {i+1}/{total}")
+                log_info(f"   ↕️ {i + 1}/{total}")
 
         await self._human_delay(2, 4)
 
@@ -858,7 +858,7 @@ class LinkedInCollector(BaseCollector):
             return None
         except Exception:
             return None
-            
+
     # ═══════════════════════════════════════════════════
     # harvest
     # ═══════════════════════════════════════════════════
